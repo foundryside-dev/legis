@@ -497,8 +497,29 @@ def install_codex_skills(project_root: Path) -> tuple[bool, str]:
 # ---------------------------------------------------------------------------
 
 
-def _find_legis_command() -> list[str]:
-    """Resolve how to invoke legis for a hook command.
+def _which_nonlocal(name: str, project_root: Path | None) -> str | None:
+    """``shutil.which(name)`` that skips a match living under *project_root*.
+
+    PATH's first hit can be a project-local shim (a repo ``.venv/bin`` ahead of
+    the global tool dir); when *project_root* is given and that first hit is
+    project-local, scan the remaining PATH entries for a stable one rather than
+    returning a command the freshness checks will immediately reject as drift."""
+    found = shutil.which(name)
+    if found is None:
+        return None
+    if project_root is None or not _path_head_is_project_local(found, project_root):
+        return found
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry:
+            continue
+        cand = shutil.which(name, path=entry)
+        if cand and not _path_head_is_project_local(cand, project_root):
+            return cand
+    return None
+
+
+def _find_legis_command(project_root: Path | None = None) -> list[str]:
+    """Resolve how to invoke legis for a hook / .mcp.json command.
 
     Prefer the legis entrypoint that is *running right now* (``sys.argv[0]``) —
     resolution must be faithful to the binary the operator invoked, not to
@@ -507,18 +528,37 @@ def _find_legis_command() -> list[str]:
     by an explicitly-invoked stable binary (legis-788a85fac1). Falls back to
     PATH lookup, then to the safe-path module form ``<python> -P -m legis`` so
     module resolution does not prepend the project directory.
+
+    When *project_root* is given, a project-local resolution (the running
+    binary, the PATH hit, or the interpreter all under the target repo, e.g. a
+    ``<repo>/.venv/bin/legis`` install) is skipped in favour of a stable one:
+    the freshness checks (``_hook_command_is_stale`` / ``mcp_entry_is_current``)
+    reject a project-local command head, so writing one produces an entry
+    ``doctor`` flags stale on arrival, churning the same fix every run.
     """
     import sys
+
+    def _local(path: str) -> bool:
+        return project_root is not None and _path_head_is_project_local(
+            os.path.abspath(path), project_root
+        )
 
     argv0 = sys.argv[0] if sys.argv else ""
     if Path(argv0).name.lower() in ("legis", "legis.exe"):
         running = Path(os.path.abspath(argv0))
-        if running.is_file():
+        if running.is_file() and not _local(str(running)):
             return [str(running)]
-    found = shutil.which("legis")
+    found = _which_nonlocal("legis", project_root)
     if found:
         return [found]
-    return [sys.executable, "-P", "-m", "legis"]
+    python = sys.executable
+    if _local(python):
+        python = (
+            _which_nonlocal("python3", project_root)
+            or _which_nonlocal("python", project_root)
+            or sys.executable
+        )
+    return [python, "-P", "-m", "legis"]
 
 
 def _path_head_is_project_local(head: str, project_root: Path | None) -> bool:
@@ -730,7 +770,7 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
                 backup.name,
             )
 
-    prefix = shlex.join(_find_legis_command())
+    prefix = shlex.join(_find_legis_command(project_root))
     session_context_cmd = f"{prefix} session-context"
 
     upgraded = _upgrade_hook_commands(
@@ -968,15 +1008,19 @@ def _safe_mcp_env(env: Any) -> dict[str, str] | None:
     return safe
 
 
-def _legis_mcp_entry(agent_id: str = _DEFAULT_AGENT_ID) -> dict[str, Any]:
+def _legis_mcp_entry(
+    agent_id: str = _DEFAULT_AGENT_ID, *, project_root: Path | None = None
+) -> dict[str, Any]:
     """The canonical legis stdio server entry for .mcp.json.
 
     Splits the resolved invocation into a bare ``command`` (the executable an
     MCP client execs directly) plus ``args`` so the module-fallback form
     (``<python> -P -m legis ...``) launches correctly — a single joined string
-    in ``command`` would not be exec'd as separate argv tokens.
+    in ``command`` would not be exec'd as separate argv tokens. *project_root*
+    is threaded to ``_find_legis_command`` so a repo-venv install never pins a
+    project-local command the freshness check rejects on arrival.
     """
-    cmd = _find_legis_command()
+    cmd = _find_legis_command(project_root)
     return {
         "args": cmd[1:] + ["mcp", "--agent-id", agent_id],
         "command": cmd[0],
@@ -1062,7 +1106,7 @@ def register_mcp_json(
         _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
         return True, f"Updated legis agent-id to {keep_agent} in .mcp.json"
 
-    desired = _legis_mcp_entry(keep_agent)
+    desired = _legis_mcp_entry(keep_agent, project_root=project_root)
     if isinstance(existing, dict):
         safe_env = _safe_mcp_env(existing.get("env"))
         if safe_env is not None:
