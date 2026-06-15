@@ -145,6 +145,38 @@ def test_block_escalate_captures_loomweave_and_wardline_metadata(tmp_path):
     assert record["extensions"]["wardline"]["severity"] == "ERROR"
 
 
+def test_anchored_block_escalate_batch_advances_anchor_after_commit(tmp_path):
+    # AUD-1 regression: an anchored SignoffGate routing a block_escalate batch
+    # opens signoff.transaction(). The per-append anchor read used to call
+    # get_latest_sequence_and_hash() INSIDE the held batch — a batch-forbidden
+    # fresh-connection read (Q-M5) that raised, rolling back valid sign-offs.
+    # The anchor must instead advance once, after the batch commits.
+    from legis.store.head_anchor import HeadAnchor
+
+    key = b"anchor-key-0123456789abcdef01234"
+    store = AuditStore(f"sqlite:///{tmp_path / 'g.db'}")
+    anchor = HeadAnchor(str(tmp_path / "g.anchor"), key)
+    gate = SignoffGate(
+        store, FixedClock("2026-06-02T12:00:00+00:00"),
+        signer=True, key=key, anchor=anchor,
+    )
+    results = route_findings(
+        active_defects(_multi_scan("fp1", "fp2")),
+        policy=WardlineCellPolicy.BLOCK_ESCALATE,
+        agent_id="agent-1",
+        resolve=lambda q: (EntityKey.from_locator(q or "unknown"), {}),
+        signoff=gate,
+    )
+    assert [r["mode"] for r in results] == ["block_escalate", "block_escalate"]
+    # Both requests committed — nothing rolled back.
+    records = store.read_all()
+    assert len(records) == 2
+    # The anchor advanced to the final committed head and verifies against it.
+    head_seq, _ = store.get_latest_sequence_and_hash()
+    assert head_seq == 2
+    anchor.check(records)  # no AnchorError → anchor tracks the committed head
+
+
 def test_surface_only_records_a_non_gating_event(tmp_path):
     eng = _engine(tmp_path)
     results = route_findings(

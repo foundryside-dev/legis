@@ -210,6 +210,14 @@ class AuditStore:
             finally:
                 self._txn.conn = None
 
+    def in_batch(self) -> bool:
+        """Whether a ``transaction()`` batch is held on this thread's connection.
+
+        Lets a caller skip a fresh-connection read (forbidden mid-batch, see
+        ``_assert_no_batch_in_progress``) and defer it until the batch commits —
+        e.g. a head-anchor advance that must run after the lock is released."""
+        return getattr(self._txn, "conn", None) is not None
+
     def _assert_no_batch_in_progress(self, method: str) -> None:
         """Fail loudly if a fresh-connection read runs inside a held batch (Q-M5).
 

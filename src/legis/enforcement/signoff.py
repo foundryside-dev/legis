@@ -8,6 +8,7 @@ structured sign-offs are procedural (unsigned). Human-in-the-loop by exception.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -102,7 +103,11 @@ class SignoffGate:
             seq = self._store.append_signed(build)
         else:
             seq = self._store.append(rec.to_payload())
-        if self._anchor is not None:
+        # Advance the anchor after the commit (AUD-1) — but never mid-batch: the
+        # head read is a fresh-connection read the batch forbids (Q-M5), and a
+        # per-append advance inside a batch is wasted anyway since only the final
+        # head matters. ``transaction()`` advances it once when the batch commits.
+        if self._anchor is not None and not self._store.in_batch():
             self._anchor.update(*self._store.get_latest_sequence_and_hash())
         return seq
 
@@ -169,9 +174,19 @@ class SignoffGate:
         """The sign-off trail this gate writes to — for verified consumers."""
         return self._store.read_all()
 
+    @contextmanager
     def transaction(self):
-        """Group this gate's appends into one all-or-nothing transaction (Q-M5)."""
-        return self._store.transaction()
+        """Group this gate's appends into one all-or-nothing transaction (Q-M5).
+
+        The per-append anchor advance is deferred inside a batch (the head read
+        is batch-forbidden, Q-M5); advance it once here after the batch commits
+        and the write lock is released. An exception inside the batch rolls back
+        and propagates before this runs, so the anchor never advances past a
+        rolled-back head (AUD-1: the anchor only ever lags, never overshoots)."""
+        with self._store.transaction():
+            yield
+        if self._anchor is not None:
+            self._anchor.update(*self._store.get_latest_sequence_and_hash())
 
     def verify_integrity(self) -> bool:
         """Verify the underlying append-only hash chain before HMAC checks."""

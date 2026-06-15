@@ -284,7 +284,11 @@ class ProtectedGate:
             return payload
 
         seq = self._store.append_signed(build)
-        if self._anchor is not None:
+        # Never read the head mid-batch: it is a batch-forbidden fresh-connection
+        # read (Q-M5). The protected gate is not itself a batch owner, but it
+        # shares the governance store with the sign-off gate, so guard defensively
+        # — the next non-batch append re-advances the anchor (AUD-1 lag contract).
+        if self._anchor is not None and not self._store.in_batch():
             self._anchor.update(*self._store.get_latest_sequence_and_hash())
         signature = captured["signature"]
         return ProtectedResult(

@@ -47,6 +47,13 @@ class AppendOnlyStore(Protocol):
         empty. Used to advance an out-of-band head anchor after an append."""
         ...
 
+    def in_batch(self) -> bool:
+        """Whether a ``transaction()`` batch is currently held on this thread.
+
+        Lets an anchor-advancing caller defer the (batch-forbidden) head read
+        until the batch commits, rather than reading it per-append."""
+        ...
+
     def transaction(self) -> AbstractContextManager[None]:
         """Group appends into one all-or-nothing transaction.
 
