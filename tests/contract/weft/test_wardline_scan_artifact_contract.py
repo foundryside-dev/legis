@@ -87,6 +87,9 @@ def test_dirty_vector_governs_keyless_as_dirty(case):
     prov = verify_wardline_artifact(case["artifact"], artifact_key=None)
     assert prov["artifact_status"] == case["expected_keyless_artifact_status"]
     assert prov["commit_sha"] == case["artifact"]["commit_sha"]
+    # STRIKE D (PDR-0023): the posture must carry a machine-readable reason so a
+    # keyless-dirty pass is distinguishable from a keyless-clean unverified one.
+    assert prov["artifact_status_reason"] == "dirty_dev_artifact"
 
 
 @pytest.mark.parametrize("case", DIRTY_VECTOR["valid"], ids=_ids(DIRTY_VECTOR["valid"]))

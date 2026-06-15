@@ -19,6 +19,7 @@ from legis.doctor import (
     check_sibling_url,
     check_skill_pack,
     check_store_dir,
+    check_wardline_artifact_key,
     check_wardline_routing,
     check_weft_toml,
     collect_checks,
@@ -154,14 +155,17 @@ def test_run_doctor_healthy_after_repair(tmp_path, capsys):
 
 
 def test_run_doctor_json_format(tmp_path, capsys, monkeypatch):
-    # Clear the governance-enablement env so the two report-only N3 checks
+    # Clear the governance-enablement env so the report-only N3 checks
     # deterministically warn (an unwired fresh project). They are NOT repairable
     # (operator must set env / author cells.toml out-of-band) and are the honest
     # C-10(c) signal — so a repaired-but-ungoverned project is ok-with-warns,
-    # not error, and its only next_actions are those two enablement hints.
+    # not error, and its only next_actions are those enablement hints. STRIKE D
+    # (PDR-0023) adds runtime.wardline_artifact_key to that set: keyless dev is a
+    # legitimate warn (verification DISABLED), the recruiting advisory.
     for var in (
         "LEGIS_POLICY_CELLS", "LEGIS_DEV_DEFAULT_CELLS", "LEGIS_SOURCE_ROOT",
         "LEGIS_WARDLINE_CELL", "LEGIS_WARDLINE_CELL_BY_SEVERITY",
+        "LEGIS_WARDLINE_ARTIFACT_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
     run_doctor(tmp_path, repair=True, fmt="json")
@@ -173,6 +177,7 @@ def test_run_doctor_json_format(tmp_path, capsys, monkeypatch):
     assert {a.split(":", 1)[0] for a in payload["next_actions"]} == {
         "runtime.policy_cells",
         "runtime.wardline_routing",
+        "runtime.wardline_artifact_key",
     }
 
 
@@ -710,6 +715,47 @@ def test_wardline_routing_ok_when_cell_set(tmp_path, monkeypatch):
     monkeypatch.delenv("LEGIS_WARDLINE_CELL_BY_SEVERITY", raising=False)
     c = check_wardline_routing(tmp_path)
     assert c.status == "ok"
+
+
+# --- STRIKE D (PDR-0023): artifact-key-absent posture must be interrogable ----
+
+
+def test_wardline_artifact_key_warn_when_absent_names_the_key(tmp_path, monkeypatch):
+    # Key-absent is the confident-degraded posture: every scan governs as
+    # 'unverified' with no operator signal. Doctor must AMBER and NAME the key +
+    # the action, so "unverified because no key" is distinguishable from a real
+    # verification failure — recruit, do not just confess.
+    monkeypatch.delenv("LEGIS_WARDLINE_ARTIFACT_KEY", raising=False)
+    c = check_wardline_artifact_key(tmp_path)
+    assert c.status == "warn"
+    msg = c.message or ""
+    assert "LEGIS_WARDLINE_ARTIFACT_KEY" in msg
+    assert "unverified" in msg  # names the posture it explains
+    # repairable=False: operator-held key, out-of-band — never auto-fixed/MCP.
+    assert c.repairable is False
+
+
+def test_wardline_artifact_key_ok_when_set(tmp_path, monkeypatch):
+    monkeypatch.setenv("LEGIS_WARDLINE_ARTIFACT_KEY", "operator-held-secret")
+    c = check_wardline_artifact_key(tmp_path)
+    assert c.status == "ok"
+
+
+def test_wardline_artifact_key_never_prints_value(tmp_path, monkeypatch):
+    # C-8: presence-only; the key value must never leak into the message.
+    monkeypatch.setenv("LEGIS_WARDLINE_ARTIFACT_KEY", "operator-held-secret")
+    c = check_wardline_artifact_key(tmp_path)
+    assert "operator-held-secret" not in (c.message or "")
+
+
+def test_collect_checks_includes_artifact_key_amber(tmp_path, monkeypatch):
+    # The amber must surface through the aggregate doctor report (next_actions),
+    # not just the isolated check — that is the surface an operator/agent reads.
+    monkeypatch.delenv("LEGIS_WARDLINE_ARTIFACT_KEY", raising=False)
+    checks = collect_checks(tmp_path, repair=False)
+    artifact = [c for c in checks if c.id == "runtime.wardline_artifact_key"]
+    assert len(artifact) == 1
+    assert artifact[0].status == "warn"
 
 
 def test_n3_checks_never_write_files_or_render_keys(tmp_path, monkeypatch):

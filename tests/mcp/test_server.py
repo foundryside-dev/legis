@@ -1067,6 +1067,9 @@ def test_scan_route_requires_exactly_one_cell_spec_and_routes_findings(tmp_path,
         "outcome": "ROUTED",
         # opp #6: scan-level posture echoed at the root (keyless + unsigned here).
         "artifact_status": "unverified",
+        # STRIKE D (PDR-0023): the unverified posture names WHY — key-absent
+        # (verification DISABLED), distinguishable from a verification failure.
+        "artifact_status_reason": "key_absent",
         "routed": [
             {
                 "mode": "surface_override",

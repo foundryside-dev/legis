@@ -519,6 +519,40 @@ def check_wardline_routing(root: Path) -> DoctorCheck:  # noqa: ARG001
     )
 
 
+def check_wardline_artifact_key(root: Path) -> DoctorCheck:  # noqa: ARG001
+    """Report-only (N3 / C-10(c)): is the wardline->legis artifact verification
+    key configured? Presence-only; NEVER renders the key value (C-8).
+
+    The honesty defect this closes (PDR-0023): without
+    ``LEGIS_WARDLINE_ARTIFACT_KEY`` every wardline scan governs as
+    ``artifact_status: "unverified"`` — a confident-degraded posture with no
+    operator-facing signal, byte-indistinguishable from a per-scan verification
+    that genuinely failed. The operator/agent has no way to tell "unverified
+    because nobody configured a key" from "unverified because verification
+    failed". So doctor goes AMBER (warn) when the key is absent and NAMES the
+    missing key plus the action to fix it — a recruiting advisory, not a silent
+    confession.
+
+    This is deliberately a warn, not an error: keyless dev is a legitimate,
+    permissive posture (scans still govern). The amber is the recruiting signal
+    that CI-grade signed verification is DISABLED and how to enable it."""
+    cid = "runtime.wardline_artifact_key"
+    if os.environ.get("LEGIS_WARDLINE_ARTIFACT_KEY"):
+        return DoctorCheck(cid, "ok")
+    return DoctorCheck(
+        cid,
+        "warn",
+        message=(
+            "LEGIS_WARDLINE_ARTIFACT_KEY not set — wardline artifact verification "
+            "is DISABLED. Every scan governs as artifact_status=unverified "
+            "(reason=key_absent), indistinguishable from a real verification "
+            "failure. Set LEGIS_WARDLINE_ARTIFACT_KEY (operator-held, out-of-band; "
+            "takes effect on relaunch) to require signed scanner/rule-set/commit/"
+            "tree provenance and govern as 'verified'"
+        ),
+    )
+
+
 def check_sibling_url(cid: str, env: str) -> DoctorCheck:
     url = os.environ.get(env)
     if not url:
@@ -637,6 +671,7 @@ def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:
     checks.append(check_hmac_key(root))
     checks.append(check_policy_cells(root))
     checks.append(check_wardline_routing(root))
+    checks.append(check_wardline_artifact_key(root))
     checks.append(check_sibling_url("runtime.loomweave_url", "LOOMWEAVE_API_URL"))
     checks.append(check_sibling_url("runtime.filigree_url", "FILIGREE_API_URL"))
     return checks

@@ -786,6 +786,10 @@ def create_app(
             "outcome": ScanOutcome.ROUTED,
             "routed": result.routed,
             "artifact_status": result.artifact_status,
+            # The honesty surface: distinguishes key-absent (verification
+            # DISABLED) from a key that failed to verify, identical contract to
+            # the MCP scan_route surface (PDR-0023).
+            "artifact_status_reason": result.artifact_status_reason,
         }
 
     return app

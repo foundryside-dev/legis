@@ -68,7 +68,12 @@ from legis.service.governance import (
 )
 from legis.service.wardline import resolve_scan_routing, route_wardline_scan
 from legis.store.audit_store import AuditStore
-from legis.wardline.ingest import ArtifactStatus, ScanOutcome, WardlineDirtyTreeError
+from legis.wardline.ingest import (
+    ArtifactStatus,
+    ArtifactStatusReason,
+    ScanOutcome,
+    WardlineDirtyTreeError,
+)
 
 
 _AGENT_TOOLS = frozenset(
@@ -465,13 +470,17 @@ def tool_definitions() -> list[dict[str, Any]]:
     scan_route_out = _one_of(
         [
             _schema(
-                ["outcome", "routed", "artifact_status"],
+                ["outcome", "routed", "artifact_status", "artifact_status_reason"],
                 {
                     "outcome": {"const": ScanOutcome.ROUTED.value},
                     "routed": {"type": "array", "items": routed_item},
                     "artifact_status": {
                         "type": "string",
                         "enum": [status.value for status in ArtifactStatus],
+                    },
+                    "artifact_status_reason": {
+                        "type": "string",
+                        "enum": [reason.value for reason in ArtifactStatusReason],
                     },
                 },
             ),
@@ -1879,6 +1888,10 @@ def _tool_scan_route(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any
             "outcome": ScanOutcome.ROUTED,
             "routed": result.routed,
             "artifact_status": result.artifact_status,
+            # The honesty surface: distinguishes key-absent (verification
+            # DISABLED) from a key that failed to verify (PDR-0023). Always
+            # present — no status without its reason.
+            "artifact_status_reason": result.artifact_status_reason,
         }
     )
 

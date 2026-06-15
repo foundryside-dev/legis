@@ -81,6 +81,36 @@ class ArtifactStatus(str, Enum):
     UNVERIFIED = "unverified"
 
 
+class ArtifactStatusReason(str, Enum):
+    """The machine-readable *why* behind an ``artifact_status`` (str,Enum —
+    bare-string wire), the honesty surface for the wardline->legis attest seam.
+
+    The defect this kills (PDR-0023): an ``"unverified"`` posture is otherwise
+    byte-indistinguishable between "unverified because nobody configured a
+    verification key" (a DISABLED/not-configured state) and "unverified because
+    a present key failed to verify" (tamper/mismatch). A bare ``"unverified"``
+    confesses degradation without saying which — a confident-degraded answer
+    masquerading as a normal state. Every status now carries its reason so an
+    agent/operator can distinguish the cases without re-deriving them.
+
+    Note that with the current code path ``KEY_ABSENT`` is the ONLY route to
+    ``UNVERIFIED`` — an actually-present key that fails to verify raises
+    :class:`WardlinePayloadError` (a loud red), never a quiet ``"unverified"``.
+    The reason makes that contract legible on the wire instead of implicit in
+    the control flow: a downstream consumer reading ``key_absent`` knows the
+    posture is "verification is DISABLED on this server", not "verification ran
+    and failed". The remaining members are emitted so the field is never absent
+    (no status without its provenance — the lead-summary discipline)."""
+
+    # UNVERIFIED: no LEGIS_WARDLINE_ARTIFACT_KEY configured — verification is
+    # DISABLED, not failed. This is the recruiting signal legis doctor ambers on.
+    KEY_ABSENT = "key_absent"
+    # DIRTY: an unsigned dirty-tree dev artifact, governed unsigned.
+    DIRTY_DEV_ARTIFACT = "dirty_dev_artifact"
+    # VERIFIED: a configured key verified the signed provenance.
+    SIGNATURE_VERIFIED = "signature_verified"
+
+
 class ScanOutcome(str, Enum):
     """The ``scan_route`` boundary outcome (str,Enum — bare-string wire).
 
@@ -209,6 +239,11 @@ def verify_wardline_artifact(
     fields = wardline_artifact_fields(scan)
     provenance: dict[str, Any] = {
         "artifact_status": ArtifactStatus.UNVERIFIED,
+        # The honesty surface: a bare "unverified" cannot distinguish
+        # key-absent (verification DISABLED) from a key that failed to verify.
+        # KEY_ABSENT is the only route to UNVERIFIED here (a present-but-bad key
+        # raises WardlinePayloadError), so name it explicitly on the wire.
+        "artifact_status_reason": ArtifactStatusReason.KEY_ABSENT,
     }
     for key in ARTIFACT_PROVENANCE_FIELDS:
         value = scan.get(key)
@@ -223,6 +258,9 @@ def verify_wardline_artifact(
     if artifact_key is None:
         if is_dirty_dev_artifact:
             provenance["artifact_status"] = ArtifactStatus.DIRTY
+            provenance["artifact_status_reason"] = (
+                ArtifactStatusReason.DIRTY_DEV_ARTIFACT
+            )
         return provenance
 
     if is_dirty_dev_artifact:
@@ -235,6 +273,7 @@ def verify_wardline_artifact(
             )
         return {
             "artifact_status": ArtifactStatus.DIRTY,
+            "artifact_status_reason": ArtifactStatusReason.DIRTY_DEV_ARTIFACT,
             **{key: value for key in ARTIFACT_PROVENANCE_FIELDS
                if isinstance(value := scan.get(key), str) and value},
         }
@@ -255,6 +294,7 @@ def verify_wardline_artifact(
         raise WardlinePayloadError("Wardline artifact signature does not verify")
     return {
         "artifact_status": ArtifactStatus.VERIFIED,
+        "artifact_status_reason": ArtifactStatusReason.SIGNATURE_VERIFIED,
         **{key: scan[key] for key in ARTIFACT_PROVENANCE_FIELDS},
         "artifact_signature": signature,
     }

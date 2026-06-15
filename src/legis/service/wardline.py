@@ -180,10 +180,17 @@ class RoutedScan:
     caller can echo dev-grade-vs-CI-grade at the response root instead of leaving
     it buried in each routed record's provenance — and absent entirely when
     nothing routes (opp #6 / vacuous-green, same class as wardline W2).
+
+    ``artifact_status_reason`` is the honesty surface for the status: a bare
+    ``"unverified"`` cannot distinguish key-absent (verification DISABLED) from a
+    key that failed to verify, so the reason (``key_absent`` /
+    ``dirty_dev_artifact`` / ``signature_verified``) rides at the root too. It is
+    always present — no posture without its provenance (PDR-0023).
     """
 
     routed: list[dict[str, Any]]
     artifact_status: str
+    artifact_status_reason: str
 
 
 def route_wardline_scan(
@@ -238,4 +245,5 @@ def route_wardline_scan(
     return RoutedScan(
         routed=routed,
         artifact_status=artifact_provenance["artifact_status"],
+        artifact_status_reason=artifact_provenance["artifact_status_reason"],
     )

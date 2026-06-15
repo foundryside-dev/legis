@@ -10,6 +10,7 @@ from legis.wardline.ingest import (
     KNOWN_KINDS,
     TRUST_TIERS,
     ArtifactStatus,
+    ArtifactStatusReason,
     ScanOutcome,
     Suppressed,
     WardlineFinding,
@@ -279,12 +280,59 @@ def test_keyless_dirty_artifact_governs_with_honest_dirty_status():
     # from a clean unsigned one.
     prov = verify_wardline_artifact(_artifact(dirty=True), None)
     assert prov["artifact_status"] == "dirty"
+    assert prov["artifact_status_reason"] == "dirty_dev_artifact"
     assert prov["commit_sha"] == "a" * 40
 
 
 def test_keyless_clean_unsigned_artifact_stays_unverified():
     prov = verify_wardline_artifact(_artifact(), None)
     assert prov["artifact_status"] == "unverified"
+
+
+# --- STRIKE D (PDR-0023): the unverified posture must carry its reason --------
+
+
+def test_keyless_unverified_carries_key_absent_reason():
+    # THE honesty golden: a bare 'unverified' is byte-indistinguishable between
+    # "no key configured (DISABLED)" and "a key failed to verify". KEY_ABSENT is
+    # the only route to UNVERIFIED here, so it must say so on the wire — the
+    # operator/agent can now distinguish disabled-verification from a failure.
+    prov = verify_wardline_artifact(_artifact(), None)
+    assert prov["artifact_status"] == "unverified"
+    assert prov["artifact_status_reason"] == "key_absent"
+    assert prov["artifact_status_reason"] == ArtifactStatusReason.KEY_ABSENT
+
+
+def test_every_artifact_status_carries_a_reason():
+    # No posture without its provenance: every status the function can return
+    # carries a machine-readable reason, and each reason is distinct so the
+    # three outcomes (disabled / dirty-dev / verified) never collapse together.
+    keyless_clean = verify_wardline_artifact(_artifact(), None)
+    keyless_dirty = verify_wardline_artifact(_artifact(dirty=True), None)
+    signed = verify_wardline_artifact(_artifact(signed=True), _KEY)
+    reasons = {
+        keyless_clean["artifact_status_reason"],
+        keyless_dirty["artifact_status_reason"],
+        signed["artifact_status_reason"],
+    }
+    assert reasons == {"key_absent", "dirty_dev_artifact", "signature_verified"}
+    # The reason is always present (never absent / None).
+    for prov in (keyless_clean, keyless_dirty, signed):
+        assert prov.get("artifact_status_reason")
+
+
+def test_artifact_status_reason_is_byte_identical_to_bare_string():
+    # str,Enum wire contract: the reason serializes EXACTLY like its bare string
+    # through json/canonical/content-hash, like the sibling ArtifactStatus.
+    for member, raw in [
+        (ArtifactStatusReason.KEY_ABSENT, "key_absent"),
+        (ArtifactStatusReason.DIRTY_DEV_ARTIFACT, "dirty_dev_artifact"),
+        (ArtifactStatusReason.SIGNATURE_VERIFIED, "signature_verified"),
+    ]:
+        assert member == raw
+        assert json.dumps({"k": member}) == json.dumps({"k": raw})
+        assert canonical_json({"k": member}) == canonical_json({"k": raw})
+        assert content_hash({"k": member}) == content_hash({"k": raw})
 
 
 def test_ci_dirty_without_devmode_is_typed_amber_skip_not_red():
@@ -363,6 +411,7 @@ def test_signed_dirty_artifact_verifies_normally():
     scan = _artifact(dirty=True, signed=True)
     prov = verify_wardline_artifact(scan, _KEY, allow_dirty=False)
     assert prov["artifact_status"] == "verified"
+    assert prov["artifact_status_reason"] == "signature_verified"
 
 
 def test_ci_posture_missing_provenance_field_is_red():
