@@ -43,7 +43,7 @@ from legis.enforcement.signoff import SignoffGate
 from legis.git.pull_request import PullRequestSource
 from legis.git.rename_feed import build_rename_feed
 from legis.git.surface import GitError, GitSurface
-from legis.filigree.client import FiligreeClient
+from legis.filigree.client import FiligreeClient, FiligreeError
 from legis.governance.binding_ledger import BindingError, BindingLedger
 from legis.identity.entity_key import EntityKey
 from legis.identity.resolver import IdentityResolver
@@ -681,6 +681,14 @@ def create_app(
         except BindingUnavailableError as exc:
             # A locator-keyed (non-SEI) sign-off can't be rename-stably bound.
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FiligreeError as exc:
+            # Filigree is wired but down, redirecting, or returned malformed data.
+            # Nothing was bound; this is recoverable (retry after Filigree is
+            # healthy), so surface a typed 502 — the MCP adapter maps the same
+            # condition to FILIGREE_UNAVAILABLE — instead of an untyped 500.
+            raise HTTPException(
+                status_code=502, detail=f"filigree unavailable: {exc}"
+            ) from exc
 
     @app.get("/signoff/{request_seq}/binding")
     def get_binding(request_seq: int) -> dict:

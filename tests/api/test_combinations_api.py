@@ -100,6 +100,33 @@ def test_bind_issue_endpoint_attaches_sei_from_cleared_record(tmp_path):
     assert fil.attached == [("ISSUE-1", "loomweave:eid:abc", "", "legis", req.seq, None)]
 
 
+def test_bind_issue_endpoint_maps_filigree_failure_to_502(tmp_path):
+    # Filigree wired but down/redirecting/malformed: nothing bound, recoverable.
+    # The route must surface a typed 502 (parity with the MCP adapter's
+    # FILIGREE_UNAVAILABLE), not let FiligreeError escape as an untyped 500.
+    from legis.filigree.client import FiligreeError
+
+    class _DownFiligree(_FakeFiligree):
+        def attach(self, *a, **k):
+            raise FiligreeError("POST /attach connection refused")
+
+    gate = SignoffGate(AuditStore(f"sqlite:///{tmp_path / 'sg.db'}"),
+                       FixedClock("2026-06-02T12:00:00+00:00"))
+    req = gate.request(
+        policy="PY-WL-101",
+        entity_key=EntityKey.from_sei("loomweave:eid:abc"),
+        rationale="needs a human",
+        agent_id="agent-1",
+    )
+    gate.sign_off(request_seq=req.seq, operator_id="operator-1")
+
+    c = _client(tmp_path, filigree=_DownFiligree(), signoff_gate=gate)
+    resp = c.post(f"/signoff/{req.seq}/bind-issue", json={"issue_id": "ISSUE-1"})
+
+    assert resp.status_code == 502
+    assert "filigree unavailable" in resp.json()["detail"]
+
+
 def test_bind_issue_endpoint_uses_resolved_backfill_for_locator_keyed_request(tmp_path):
     fil = _FakeFiligree()
     store = AuditStore(f"sqlite:///{tmp_path / 'sg.db'}")
