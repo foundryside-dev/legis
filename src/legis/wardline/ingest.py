@@ -111,6 +111,63 @@ class ArtifactStatusReason(str, Enum):
     SIGNATURE_VERIFIED = "signature_verified"
 
 
+# --- Weft canonical reason vocabulary (G1) -------------------------------------
+# Source of truth: /home/john/weft/contracts/weft-reason-vocab.json (the closed
+# 11 reason_classes + the carrier rule). ``ArtifactStatusReason`` values above are
+# DOMAIN terms (the shipped wire field ``artifact_status_reason``), NOT canonical.
+# This map adds a canonical ``reason_class`` ALONGSIDE the domain term — additive,
+# never renaming or dropping the shipped field. The domain term stays in
+# ``cause`` so no information is lost. Mappings (justified):
+#   key_absent          -> disabled  (verification capability not configured / off)
+#   dirty_dev_artifact  -> stale     (a real-but-degraded dev artifact, governed
+#                                      unsigned: accepted yet older/looser than the
+#                                      clean-tree signed anchor — qualified trust)
+#   signature_verified  -> clean     (earned, complete true-negative; carrier omits
+#                                      cause + fix)
+# A subset-conformance test (tests/wardline/test_reason_vocab_conformance.py)
+# asserts this map's range stays within the canonical 11 and covers every
+# ArtifactStatusReason member, and that the carrier rule holds.
+ARTIFACT_STATUS_REASON_TO_CANONICAL: Mapping[ArtifactStatusReason, str] = {
+    ArtifactStatusReason.KEY_ABSENT: "disabled",
+    ArtifactStatusReason.DIRTY_DEV_ARTIFACT: "stale",
+    ArtifactStatusReason.SIGNATURE_VERIFIED: "clean",
+}
+
+# The carrier (cause + fix) for each non-clean canonical reason_class. The domain
+# term lives in ``cause``; ``fix`` is MANDATORY on every non-clean carrier and
+# omitted only for ``clean`` (``signature_verified``).
+_REASON_CARRIER: Mapping[ArtifactStatusReason, dict[str, str]] = {
+    ArtifactStatusReason.KEY_ABSENT: {
+        "cause": "key_absent: no LEGIS_WARDLINE_ARTIFACT_KEY configured — "
+        "artifact verification is disabled, not failed.",
+        "fix": "Configure LEGIS_WARDLINE_ARTIFACT_KEY to enable signed-artifact "
+        "verification (operator, out-of-band).",
+    },
+    ArtifactStatusReason.DIRTY_DEV_ARTIFACT: {
+        "cause": "dirty_dev_artifact: an unsigned dirty-tree dev artifact, "
+        "governed unsigned — degraded relative to a clean-tree signed anchor.",
+        "fix": "Commit your working tree for a signed Wardline artifact "
+        "(signing is clean-tree-only).",
+    },
+}
+
+
+def canonical_reason_carrier(reason: ArtifactStatusReason) -> dict[str, str]:
+    """The Weft-canonical carrier for an ``artifact_status_reason``.
+
+    Returns ``{"reason_class": <one of the canonical 11>}`` for a ``clean`` result
+    (carrier omits ``cause`` + ``fix``), and
+    ``{"reason_class", "cause", "fix"}`` for every non-clean result (``fix`` is
+    MANDATORY). This is ADDITIVE: callers merge it alongside the shipped
+    ``artifact_status_reason`` field; the domain term is preserved in ``cause``.
+    """
+    reason_class = ARTIFACT_STATUS_REASON_TO_CANONICAL[reason]
+    carrier: dict[str, str] = {"reason_class": reason_class}
+    if reason_class != "clean":
+        carrier.update(_REASON_CARRIER[reason])
+    return carrier
+
+
 class ScanOutcome(str, Enum):
     """The ``scan_route`` boundary outcome (str,Enum — bare-string wire).
 
@@ -244,6 +301,8 @@ def verify_wardline_artifact(
         # KEY_ABSENT is the only route to UNVERIFIED here (a present-but-bad key
         # raises WardlinePayloadError), so name it explicitly on the wire.
         "artifact_status_reason": ArtifactStatusReason.KEY_ABSENT,
+        # Weft-canonical reason_class ALONGSIDE the domain term (G1, additive).
+        **canonical_reason_carrier(ArtifactStatusReason.KEY_ABSENT),
     }
     for key in ARTIFACT_PROVENANCE_FIELDS:
         value = scan.get(key)
@@ -261,6 +320,11 @@ def verify_wardline_artifact(
             provenance["artifact_status_reason"] = (
                 ArtifactStatusReason.DIRTY_DEV_ARTIFACT
             )
+            # Re-derive the canonical carrier for the new reason (key_absent ->
+            # dirty_dev_artifact: disabled -> stale, with its own cause + fix).
+            provenance.update(
+                canonical_reason_carrier(ArtifactStatusReason.DIRTY_DEV_ARTIFACT)
+            )
         return provenance
 
     if is_dirty_dev_artifact:
@@ -274,6 +338,7 @@ def verify_wardline_artifact(
         return {
             "artifact_status": ArtifactStatus.DIRTY,
             "artifact_status_reason": ArtifactStatusReason.DIRTY_DEV_ARTIFACT,
+            **canonical_reason_carrier(ArtifactStatusReason.DIRTY_DEV_ARTIFACT),
             **{key: value for key in ARTIFACT_PROVENANCE_FIELDS
                if isinstance(value := scan.get(key), str) and value},
         }
@@ -295,6 +360,8 @@ def verify_wardline_artifact(
     return {
         "artifact_status": ArtifactStatus.VERIFIED,
         "artifact_status_reason": ArtifactStatusReason.SIGNATURE_VERIFIED,
+        # clean: the carrier is just reason_class (omits cause + fix).
+        **canonical_reason_carrier(ArtifactStatusReason.SIGNATURE_VERIFIED),
         **{key: scan[key] for key in ARTIFACT_PROVENANCE_FIELDS},
         "artifact_signature": signature,
     }
