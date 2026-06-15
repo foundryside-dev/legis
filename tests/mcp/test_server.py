@@ -2932,7 +2932,13 @@ def test_policy_boundary_check_pass_on_clean_tree(tmp_path):
 
     result = call_tool(runtime, "policy_boundary_check", {})
 
-    assert result["structuredContent"] == {"outcome": "PASS", "findings": []}
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "PASS"
+    assert payload["findings"] == []
+    # The result now echoes what was scanned so a wrong-but-existing default root
+    # is visible rather than silently trusted.
+    assert payload["scanned_root"] == str(src)
+    assert payload["repo_root"] == str(tmp_path)
 
 
 def test_policy_boundary_check_reports_findings(tmp_path):
@@ -2977,6 +2983,69 @@ def test_policy_boundary_check_resolves_relative_roots_against_repo_root(tmp_pat
     payload = result["structuredContent"]
     assert payload["outcome"] == "FINDINGS"
     assert payload["findings"][0]["file_path"] == "lib/x.py"
+
+
+# --- fix/legis-policy-boundary-no-vacuous-pass: never PASS on a zero-file scan ---
+# Friction D (cf. weft-ef2e898642 silent-clean-on-zero-scope): a governance gate
+# that returns PASS/findings=[] when the resolved scan root is nonexistent or
+# holds zero analyzable source files is a vacuous green. The surface must return
+# a DISTINCT discriminated outcome (NO_ROOT), never PASS.
+
+
+def test_policy_boundary_check_no_root_when_default_src_missing(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    # repo_root resolves to tmp_path (no src/ layout) -> default <repo_root>/src
+    # does not exist. Must NOT read as a clean PASS.
+    (tmp_path / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "policy_boundary_check", {})
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "NO_ROOT"
+    assert payload["findings"] == []
+    assert "scanned_root" in payload
+
+
+def test_policy_boundary_check_no_root_when_root_has_zero_source_files(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    # The root EXISTS but contains zero analyzable .py files. Scanning it yields
+    # zero findings, which must NOT collapse to PASS.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "README.md").write_text("# docs only, no python\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "policy_boundary_check", {})
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "NO_ROOT"
+    assert payload["findings"] == []
+
+
+def test_policy_boundary_check_no_root_when_explicit_root_nonexistent(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(
+        runtime, "policy_boundary_check", {"root": str(tmp_path / "nope")}
+    )
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "NO_ROOT"
+    assert payload["findings"] == []
+    assert str(tmp_path / "nope") in payload["scanned_root"]
+
+
+def test_policy_boundary_check_outcome_schema_includes_no_root():
+    from legis.mcp import tool_definitions
+
+    tool = next(t for t in tool_definitions() if t["name"] == "policy_boundary_check")
+    enum = tool["outputSchema"]["properties"]["outcome"]["enum"]
+    assert set(enum) == {"PASS", "FINDINGS", "NO_ROOT"}
 
 
 # --- legis-1611d1673f: pull_request_get number schema/handler type agreement ---

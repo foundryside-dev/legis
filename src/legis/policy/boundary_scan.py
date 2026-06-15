@@ -81,6 +81,22 @@ def scan_policy_boundaries(
     return findings
 
 
+def count_source_files(root: str | Path) -> int:
+    """Count the analyzable Python files under *root*.
+
+    The single source of truth for "did the scan actually look at anything".
+    Counts exactly the set ``scan_policy_boundaries`` would walk (``*.py`` under
+    *root*), so a surface can distinguish "scanned N>=1 files, 0 findings ->
+    PASS" from "scanned 0 files / root missing -> NO_ROOT". A governance gate
+    must never report PASS for a zero-file scan (weft-ef2e898642
+    silent-clean-on-zero-scope). A missing root counts as zero.
+    """
+    scan_root = Path(root)
+    if not scan_root.exists():
+        return 0
+    return sum(1 for _ in scan_root.rglob("*.py"))
+
+
 def _too_complex_finding(display_path: str) -> BoundaryFinding:
     return BoundaryFinding(
         "POLICY_BOUNDARY_FILE_TOO_COMPLEX",

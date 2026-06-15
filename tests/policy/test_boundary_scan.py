@@ -655,3 +655,40 @@ def test_memory_exhaustion_degrades_per_file_and_scan_continues(
     # Scan must have continued past the memory bomb.
     sibling = [f for f in findings if f.rule_id == "POLICY_BOUNDARY_TEST_REF_MISSING"]
     assert len(sibling) == 1, f"sibling file was not scanned; got {rule_ids}"
+
+
+# --- fix/legis-policy-boundary-no-vacuous-pass: count_source_files ---
+# A governance gate that PASSES on a zero-file scan is a vacuous green (the
+# weft-ef2e898642 silent-clean-on-zero-scope failure class). The surfaces
+# (MCP + CLI) need to distinguish "scanned N>=1 files, 0 findings -> PASS" from
+# "scanned 0 files / root missing -> NO_ROOT". count_source_files is the single
+# source of truth for "did we actually scan anything", counting exactly the set
+# scan_policy_boundaries would walk.
+
+
+def test_count_source_files_counts_python_files_recursively(tmp_path: Path) -> None:
+    from legis.policy.boundary_scan import count_source_files
+
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (pkg / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (pkg / "notes.txt").write_text("not python\n", encoding="utf-8")
+
+    assert count_source_files(tmp_path / "src") == 2
+
+
+def test_count_source_files_zero_for_empty_dir(tmp_path: Path) -> None:
+    from legis.policy.boundary_scan import count_source_files
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "README.md").write_text("# no python here\n", encoding="utf-8")
+
+    assert count_source_files(empty) == 0
+
+
+def test_count_source_files_zero_for_missing_dir(tmp_path: Path) -> None:
+    from legis.policy.boundary_scan import count_source_files
+
+    assert count_source_files(tmp_path / "does-not-exist") == 0

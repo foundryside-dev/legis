@@ -1032,10 +1032,16 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "Read-only scan validating @policy_boundary declarations "
                 "against current behavioural evidence (the policy-authoring "
                 "loop's `legis policy-boundary-check`). Returns a "
-                "discriminated outcome: PASS (no findings) or FINDINGS with "
-                "the findings list. root defaults to <repo_root>/src and "
-                "repo_root to the server's source root; relative paths "
-                "resolve against repo_root."
+                "discriminated outcome: PASS (>=1 file scanned, no findings), "
+                "FINDINGS with the findings list, or NO_ROOT when the scan "
+                "looked at nothing — the resolved root does not exist OR holds "
+                "zero analyzable Python files. A zero-file scan is NEVER a clean "
+                "PASS; on NO_ROOT pass an explicit `root` (and `repo_root` if "
+                "needed). root defaults to <repo_root>/src and repo_root to the "
+                "server's source root (its launch working directory); relative "
+                "paths resolve against repo_root. The result always echoes "
+                "`scanned_root` and `repo_root` so a wrong-but-existing default "
+                "(e.g. the server's own source) is visible, not silently trusted."
             ),
             "inputSchema": _schema(
                 [],
@@ -1044,7 +1050,10 @@ def tool_definitions() -> list[dict[str, Any]]:
             "outputSchema": _schema(
                 ["outcome", "findings"],
                 {
-                    "outcome": {"type": "string", "enum": ["PASS", "FINDINGS"]},
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["PASS", "FINDINGS", "NO_ROOT"],
+                    },
                     "findings": {
                         "type": "array",
                         "items": _schema(
@@ -1058,6 +1067,9 @@ def tool_definitions() -> list[dict[str, Any]]:
                             },
                         ),
                     },
+                    "scanned_root": string,
+                    "repo_root": string,
+                    "detail": string,
                 },
             ),
         },
@@ -2084,7 +2096,7 @@ def _tool_doctor_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any
 
 
 def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
-    from legis.policy.boundary_scan import scan_policy_boundaries
+    from legis.policy.boundary_scan import count_source_files, scan_policy_boundaries
 
     source_root = Path(runtime.source_root or os.getcwd())
     repo_root_arg = _optional_string(args, "repo_root")
@@ -2095,11 +2107,48 @@ def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> di
     root = Path(root_arg) if root_arg else repo_root / "src"
     if not root.is_absolute():
         root = repo_root / root
+    # Gate honesty (cf. weft-ef2e898642 silent-clean-on-zero-scope): a scan that
+    # looked at NOTHING yields zero findings, which would otherwise read as a
+    # clean PASS — a vacuous green, the exact failure class of the prior
+    # --root-empty silent-clean bug. Two ways to scan nothing: the root does not
+    # exist, or it exists but holds zero analyzable .py files. Both bite when no
+    # `root` is given and the default `<repo_root>/src` is wrong — a project
+    # whose source lives elsewhere (e.g. `specimen/`), or a federation server
+    # whose repo_root is not its own source. Surface NO_ROOT instead of PASS so
+    # the caller knows nothing was scanned, and always echo what WAS scanned so a
+    # wrong-but-existing root (e.g. the server's own source) is visible rather
+    # than silently trusted.
+    source_file_count = count_source_files(root)
+    if source_file_count == 0:
+        if not root.exists():
+            detail = (
+                f"scan root {root} does not exist; nothing was scanned. Pass an "
+                "explicit `root` (and `repo_root` if needed) pointing at the "
+                "project's Python source — the default <repo_root>/src was not found."
+            )
+        else:
+            detail = (
+                f"scan root {root} contains no analyzable Python files; nothing "
+                "was scanned. Pass an explicit `root` (and `repo_root` if needed) "
+                "pointing at the project's Python source — a zero-file scan is "
+                "never a clean PASS."
+            )
+        return _tool_result(
+            {
+                "outcome": "NO_ROOT",
+                "findings": [],
+                "scanned_root": str(root),
+                "repo_root": str(repo_root),
+                "detail": detail,
+            }
+        )
     findings = scan_policy_boundaries(root, repo_root=repo_root)
     return _tool_result(
         {
             "outcome": "FINDINGS" if findings else "PASS",
             "findings": [finding.to_dict() for finding in findings],
+            "scanned_root": str(root),
+            "repo_root": str(repo_root),
         }
     )
 

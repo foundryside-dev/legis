@@ -401,7 +401,51 @@ def main(argv: list[str] | None = None, *, run=uvicorn.run) -> int:
         return mcp_main(args.agent_id)
 
     if args.command == "policy-boundary-check":
-        findings = scan_policy_boundaries(args.root, repo_root=args.repo_root)
+        from pathlib import Path
+
+        from legis.policy.boundary_scan import count_source_files
+
+        # repo_root defaults to "." (the real working directory); a relative
+        # --root resolves against it so a misrouted repo_root cannot silently
+        # scan the wrong tree.
+        repo_root = Path(args.repo_root)
+        root = Path(args.root)
+        if not root.is_absolute():
+            root = repo_root / root
+        # Gate honesty (cf. weft-ef2e898642 silent-clean-on-zero-scope): a scan
+        # that looked at NOTHING — missing root, or a root with zero analyzable
+        # .py files — must NOT report a clean PASS. Surface NO_ROOT and a nonzero
+        # exit so CI cannot mistake a vacuous green for a real one.
+        if count_source_files(root) == 0:
+            if not root.exists():
+                detail = (
+                    f"scan root {root} does not exist; nothing was scanned. "
+                    "Pass --root pointing at the project's Python source."
+                )
+            else:
+                detail = (
+                    f"scan root {root} contains no analyzable Python files; "
+                    "nothing was scanned. Pass --root pointing at the project's "
+                    "Python source — a zero-file scan is never a clean PASS."
+                )
+            if args.format == "json":
+                print(
+                    json.dumps(
+                        {
+                            "outcome": "NO_ROOT",
+                            "findings": [],
+                            "scanned_root": str(root),
+                            "repo_root": str(repo_root),
+                            "detail": detail,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(f"policy-boundary-check: NO_ROOT: {detail}")
+            return 2
+
+        findings = scan_policy_boundaries(root, repo_root=args.repo_root)
         if args.format == "json":
             print(json.dumps([f.to_dict() for f in findings], sort_keys=True))
         elif findings:

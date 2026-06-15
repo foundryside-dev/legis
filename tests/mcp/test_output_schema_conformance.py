@@ -510,3 +510,31 @@ def test_policy_boundary_check_conforms_pass_and_findings(tmp_path):
     )
     found = _conformant(runtime, "policy_boundary_check", {})
     assert found["outcome"] == "FINDINGS"
+
+
+def test_policy_boundary_check_no_root_instead_of_vacuous_pass(tmp_path):
+    """A project whose source is not <repo_root>/src (e.g. specimen/) must not
+    read as a clean PASS when scanned with no explicit root. A non-existent
+    default root yields zero findings, which would otherwise be a vacuous green —
+    the silent-clean-on-zero-scope footgun (cf. weft-ef2e898642). The tool returns
+    NO_ROOT and echoes the root it tried, so the miss is visible."""
+    from legis.mcp import McpRuntime
+
+    # Source lives in specimen/, not src/ — so the default <repo_root>/src is absent.
+    (tmp_path / "specimen").mkdir()
+    (tmp_path / "specimen" / "app.py").write_text(
+        "def f():\n    return 1\n", encoding="utf-8"
+    )
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
+
+    missed = _conformant(runtime, "policy_boundary_check", {})
+    assert missed["outcome"] == "NO_ROOT"
+    assert missed["findings"] == []
+    assert missed["scanned_root"].endswith("src")
+
+    # Pointed at the real source explicitly, it scans (a clean PASS here is honest).
+    scanned = _conformant(runtime, "policy_boundary_check", {"root": "specimen"})
+    assert scanned["outcome"] == "PASS"
+    assert scanned["scanned_root"].endswith("specimen")
