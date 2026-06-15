@@ -109,7 +109,7 @@ load-bearing.
 | `LEGIS_POLICY_CELLS` | Path to the cell-registry TOML (highest-precedence routing source). |
 | `LEGIS_PROTECTED_POLICIES` | Comma-separated policy names that *declare* themselves protected. Drives a config-hygiene warning + the read-side signature requirement; it does **not** by itself route a policy to the protected cell (the registry does). |
 | `LEGIS_WARDLINE_CELL` | The single cell `scan_route` routes Wardline findings into (server-owned routing). |
-| `LEGIS_WARDLINE_CELL_BY_SEVERITY` | A severity→cell map for `scan_route` (e.g. critical→protected, warn→chill). |
+| `LEGIS_WARDLINE_CELL_BY_SEVERITY` | A `SEVERITY=cell` map for `scan_route`, comma-separated — e.g. `CRITICAL=block_escalate,WARN=surface_override`. Severities are the uppercase Wardline names (`CRITICAL`/`ERROR`/`WARN`/`INFO`/`NONE`); cells are the Wardline routing values (`block_escalate`/`surface_override`/`surface_only`), not the governance policy-cell names. |
 
 ### Signing keys (complex tier)
 
