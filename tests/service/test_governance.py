@@ -7,9 +7,14 @@ from legis.enforcement.protected import ProtectedGate, TamperError
 from legis.enforcement.verdict import JudgeOpinion, Verdict
 from legis.identity.entity_key import EntityKey
 from legis.identity.resolver import IdentityResolutionStatus, LineageSnapshotStatus
-from legis.service.errors import AuditIntegrityError, InvalidArgumentError
+from legis.service.errors import (
+    AuditIntegrityError,
+    InvalidArgumentError,
+    UnresolvedInputError,
+)
 from legis.service.governance import (
     compute_override_rate,
+    resolve_for_entry,
     resolve_for_record,
     submit_override,
     submit_protected_override,
@@ -43,11 +48,17 @@ class _FakeResult:
 
 
 class _FakeIdentity:
-    def __init__(self, result):
+    def __init__(self, result, *, sei_result="unset"):
         self._result = result
+        # sei_result: the IdentityResolution (or None) returned for a supplied SEI.
+        # "unset" → fall back to the locator result so existing tests are unaffected.
+        self._sei_result = result if sei_result == "unset" else sei_result
 
     def resolve(self, locator):
         return self._result
+
+    def resolve_supplied_sei(self, sei):
+        return self._sei_result
 
 
 def test_no_identity_keys_on_locator_with_empty_extensions():
@@ -96,6 +107,101 @@ def test_identity_with_unknown_alive_omits_loomweave_extension():
     key, ext = resolve_for_record(identity, "x")
     assert key == resolved_key
     assert ext == {}
+
+
+# --- weft SEI-on-entry (L1): resolve_for_entry with an inline entity_sei ---
+
+
+def test_resolve_for_entry_without_sei_is_the_locator_path():
+    # entity_sei absent → identical to resolve_for_record (existing callers
+    # unaffected). The fake's locator result is returned, not the SEI path.
+    resolved_key = EntityKey.from_locator("resolved")
+    identity = _FakeIdentity(
+        _FakeResult(resolved_key, alive=True, content_hash="abc", lineage_snapshot=["e1"])
+    )
+    key, ext = resolve_for_entry(identity, entity="src/foo.py:bar", entity_sei=None)
+    assert key == resolved_key
+    assert ext["loomweave"]["alive"] is True
+
+
+def test_resolve_for_entry_with_sei_keys_directly_on_verified_sei():
+    sei_key = EntityKey.from_sei("loomweave:eid:deadbeef")
+    identity = _FakeIdentity(
+        _FakeResult(EntityKey.from_locator("ignored"), alive=False,
+                    content_hash=None, lineage_snapshot=None),
+        sei_result=_FakeResult(sei_key, alive=True, content_hash="h",
+                               lineage_snapshot=["born"]),
+    )
+    key, ext = resolve_for_entry(
+        identity, entity="src/foo.py:bar", entity_sei="loomweave:eid:deadbeef"
+    )
+    assert key == sei_key
+    assert key.identity_stable is True
+    assert ext["loomweave"]["alive"] is True
+    assert ext["loomweave"]["content_hash"] == "h"
+
+
+def test_resolve_for_entry_unresolvable_sei_raises_and_records_nothing():
+    # The fake reports the supplied SEI does not resolve (None) → fail-closed.
+    identity = _FakeIdentity(
+        _FakeResult(EntityKey.from_locator("x"), alive=None,
+                    content_hash=None, lineage_snapshot=None),
+        sei_result=None,
+    )
+    with pytest.raises(UnresolvedInputError) as ei:
+        resolve_for_entry(identity, entity="src/foo.py:bar", entity_sei="loomweave:eid:gone")
+    assert ei.value.cause and ei.value.fix
+    assert "loomweave:eid:gone" in ei.value.cause
+
+
+def test_resolve_for_entry_sei_without_resolver_raises_unresolved():
+    # No resolve transport wired: an asserted SEI cannot be confirmed alive, so
+    # recording it would be an unbound-but-looks-bound record. Fail closed.
+    with pytest.raises(UnresolvedInputError) as ei:
+        resolve_for_entry(None, entity="src/foo.py:bar", entity_sei="loomweave:eid:x")
+    assert "LOOMWEAVE_API_URL" in ei.value.fix
+
+
+def test_submit_override_with_entity_sei_records_on_the_sei(tmp_path):
+    sei_key = EntityKey.from_sei("loomweave:eid:abc")
+    identity = _FakeIdentity(
+        _FakeResult(EntityKey.from_locator("loc"), alive=None,
+                    content_hash=None, lineage_snapshot=None),
+        sei_result=_FakeResult(sei_key, alive=True, content_hash="h", lineage_snapshot=[]),
+    )
+    engine = EnforcementEngine(AuditStore(f"sqlite:///{tmp_path / 'gov.db'}"), SystemClock())
+    result = submit_override(
+        engine,
+        identity=identity,
+        policy="some.policy",
+        entity="src/foo.py:bar",
+        rationale="because",
+        agent_id="agent-x",
+        entity_sei="loomweave:eid:abc",
+    )
+    record = next(r for r in engine.records() if r.seq == result.seq)
+    assert record.payload["entity_key"] == sei_key.to_dict()
+    assert record.payload["identity_stable"] is True
+
+
+def test_submit_override_with_unresolvable_sei_records_nothing(tmp_path):
+    identity = _FakeIdentity(
+        _FakeResult(EntityKey.from_locator("loc"), alive=None,
+                    content_hash=None, lineage_snapshot=None),
+        sei_result=None,
+    )
+    engine = EnforcementEngine(AuditStore(f"sqlite:///{tmp_path / 'gov.db'}"), SystemClock())
+    with pytest.raises(UnresolvedInputError):
+        submit_override(
+            engine,
+            identity=identity,
+            policy="some.policy",
+            entity="src/foo.py:bar",
+            rationale="because",
+            agent_id="agent-x",
+            entity_sei="loomweave:eid:gone",
+        )
+    assert engine.records() == []  # NOTHING recorded — the whole point
 
 
 class _FakeProtectedGate:

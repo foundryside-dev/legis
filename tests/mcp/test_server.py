@@ -508,6 +508,85 @@ def test_override_submit_chill_records_launch_agent_and_returns_accepted_self(tm
     assert store.read_all()[0].payload["agent_id"] == "agent-launch"
 
 
+def test_override_submit_entity_sei_binds_on_the_sei(tmp_path):
+    # weft SEI-on-entry (L1): an agent supplies a SEI it already holds; legis
+    # verifies it alive via resolve_sei and keys the record directly on it.
+    from legis.identity.resolver import IdentityResolver
+
+    runtime, store = _runtime(tmp_path, agent_id="agent-launch")
+    runtime.cell_registry = PolicyCellRegistry(default_cell="chill")
+    runtime.identity = IdentityResolver(_FakeLoomweave(alive=True))
+
+    responses = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_submit",
+                    "arguments": {
+                        "policy": "ordinary.policy",
+                        "entity": "src/x.py:f",
+                        "entity_sei": "loomweave:eid:supplied",
+                        "rationale": "generated file; lint is not applicable",
+                    },
+                },
+            }
+        ),
+        runtime,
+    )
+
+    result = responses[0]["result"]
+    assert "isError" not in result
+    assert result["structuredContent"]["outcome"] == "ACCEPTED_SELF"
+    recorded = store.read_all()[0].payload
+    assert recorded["entity_key"] == {
+        "value": "loomweave:eid:supplied",
+        "identity_stable": True,
+    }
+    assert recorded["identity_stable"] is True
+
+
+def test_override_submit_unresolvable_entity_sei_records_nothing_with_weft_reason(tmp_path):
+    # A non-resolving entity_sei returns UNRESOLVED_INPUT (weft-reason
+    # unresolved_input {cause, fix}) and creates NOTHING — never an
+    # unbound-but-looks-bound record.
+    from legis.identity.resolver import IdentityResolver
+
+    runtime, store = _runtime(tmp_path, agent_id="agent-launch")
+    runtime.cell_registry = PolicyCellRegistry(default_cell="chill")
+    runtime.identity = IdentityResolver(_FakeLoomweave(alive=False))  # SEI not alive
+
+    responses = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_submit",
+                    "arguments": {
+                        "policy": "ordinary.policy",
+                        "entity": "src/x.py:f",
+                        "entity_sei": "loomweave:eid:dead",
+                        "rationale": "anything",
+                    },
+                },
+            }
+        ),
+        runtime,
+    )
+
+    result = responses[0]["result"]
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "UNRESOLVED_INPUT"
+    assert sc["weft_reason"]["kind"] == "unresolved_input"
+    assert sc["weft_reason"]["cause"] and sc["weft_reason"]["fix"]
+    assert store.read_all() == []  # NOTHING recorded
+
+
 def test_n3_acceptance_chill_is_reachable_keyless_via_build_runtime(tmp_path, monkeypatch):
     # N3 (weft-df8d2ef454) acceptance branch 1: a fresh stdio launch CAN reach a
     # configured non-secret governance surface. Pins the claim our errors/docs

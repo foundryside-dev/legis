@@ -31,6 +31,7 @@ from legis.service.errors import (
     NotClearedError,
     NotEnabledError,
     ProtectedKeyRequiredError,
+    UnresolvedInputError,
 )
 from legis.service.source_binding import (
     require_verified_source_binding,
@@ -65,6 +66,71 @@ def resolve_for_record(
             "lineage_snapshot_status": res.lineage_snapshot_status,
         }
     return res.entity_key, ext
+
+
+def resolve_for_entry(
+    identity: IdentityResolver | None,
+    *,
+    entity: str,
+    entity_sei: str | None,
+) -> tuple[EntityKey, dict]:
+    """The SEI-on-entry resolve boundary for the authoring surfaces (weft doctrine).
+
+    Two mutually exclusive inputs select the resolution path:
+
+    * ``entity_sei`` (L1, inline bind) — the agent already holds a stable SEI and
+      binds it at the point of entry. legis verifies it is alive through the
+      Loomweave ``resolve_sei`` transport and keys directly on it. A non-resolving
+      SEI raises :class:`UnresolvedInputError` (weft-reason ``unresolved_input``)
+      and the caller records NOTHING — never a locator-keyed record masquerading
+      as a stable bind.
+    * ``entity`` alone (L2, locator/symbol) — the pre-existing path: legis resolves
+      the locator to an SEI when it can and degrades to a locator key otherwise
+      (:func:`resolve_for_record`). Unchanged for every existing caller.
+
+    Keeping both axes here means the engine/gate layer below stays
+    transport-agnostic and only ever sees a resolved :class:`EntityKey`.
+    """
+    if entity_sei is None:
+        return resolve_for_record(identity, entity)
+    if identity is None:
+        # No resolve transport wired: an SEI the agent asserts cannot be confirmed
+        # alive, and recording it unverified would be exactly the unbound-but-looks-
+        # bound record the doctrine forbids. Fail closed with the operator fix.
+        raise UnresolvedInputError(
+            cause=(
+                f"entity_sei {entity_sei!r} was supplied but Loomweave identity is "
+                "not wired, so legis cannot confirm the SEI is alive"
+            ),
+            fix=(
+                "Ask the operator to set LOOMWEAVE_API_URL out-of-band and relaunch, "
+                "or submit the entity as a locator/symbol (entity) instead and let "
+                "legis resolve it."
+            ),
+        )
+    resolution = identity.resolve_supplied_sei(entity_sei)
+    if resolution is None:
+        raise UnresolvedInputError(
+            cause=(
+                f"entity_sei {entity_sei!r} did not resolve to a live, stable "
+                "identity in Loomweave"
+            ),
+            fix=(
+                "Confirm the SEI exists and is alive (the entity may have been "
+                "deleted, or Loomweave is degraded), or submit the entity as a "
+                "locator/symbol (entity) for legis to resolve."
+            ),
+        )
+    ext: dict = {}
+    if resolution.alive is not None:
+        ext["loomweave"] = {
+            "alive": resolution.alive,
+            "content_hash": resolution.content_hash,
+            "lineage_snapshot": resolution.lineage_snapshot,
+            "identity_resolution_status": resolution.identity_resolution_status,
+            "lineage_snapshot_status": resolution.lineage_snapshot_status,
+        }
+    return resolution.entity_key, ext
 
 
 def verified_records(
@@ -201,6 +267,7 @@ def submit_override(
     rationale: str,
     agent_id: str,
     extra_extensions: dict[str, Any] | None = None,
+    entity_sei: str | None = None,
 ) -> EnforcementResult:
     """Resolve-then-key, then submit the override to the simple-tier engine.
 
@@ -213,7 +280,7 @@ def submit_override(
     transposed at the call site; this is the seam the MCP adapter (WP-M3) calls
     directly, alongside the existing ``POST /overrides`` handler.
     """
-    entity_key, ext = resolve_for_record(identity, entity)
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     return engine.submit_override(
         policy=policy,
         entity_key=entity_key,
@@ -235,15 +302,23 @@ def submit_protected_override(
     ast_path: str,
     source_root: str | Path | None = None,
     extra_extensions: dict[str, Any] | None = None,
+    entity_sei: str | None = None,
 ) -> ProtectedResult:
-    """Submit a protected-cell override using transport-bound agent identity."""
+    """Submit a protected-cell override using transport-bound agent identity.
+
+    ``entity_sei`` (when supplied) is the weft L1 identity bind: the record keys
+    on that verified SEI. ``entity`` remains the source-path/symbol used for the
+    current-source fingerprint binding — an opaque SEI has no local bytes, so the
+    source binding records an honest ``unverified`` status (the pre-existing
+    non-path-entity behaviour), while identity is still rename-stable.
+    """
     if protected_gate is None:
         # LEG-2: the message names the operator knob (C-8: operator action).
         raise NotEnabledError(
             "protected cell not enabled: ask the operator to set "
             "LEGIS_HMAC_KEY (out-of-band) and relaunch"
         )
-    entity_key, ext = resolve_for_record(identity, entity)
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     source_binding = verify_current_source_binding(
         entity=entity,
         file_fingerprint=file_fingerprint,
@@ -272,6 +347,7 @@ def submit_operator_override(
     file_fingerprint: str,
     ast_path: str,
     source_root: str | Path | None = None,
+    entity_sei: str | None = None,
 ) -> ProtectedResult:
     """Submit a protected-cell operator override with current-source binding."""
     if protected_gate is None:
@@ -280,7 +356,7 @@ def submit_operator_override(
             "protected cell not enabled: ask the operator to set "
             "LEGIS_HMAC_KEY (out-of-band) and relaunch"
         )
-    entity_key, ext = resolve_for_record(identity, entity)
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     source_binding = verify_current_source_binding(
         entity=entity,
         file_fingerprint=file_fingerprint,
@@ -307,6 +383,7 @@ def request_signoff(
     rationale: str,
     agent_id: str,
     extra_extensions: dict[str, Any] | None = None,
+    entity_sei: str | None = None,
 ) -> SignoffResult:
     """Open a structured sign-off request for a launch-bound agent."""
     if signoff_gate is None:
@@ -315,7 +392,7 @@ def request_signoff(
             "structured cell not enabled: ask the operator to set "
             "LEGIS_HMAC_KEY (out-of-band) and relaunch"
         )
-    entity_key, ext = resolve_for_record(identity, entity)
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     return signoff_gate.request(
         policy=policy,
         entity_key=entity_key,

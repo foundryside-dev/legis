@@ -52,6 +52,7 @@ from legis.service.errors import (
     NotEnabledError,
     NotFoundError,
     ServiceError,
+    UnresolvedInputError,
     WardlineRoutingError,
 )
 from legis.service.explain import explain_cell, explain_policy
@@ -560,7 +561,16 @@ def tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Submit an override as the launch-bound agent. The server "
                 "routes to the governing cell and returns a discriminated "
-                "outcome envelope."
+                "outcome envelope. Identity (weft SEI-on-entry): pass entity as "
+                "a locator/symbol for legis to resolve (L2, degrades to a "
+                "locator key if Loomweave can't resolve it), OR pass entity_sei "
+                "to bind a SEI you already hold at the point of entry (L1) — "
+                "legis verifies it is alive and keys the governance record "
+                "directly on it. A non-resolving entity_sei returns "
+                "UNRESOLVED_INPUT (weft-reason unresolved_input) and records "
+                "NOTHING, never a locator-keyed record masquerading as a stable "
+                "bind. entity is still required (it carries the source-path used "
+                "for the protected-cell fingerprint binding)."
             ),
             "inputSchema": _schema(
                 ["policy", "entity", "rationale"],
@@ -568,6 +578,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "policy": string,
                     "entity": string,
                     "rationale": string,
+                    "entity_sei": string,
                     "file_fingerprint": string,
                     "ast_path": string,
                     "idempotency_key": string,
@@ -1169,6 +1180,13 @@ def _recovery_for(code: str) -> dict[str, Any]:
             "out-of-band, then a relaunch. The error message names which cell is "
             "unenabled."
         ),
+        "UNRESOLVED_INPUT": (
+            "The inline entity_sei did not resolve to a live, stable identity, so "
+            "nothing was recorded (weft SEI-on-entry fail-closed). See the "
+            "weft_reason.fix: confirm the SEI is alive in Loomweave, or drop "
+            "entity_sei and submit the entity as a locator/symbol for legis to "
+            "resolve."
+        ),
         "NO_SUCH_REQUEST": "Poll a known sign-off sequence returned by override_submit.",
         "SIGNOFF_NOT_CLEARED": (
             "The sign-off has not been cleared by an operator yet. Poll "
@@ -1198,12 +1216,24 @@ def _recovery_for(code: str) -> dict[str, Any]:
     }
 
 
-def _tool_error(code: str, message: str) -> dict[str, Any]:
+def _tool_error(
+    code: str, message: str, *, weft_reason: dict[str, Any] | None = None
+) -> dict[str, Any]:
     recovery = _recovery_for(code)
     # LEG-2: the recovery hint rides in the text content too — text-only MCP
     # clients never see structuredContent, so a hint kept there alone is
     # invisible to them. The "{code}: {message}" first line is a stable prefix
     # clients may parse; the next_action is appended after it.
+    structured: dict[str, Any] = {
+        "error_code": code,
+        "message": message,
+        **recovery,
+    }
+    # weft SEI-on-entry doctrine: a non-resolving inline identity carries a
+    # structured weft-reason {kind, cause, fix} so the agent can repair the input
+    # without parsing message text. Present only on the surfaces that bind a SEI.
+    if weft_reason is not None:
+        structured["weft_reason"] = weft_reason
     return {
         "isError": True,
         "content": [
@@ -1212,11 +1242,7 @@ def _tool_error(code: str, message: str) -> dict[str, Any]:
                 "text": f"{code}: {message}\nnext_action: {recovery['next_action']}",
             }
         ],
-        "structuredContent": {
-            "error_code": code,
-            "message": message,
-            **recovery,
-        },
+        "structuredContent": structured,
     }
 
 
@@ -1252,6 +1278,18 @@ def _service_error(exc: Exception) -> dict[str, Any]:
         # A down/unreachable Filigree is an expected operational state for an
         # agent — typed and recoverable, not an INTERNAL_ERROR.
         return _tool_error("FILIGREE_UNAVAILABLE", str(exc))
+    if isinstance(exc, UnresolvedInputError):
+        # weft SEI-on-entry: an inline entity_sei that did not resolve. Nothing
+        # was recorded; the weft_reason carries the structured cause/fix.
+        return _tool_error(
+            "UNRESOLVED_INPUT",
+            str(exc),
+            weft_reason={
+                "kind": "unresolved_input",
+                "cause": exc.cause,
+                "fix": exc.fix,
+            },
+        )
     if isinstance(exc, InvalidArgumentError):
         return _tool_error("INVALID_ARGUMENT", str(exc))
     if isinstance(exc, WardlineRoutingError):
@@ -1461,13 +1499,20 @@ def _override_idempotency_request_hash(
     cell: str,
     file_fingerprint: str | None,
     ast_path: str | None,
+    entity_sei: str | None = None,
 ) -> str:
+    # version 2 adds entity_sei: an L1 SEI-bound submit and an L2 locator submit
+    # that differ only in entity_sei are different requests and must not collide
+    # on one idempotency key. (Absent entity_sei is carried as None, so a v1-shaped
+    # locator-only submit hashes distinctly from its v1 self by design — the bump
+    # is a clean break, consistent with weft's no-stale-data / fresh-dogfood rule.)
     return content_hash(
         {
-            "version": 1,
+            "version": 2,
             "agent_id": agent_id,
             "policy": policy,
             "entity": entity,
+            "entity_sei": entity_sei,
             "rationale": rationale,
             "cell": cell,
             "file_fingerprint": file_fingerprint,
@@ -1625,6 +1670,7 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     policy = _require(args, "policy")
     entity = _require(args, "entity")
     rationale = _require(args, "rationale")
+    entity_sei = _optional_string(args, "entity_sei")
     idempotency_key = _optional_string(args, "idempotency_key")
     simple_engine = (
         _engine(runtime)
@@ -1660,6 +1706,7 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
             cell=explanation.cell,
             file_fingerprint=_optional_string(args, "file_fingerprint"),
             ast_path=_optional_string(args, "ast_path"),
+            entity_sei=entity_sei,
         )
         if idempotency_key is not None
         else None
@@ -1690,6 +1737,7 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
             rationale=rationale,
             agent_id=runtime.agent_id,
             extra_extensions=extra_extensions,
+            entity_sei=entity_sei,
         )
         if explanation.cell == "chill":
             return _tool_result(
@@ -1718,6 +1766,7 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
             rationale=rationale,
             agent_id=runtime.agent_id,
             extra_extensions=extra_extensions,
+            entity_sei=entity_sei,
         )
         return _tool_result(
             {
@@ -1758,6 +1807,7 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
             ast_path=_require(args, "ast_path"),
             source_root=runtime.source_root,
             extra_extensions=extra_extensions,
+            entity_sei=entity_sei,
         )
         return _tool_result(
             _judged_result_payload(

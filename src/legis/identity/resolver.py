@@ -168,6 +168,46 @@ class IdentityResolver:
             LineageSnapshotStatus.VERIFIED,
         )
 
+    def resolve_supplied_sei(self, sei: str) -> IdentityResolution | None:
+        """Verify an agent-supplied SEI is alive, keying directly on it (L1).
+
+        The weft SEI-on-entry path: the agent already holds a stable identity and
+        binds it at the point of entry, rather than handing legis a locator to
+        resolve (L2, :meth:`resolve`). Returns an ``IdentityResolution`` keyed on
+        the SEI when Loomweave confirms it alive, or ``None`` when it cannot be
+        confirmed (no capability/client, transport error, dead, or malformed
+        response). ``None`` means "do not record" — the caller raises
+        ``unresolved_input`` and creates nothing, never a locator-keyed record
+        for what the agent asserted was an SEI (that would silently demote an L1
+        bind to an off-spine locator). The resolver never parses the SEI.
+        """
+        if not self._capability():
+            return None
+        try:
+            res = self._client.resolve_sei(sei)  # type: ignore[union-attr]
+        except Exception:
+            logger.warning(
+                "Loomweave resolve_sei failed; cannot confirm supplied SEI",
+                exc_info=True,
+            )
+            return None
+        if not isinstance(res, dict) or res.get("alive") is not True:
+            # ID-SEI-2: require a real boolean True (mirrors resolve()): a non-bool
+            # truthy value from a buggy/hostile Loomweave must NOT promote a dead or
+            # unknown SEI to a recorded stable identity. Fail closed → None.
+            return None
+        snapshot, snapshot_status = self._snapshot(sei)
+        raw_content_hash = res.get("content_hash")
+        content_hash_value = raw_content_hash if isinstance(raw_content_hash, str) else None
+        return IdentityResolution(
+            EntityKey.from_sei(sei),
+            True,
+            content_hash_value,
+            snapshot,
+            IdentityResolutionStatus.RESOLVED,
+            snapshot_status,
+        )
+
     def resolve(self, locator: str) -> IdentityResolution:
         degraded = IdentityResolution(
             EntityKey.from_locator(locator),

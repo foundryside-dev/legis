@@ -53,6 +53,23 @@ class InvalidArgumentError(ServiceError):
     """Caller input is structurally valid for the transport but invalid for Legis."""
 
 
+class UnresolvedInputError(ServiceError):
+    """An inline-supplied entity SEI did not resolve to a stable, alive identity.
+
+    The weft SEI-on-entry doctrine: a surface that lets the agent bind an SEI at
+    the point of entry must, on a non-resolving input, return a ``weft-reason``
+    ``unresolved_input {cause, fix}`` and create NOTHING — never an
+    unbound-but-looks-bound record. Carries ``cause`` and ``fix`` strings so the
+    adapter can surface the structured weft-reason without parsing message text.
+    HTTP maps this to 422; MCP to ``UNRESOLVED_INPUT``.
+    """
+
+    def __init__(self, cause: str, fix: str) -> None:
+        super().__init__(f"{cause} — {fix}")
+        self.cause = cause
+        self.fix = fix
+
+
 class WardlineRoutingError(ServiceError):
     """A Wardline scan-routing request is not permitted or is malformed.
 

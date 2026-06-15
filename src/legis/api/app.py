@@ -54,6 +54,7 @@ from legis.service.errors import (
     NotClearedError,
     NotEnabledError,
     NotFoundError,
+    UnresolvedInputError,
     WardlineRoutingError,
 )
 from legis.service.governance import bind_signoff_issue as _bind_signoff_issue
@@ -183,6 +184,25 @@ def _recorded_actor(authenticated_actor: str, body_actor: str | None) -> str:
     return authenticated_actor if _authenticated_actor_configured() else (body_actor or authenticated_actor)
 
 
+def _unresolved_input_http(exc: UnresolvedInputError) -> HTTPException:
+    """422 for a non-resolving inline entity_sei (weft SEI-on-entry fail-closed).
+
+    The structured weft-reason rides in the detail so the agent can repair the
+    input without parsing message text; nothing was recorded.
+    """
+    return HTTPException(
+        status_code=422,
+        detail={
+            "error": str(exc),
+            "weft_reason": {
+                "kind": "unresolved_input",
+                "cause": exc.cause,
+                "fix": exc.fix,
+            },
+        },
+    )
+
+
 def verify_writer(credentials: HTTPAuthorizationCredentials | None = Security(security)) -> str:
     return _verify_secret(credentials, "agent", "writer")
 
@@ -193,9 +213,13 @@ def verify_operator(credentials: HTTPAuthorizationCredentials | None = Security(
 
 class OverrideIn(BaseModel):
     policy: str
-    entity: str  # a locator today (pre-SEI); identity_stable=False
+    entity: str  # a locator/symbol (L2 resolve); identity_stable=False if unresolved
     rationale: str
     agent_id: str | None = None
+    # weft SEI-on-entry (L1): an SEI the agent already holds, bound at the point of
+    # entry. When set, legis verifies it is alive and keys the record on it; a
+    # non-resolving value is rejected (422 unresolved_input) and records nothing.
+    entity_sei: str | None = None
 
 
 class ProtectedIn(BaseModel):
@@ -205,6 +229,7 @@ class ProtectedIn(BaseModel):
     agent_id: str | None = None
     file_fingerprint: str
     ast_path: str
+    entity_sei: str | None = None
 
 
 class OperatorOverrideIn(BaseModel):
@@ -214,6 +239,7 @@ class OperatorOverrideIn(BaseModel):
     operator_id: str | None = None
     file_fingerprint: str
     ast_path: str
+    entity_sei: str | None = None
 
 
 class SignoffRequestIn(BaseModel):
@@ -221,6 +247,7 @@ class SignoffRequestIn(BaseModel):
     entity: str
     rationale: str
     agent_id: str | None = None
+    entity_sei: str | None = None
 
 
 class SignoffSignIn(BaseModel):
@@ -508,14 +535,18 @@ def create_app(
                 status_code=403,
                 detail=f"Policy {body.policy!r} is protected; use the protected overrides endpoint instead."
             )
-        result = _submit_override(
-            engine(),
-            identity=identity,
-            policy=body.policy,
-            entity=body.entity,
-            rationale=body.rationale,
-            agent_id=_recorded_actor(actor, body.agent_id),
-        )
+        try:
+            result = _submit_override(
+                engine(),
+                identity=identity,
+                policy=body.policy,
+                entity=body.entity,
+                rationale=body.rationale,
+                agent_id=_recorded_actor(actor, body.agent_id),
+                entity_sei=body.entity_sei,
+            )
+        except UnresolvedInputError as exc:
+            raise _unresolved_input_http(exc) from exc
         # ACCEPTED → 201 (the override took effect); BLOCKED → 409 (it did not,
         # the agent must correct or convince). Full body either way so the agent
         # gets the judge's reasoning to revise.
@@ -557,7 +588,10 @@ def create_app(
                 file_fingerprint=body.file_fingerprint,
                 ast_path=body.ast_path,
                 source_root=source_root,
+                entity_sei=body.entity_sei,
             )
+        except UnresolvedInputError as exc:
+            raise _unresolved_input_http(exc) from exc
         except NotEnabledError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except InvalidArgumentError as exc:
@@ -585,7 +619,10 @@ def create_app(
                 file_fingerprint=body.file_fingerprint,
                 ast_path=body.ast_path,
                 source_root=source_root,
+                entity_sei=body.entity_sei,
             )
+        except UnresolvedInputError as exc:
+            raise _unresolved_input_http(exc) from exc
         except NotEnabledError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except InvalidArgumentError as exc:
@@ -607,7 +644,10 @@ def create_app(
                 entity=body.entity,
                 rationale=body.rationale,
                 agent_id=_recorded_actor(actor, body.agent_id),
+                entity_sei=body.entity_sei,
             )
+        except UnresolvedInputError as exc:
+            raise _unresolved_input_http(exc) from exc
         except NotEnabledError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"seq": result.seq, "cleared": result.cleared}
