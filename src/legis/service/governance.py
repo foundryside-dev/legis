@@ -415,6 +415,7 @@ def read_identity_gaps(
     ``records`` is called only when a check can actually run.
     """
     from legis.governance.gaps import find_orphan_gaps
+    from legis.identity.loomweave_client import LoomweaveError
 
     if identity is None or identity.client is None:
         return {
@@ -422,7 +423,19 @@ def read_identity_gaps(
             "gaps": [],
             "unavailable": [{"reason": "loomweave client not configured"}],
         }
-    gaps = find_orphan_gaps(records(), identity.client)
+    try:
+        gaps = find_orphan_gaps(records(), identity.client)
+    except LoomweaveError as exc:
+        # Loomweave is wired but a check failed mid-flight (outage, timeout,
+        # malformed response). The read distinguishes "could not check" from a
+        # checked-empty list (GOV-2): degrade to unavailable rather than letting
+        # the transport error escape as an INTERNAL_ERROR / 500, which would read
+        # as a hard fault on a recoverable condition.
+        return {
+            "status": "unavailable",
+            "gaps": [],
+            "unavailable": [{"reason": f"loomweave check failed: {exc}"}],
+        }
     return {
         "status": "checked",
         "gaps": [
