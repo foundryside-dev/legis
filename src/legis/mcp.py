@@ -299,6 +299,14 @@ def _one_of(variants: list[dict[str, Any]]) -> dict[str, Any]:
 # tools' outputSchema declarations describe SUCCESS payloads only; clients
 # validate error results against this. The text content mirrors it as
 # "{code}: {message}\nnext_action: …" (LEG-2).
+#
+# weft_reason is the OPTIONAL structured cause/fix the SEI-on-entry doctrine
+# attaches to a non-resolving inline identity (UNRESOLVED_INPUT): present only on
+# surfaces that bind a SEI, absent everywhere else. It is listed here so the
+# strict (additionalProperties:False) envelope admits it — otherwise a client or
+# conformance check validating that error rejects the documented recovery path.
+# The inner object stays open (no additionalProperties:False) so the weft reason
+# vocabulary can grow without a lockstep schema bump.
 ERROR_ENVELOPE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -308,6 +316,14 @@ ERROR_ENVELOPE_SCHEMA: dict[str, Any] = {
         "message": {"type": "string"},
         "recoverable": {"type": "boolean"},
         "next_action": {"type": "string"},
+        "weft_reason": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string"},
+                "cause": {"type": "string"},
+                "fix": {"type": "string"},
+            },
+        },
     },
 }
 

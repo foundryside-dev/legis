@@ -143,6 +143,19 @@ def test_error_envelope_is_a_shared_schema_and_errors_conform():
         envelope = _tool_error(code, "msg")["structuredContent"]
         jsonschema.validate(envelope, ERROR_ENVELOPE_SCHEMA, cls=Draft202012Validator)
 
+    # The SEI-on-entry doctrine attaches a structured weft_reason to a
+    # non-resolving inline identity; the shared envelope (additionalProperties:
+    # False) must admit it, or every client validating an UNRESOLVED_INPUT error
+    # against this schema rejects the documented recovery path.
+    with_weft_reason = _tool_error(
+        "UNRESOLVED_INPUT",
+        "msg",
+        weft_reason={"kind": "unresolved_input", "cause": "c", "fix": "f"},
+    )["structuredContent"]
+    jsonschema.validate(
+        with_weft_reason, ERROR_ENVELOPE_SCHEMA, cls=Draft202012Validator
+    )
+
 
 # --- per-tool conformance: drive each tool, validate the emitted payload ---
 
