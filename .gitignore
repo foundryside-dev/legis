@@ -45,3 +45,8 @@ findings.jsonl
 *.db-wal
 # Federated runtime-state subtree (legis is the sole writer; never .weft/ wholesale)
 .weft/legis/
+
+# Developer config / local tooling — not part of the solution
+.claude/
+.agents/
+.weft/
