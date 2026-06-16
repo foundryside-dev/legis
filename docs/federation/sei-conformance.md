@@ -14,17 +14,25 @@ Legis is a **consumer** of Stable Entity Identity (SEI), not the authority.
 
 These are legis's formal §5 obligations — confirmed, not aspirational.
 
-> **IMPLEMENTED (Sprint 5, 2026-06-02).** All six obligations are discharged and
-> proven by the SEI §8 conformance oracle (`tests/conformance/test_sei_oracle.py`,
-> six scenarios green). Map: keyed-on-SEI → `identity/resolver.py` +
-> `api/app.py:resolve_for_record`, wired into **every** governance write path
-> (`/overrides`, `/protected/overrides`, `/protected/operator-override`,
-> `/signoff/request`); opaque treatment → `EntityKey.from_sei` (value stored
-> verbatim, never parsed); lineage spine + two-axis + governance-gap →
-> `governance/gaps.py` and `GET /governance/identity-gaps`; honest degrade →
-> `IdentityResolver.resolve` (`identity_stable: false` on absent capability / no
-> client / not-alive / transport error). See Sprint 5 plan for the scope lines on
-> the lineage-snapshot extension and cross-store gap detection.
+> **IMPLEMENTED (Sprint 5, 2026-06-02; HTTP surface unified Phase 9, 2026-06-17).**
+> All six obligations are discharged and proven by the SEI §8 conformance oracle
+> (`tests/conformance/test_sei_oracle.py`, six scenarios green). Map: keyed-on-SEI
+> → `identity/resolver.py` + `api/app.py:resolve_for_record`, wired into **every**
+> governance write path. Since Phase 9 the writer-side submit paths are reached
+> through a single policy-routed `POST /overrides` (the floored governance cell —
+> chill / coached / structured / protected — selects the gate); the
+> operator-clear paths stay distinct (`/protected/operator-override`,
+> `/signoff/{seq}/sign`). The SEI keying is identical on every dispatch: each
+> service function (`submit_override` / `request_signoff` /
+> `submit_protected_override` / `submit_operator_override`) calls
+> `resolve_for_entry` internally, so a protected-floor dispatch carrying an
+> `entity_sei` still keys the record on the live SEI (`identity_stable=True`).
+> Opaque treatment → `EntityKey.from_sei` (value stored verbatim, never parsed);
+> lineage spine + two-axis + governance-gap → `governance/gaps.py` and
+> `GET /governance/identity-gaps`; honest degrade → `IdentityResolver.resolve`
+> (`identity_stable: false` on absent capability / no client / not-alive /
+> transport error). See Sprint 5 plan for the scope lines on the lineage-snapshot
+> extension and cross-store gap detection.
 
 - **Attestations keyed on SEI.** Governance verdicts, sign-offs, and policy
   decisions that concern a code entity are keyed on SEI — never on a locator.

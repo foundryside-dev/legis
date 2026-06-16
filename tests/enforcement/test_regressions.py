@@ -34,10 +34,25 @@ def test_signoff_gate_out_of_bounds(tmp_path):
         store._engine.dispose()
 
 
-def test_api_overrides_protected_policies_403(tmp_path, monkeypatch, unsafe_dev_auth):
+def test_api_overrides_protected_policy_routes_via_floored_cell_not_403(
+    tmp_path, monkeypatch, unsafe_dev_auth
+):
+    # Phase 9: the legacy env-var ``protected_set`` 403 guard on POST /overrides
+    # is removed — it read a config-era set, not the floored governance cell, and
+    # contradicted floor routing. A policy whose floored cell is ``protected``
+    # now routes to the protected gate via the FlooredRegistry. Submitted without
+    # the source/AST binding it returns the NEED_INPUTS discriminant (422), NOT a
+    # 403 "use the protected endpoint" refusal (there is no separate endpoint).
+    from legis.policy.cells import PolicyCellRegistry, PolicyCellRule
+
     monkeypatch.setenv("LEGIS_PROTECTED_POLICIES", "no-eval,protected-policy")
     monkeypatch.setenv("LEGIS_HMAC_KEY", "secret-key")
-    app = create_app()
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
+    registry = PolicyCellRegistry(
+        default_cell="chill",
+        rules=(PolicyCellRule(pattern="protected-policy", cell="protected"),),
+    )
+    app = create_app(cell_registry=registry)
     client = TestClient(app)
     res = client.post("/overrides", json={
         "policy": "protected-policy",
@@ -45,8 +60,10 @@ def test_api_overrides_protected_policies_403(tmp_path, monkeypatch, unsafe_dev_
         "rationale": "bypass",
         "agent_id": "agent-1"
     })
-    assert res.status_code == 403
-    assert "protected" in res.json()["detail"]
+    assert res.status_code == 422
+    body = res.json()
+    assert body["outcome"] == "need_inputs"
+    assert body["cell"] == "protected"
 
 
 def test_api_admin_auth(tmp_path, monkeypatch):

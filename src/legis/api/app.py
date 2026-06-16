@@ -32,6 +32,7 @@ from legis.config import (
     binding_db_url,
     check_db_url,
     governance_db_url,
+    posture_db_url,
     protected_policies,
     pull_db_url,
 )
@@ -69,11 +70,15 @@ from legis.service.governance import submit_operator_override as _submit_operato
 from legis.service.governance import submit_override as _submit_override
 from legis.service.governance import submit_protected_override as _submit_protected_override
 from legis.service.governance import verified_records as _verified_records
+from legis.service.explain import explain_policy as _explain_policy
 from legis.service.wardline import (
     resolve_scan_routing,
     route_wardline_scan as _route_wardline_scan,
 )
+from legis.policy.cells import PolicyCellRegistry
 from legis.policy.grammar import PolicyGrammar, default_grammar
+from legis.posture.floor import floored_registry
+from legis.posture.ledger import PostureLedger
 from legis.pulls.models import PullRequest, PullRequestState
 from legis.pulls.surface import PullSurface
 from legis.wardline.governor import WardlineCellPolicy
@@ -220,16 +225,13 @@ class OverrideIn(BaseModel):
     # entry. When set, legis verifies it is alive and keys the record on it; a
     # non-resolving value is rejected (422 unresolved_input) and records nothing.
     entity_sei: str | None = None
-
-
-class ProtectedIn(BaseModel):
-    policy: str
-    entity: str
-    rationale: str
-    agent_id: str | None = None
-    file_fingerprint: str
-    ast_path: str
-    entity_sei: str | None = None
+    # Protected-cell inputs (Phase 9 unification): the source/AST binding the
+    # protected gate requires. Optional on the unified body — when the floored
+    # cell is ``protected`` and either is absent, the route returns the
+    # ``need_inputs`` discriminant (422) naming them, mirroring the MCP
+    # ``NEED_INPUTS`` outcome rather than a generic InvalidArgumentError.
+    file_fingerprint: str | None = None
+    ast_path: str | None = None
 
 
 class OperatorOverrideIn(BaseModel):
@@ -239,14 +241,6 @@ class OperatorOverrideIn(BaseModel):
     operator_id: str | None = None
     file_fingerprint: str
     ast_path: str
-    entity_sei: str | None = None
-
-
-class SignoffRequestIn(BaseModel):
-    policy: str
-    entity: str
-    rationale: str
-    agent_id: str | None = None
     entity_sei: str | None = None
 
 
@@ -330,6 +324,8 @@ def create_app(
     binding_key: bytes | None = None,
     pull_requests: PullRequestSource | None = None,
     pull_surface: PullSurface | None = None,
+    cell_registry: PolicyCellRegistry | None = None,
+    posture_ledger: PostureLedger | None = None,
 ) -> FastAPI:
     app = FastAPI(title="legis", version=__version__)
     source_root = Path(repo_path) if repo_path is not None else Path(os.getcwd())
@@ -389,12 +385,39 @@ def create_app(
             from legis.governance.binding_ledger import BindingLedger
             bind_db_url = binding_db_url()
             binding_ledger = BindingLedger(AuditStore(bind_db_url), clock, hmac_key)
+    # Posture floor (design §4, D0/D2): the unified /overrides route resolves the
+    # governing cell through a FlooredRegistry. The cell registry and the posture
+    # ledger HANDLE are composed once here; the floor VALUE is read fresh on every
+    # request via floored_registry(...) (never cached — D2). Per the Phase-4
+    # reconciliation the ledger handle is opened ``initialize=False`` so creating
+    # the app never writes posture.db — genesis is an install-time action and a
+    # bare ``create_app`` must not create local state (audit H6). A missing/empty
+    # ledger reads ``None`` -> the registry's own (fail-closed) default stands.
+    if cell_registry is None:
+        from legis.mcp import _load_policy_cell_registry
+
+        cell_registry = _load_policy_cell_registry()
+    if posture_ledger is None:
+        posture_ledger = PostureLedger(posture_db_url(), initialize=False)
+
     state: dict[str, Any] = {
         "checks": check_surface,
         "enforcement": enforcement,
         "grammar": grammar,
         "pulls": pull_surface,
+        "cell_registry": cell_registry,
+        "posture_ledger": posture_ledger,
     }
+
+    def floored() -> Any:
+        """The per-request FlooredRegistry (floor read fresh on the shared ledger).
+
+        D2: the ledger HANDLE is shared; ``read_floor()`` is called on each
+        invocation (AuditStore's NullPool opens a fresh connection per read, so
+        concurrent requests are safe). Never constructs ``PostureLedger`` here —
+        that would run DDL and serialize requests under a SQLite DDL lock.
+        """
+        return floored_registry(state["cell_registry"], state["posture_ledger"])
 
     def git() -> GitSurface:
         return GitSurface(repo_path or os.getcwd())
@@ -523,41 +546,132 @@ def create_app(
     def checks_for_pr(pr: int) -> list[dict]:
         return [_check_to_dict(r) for r in checks().for_pr(pr)]
 
-    # --- simple-tier enforcement surface (WP-2.1 chill / WP-2.2 coached) ---
+    # --- unified governance-routed override surface (Phase 9) ---
+    #
+    # One policy-routed POST /overrides collapses the three old cell-addressed
+    # submit routes. The governing cell is resolved through a FlooredRegistry
+    # (floor read per request, D0/D2); the route never trusts a config-era
+    # protected_set or a caller-named cell. Discriminated outcome (mirrors the
+    # MCP override_submit contract):
+    #
+    #   chill      -> {outcome: accepted, cell: chill, seq}                 201
+    #   coached    -> {outcome: accepted|blocked, cell: coached, seq, ...}  201/409
+    #   structured -> {outcome: escalation_requested, request_seq}          202
+    #   protected  -> {outcome: accepted|blocked, cell: protected, seq}     201/409
+    #              -> {outcome: need_inputs, required_inputs}               422
 
     @app.post("/overrides")
     def post_override(body: OverrideIn, response: Response, actor: str = Depends(verify_writer)) -> dict:
-        protected_set = (
-            trail_verifier.protected_policies if trail_verifier is not None else frozenset()
-        )
-        if body.policy in protected_set:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Policy {body.policy!r} is protected; use the protected overrides endpoint instead."
-            )
-        try:
-            result = _submit_override(
-                engine(),
-                identity=identity,
+        registry = floored()
+        cell = registry.cell_for(body.policy)
+        recorded_actor = _recorded_actor(actor, body.agent_id)
+
+        if cell in ("chill", "coached"):
+            try:
+                result = _submit_override(
+                    engine(),
+                    identity=identity,
+                    policy=body.policy,
+                    entity=body.entity,
+                    rationale=body.rationale,
+                    agent_id=recorded_actor,
+                    entity_sei=body.entity_sei,
+                )
+            except UnresolvedInputError as exc:
+                raise _unresolved_input_http(exc) from exc
+            # ACCEPTED → 201 (took effect); BLOCKED → 409 (did not). Full body
+            # either way so the agent gets the judge's reasoning to revise.
+            response.status_code = 201 if result.accepted else 409
+            return {
+                "outcome": "accepted" if result.accepted else "blocked",
+                "cell": cell,
+                "seq": result.seq,
+                "verdict": result.verdict.value if result.verdict else None,
+                "judge_model": result.judge_model,
+                "judge_rationale": result.judge_rationale,
+            }
+
+        if cell == "structured":
+            try:
+                result = _request_signoff(
+                    signoff_gate,
+                    identity=identity,
+                    policy=body.policy,
+                    entity=body.entity,
+                    rationale=body.rationale,
+                    agent_id=recorded_actor,
+                    entity_sei=body.entity_sei,
+                )
+            except UnresolvedInputError as exc:
+                raise _unresolved_input_http(exc) from exc
+            except NotEnabledError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            # 202 (not 201): a structured escalation is PENDING, never an
+            # acceptance — an old "201 == accepted" reader must not misread it.
+            response.status_code = 202
+            return {
+                "outcome": "escalation_requested",
+                "cell": "structured",
+                "request_seq": result.seq,
+                "cleared": result.cleared,
+            }
+
+        if cell == "protected":
+            # NEED_INPUTS pre-check: the protected gate needs the source/AST
+            # binding. Absent either → return the discriminant naming the missing
+            # inputs (422), aligned with MCP's NEED_INPUTS, not a generic 422.
+            explanation = _explain_policy(
+                registry,
                 policy=body.policy,
                 entity=body.entity,
-                rationale=body.rationale,
-                agent_id=_recorded_actor(actor, body.agent_id),
-                entity_sei=body.entity_sei,
+                engine=None,
+                protected_gate=protected_gate,
+                signoff_gate=signoff_gate,
             )
-        except UnresolvedInputError as exc:
-            raise _unresolved_input_http(exc) from exc
-        # ACCEPTED → 201 (the override took effect); BLOCKED → 409 (it did not,
-        # the agent must correct or convince). Full body either way so the agent
-        # gets the judge's reasoning to revise.
-        response.status_code = 201 if result.accepted else 409
-        return {
-            "accepted": result.accepted,
-            "seq": result.seq,
-            "verdict": result.verdict.value if result.verdict else None,
-            "judge_model": result.judge_model,
-            "judge_rationale": result.judge_rationale,
-        }
+            supplied = {"file_fingerprint": body.file_fingerprint, "ast_path": body.ast_path}
+            missing = [
+                item.to_payload()
+                for item in explanation.required_inputs
+                if not supplied.get(item.field)
+            ]
+            if missing:
+                response.status_code = 422
+                return {
+                    "outcome": "need_inputs",
+                    "cell": "protected",
+                    "required_inputs": missing,
+                }
+            try:
+                result = _submit_protected_override(
+                    protected_gate,
+                    identity=identity,
+                    policy=body.policy,
+                    entity=body.entity,
+                    rationale=body.rationale,
+                    agent_id=recorded_actor,
+                    file_fingerprint=body.file_fingerprint,
+                    ast_path=body.ast_path,
+                    source_root=source_root,
+                    entity_sei=body.entity_sei,
+                )
+            except UnresolvedInputError as exc:
+                raise _unresolved_input_http(exc) from exc
+            except NotEnabledError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except InvalidArgumentError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            response.status_code = 201 if result.accepted else 409
+            return {
+                "outcome": "accepted" if result.accepted else "blocked",
+                "cell": "protected",
+                "seq": result.seq,
+                "verdict": result.verdict.value,
+                "judge_model": result.judge_model,
+                "judge_rationale": result.judge_rationale,
+                "signature": result.signature,
+            }
+
+        raise HTTPException(status_code=422, detail=f"unsupported policy cell {cell!r}")
 
     def verified_governance_records():
         try:
@@ -572,39 +686,13 @@ def create_app(
         return [r.payload for r in verified_governance_records()]
 
     # --- complex-tier enforcement surface (WP-3.1 structured / WP-3.2 protected) ---
-
-    @app.post("/protected/overrides")
-    def post_protected_override(
-        body: ProtectedIn, response: Response, actor: str = Depends(verify_writer)
-    ) -> dict:
-        try:
-            result = _submit_protected_override(
-                protected_gate,
-                identity=identity,
-                policy=body.policy,
-                entity=body.entity,
-                rationale=body.rationale,
-                agent_id=_recorded_actor(actor, body.agent_id),
-                file_fingerprint=body.file_fingerprint,
-                ast_path=body.ast_path,
-                source_root=source_root,
-                entity_sei=body.entity_sei,
-            )
-        except UnresolvedInputError as exc:
-            raise _unresolved_input_http(exc) from exc
-        except NotEnabledError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except InvalidArgumentError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        response.status_code = 201 if result.accepted else 409
-        return {
-            "accepted": result.accepted,
-            "seq": result.seq,
-            "verdict": result.verdict.value,
-            "judge_model": result.judge_model,
-            "judge_rationale": result.judge_rationale,
-            "signature": result.signature,
-        }
+    #
+    # The structured (sign-off) and protected submit paths are reached through the
+    # unified ``POST /overrides`` route above (Phase 9 unification): the floored
+    # cell drives the dispatch. Only the operator-clear routes remain distinct,
+    # because they carry the ``verify_operator`` authority the writer surface must
+    # not. ``POST /protected/overrides`` and ``POST /signoff/request`` are gone
+    # (they now 404) — the cell, not the URL, selects the gate.
 
     @app.post("/protected/operator-override", status_code=201)
     def post_operator_override(body: OperatorOverrideIn, operator: str = Depends(verify_operator)) -> dict:
@@ -633,24 +721,6 @@ def create_app(
             "verdict": result.verdict.value,
             "signature": result.signature,
         }
-
-    @app.post("/signoff/request", status_code=202)
-    def post_signoff_request(body: SignoffRequestIn, actor: str = Depends(verify_writer)) -> dict:
-        try:
-            result = _request_signoff(
-                signoff_gate,
-                identity=identity,
-                policy=body.policy,
-                entity=body.entity,
-                rationale=body.rationale,
-                agent_id=_recorded_actor(actor, body.agent_id),
-                entity_sei=body.entity_sei,
-            )
-        except UnresolvedInputError as exc:
-            raise _unresolved_input_http(exc) from exc
-        except NotEnabledError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"seq": result.seq, "cleared": result.cleared}
 
     @app.post("/signoff/{request_seq}/bind-issue", status_code=201)
     def bind_issue(
