@@ -53,6 +53,11 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    # Real OS-keychain custody round-trip; excluded from CI (needs a live
+    # Secret Service / Keychain), run locally with `-m integration`.
+    "integration: requires live external services (e.g. an OS keychain)",
+]
 filterwarnings = [
     "error",
     # Third-party: Starlette's TestClient warns about its bundled httpx usage.
