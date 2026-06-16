@@ -98,6 +98,37 @@ class PostureLedger:
             return None
         return rec.payload.get("floor")
 
+    def epoch_reset_unacknowledged(self) -> bool:
+        """True iff the current key epoch was opened by a ``KEY_RESET`` that no
+        later ``TRANSITION`` has acknowledged (design §8/§10).
+
+        A ``rekey`` resets the floor to ``chill`` and chains a ``KEY_RESET``
+        carrying a fresh epoch fingerprint. Until an operator signs a follow-on
+        ``TRANSITION`` under that new epoch, the reset is *unacknowledged* — a
+        pending operator action the agent should surface (the same signal the
+        doctor exits non-zero on). This is the structural, agent-visible check:
+        the latest epoch-opening record is a ``KEY_RESET`` AND no ``TRANSITION``
+        record follows it. The doctor's deeper acknowledgment check (Phase 10.2)
+        additionally *verifies* that follow-on signature against the new epoch
+        fingerprint (D6); that verification needs the key and is operator-side,
+        so the agent-visible read reports the unacknowledged window structurally.
+
+        A missing/empty ledger, or an epoch opened by ``GENESIS`` (the normal
+        install path), reports ``False``.
+        """
+        records = self.store.read_all()
+        for rec in reversed(records):
+            kind = rec.payload.get("kind")
+            if kind == KIND_TRANSITION:
+                # A transition after the latest epoch opener -> acknowledged.
+                return False
+            if kind == KIND_KEY_RESET:
+                return True
+            if kind == KIND_GENESIS:
+                # Genesis epoch (install) is not a reset to acknowledge.
+                return False
+        return False
+
     def current_epoch_fingerprint(self) -> str | None:
         """The ``key_fingerprint`` of the current key epoch, or ``None``.
 

@@ -188,7 +188,11 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
         "override_list",
         "doctor_get",
         "policy_boundary_check",
+        "posture_get",
     }
+    # posture_get is the dedicated read-only posture surface (Phase 8); the
+    # change gate (posture set) stays operator/CLI only — no posture_set tool.
+    assert "posture_set" not in by_name
     # Named decision (legis-e5c57dedd1): PR recording stays OFF the agent
     # surface — the forge, not the agent, is the source of truth for PR state;
     # the legis PR store is a CI/forge-integration mirror (HTTP writer token).

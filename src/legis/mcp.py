@@ -101,6 +101,7 @@ _AGENT_TOOLS = frozenset(
         "override_list",
         "doctor_get",
         "policy_boundary_check",
+        "posture_get",
     }
 )
 _OVERRIDE_RATE_NOTE = "measures operator force-pasts; not movable by agent retries"
@@ -1179,6 +1180,29 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "string",
                         "enum": [p.value for p in Provenance],
                     },
+                },
+            ),
+        },
+        {
+            "name": "posture_get",
+            "description": (
+                "Read the governing posture floor and, for a named policy, the "
+                "floored effective cell (max(floor, registry cell)) the agent "
+                "will actually be routed to. Read-only: there is NO posture_set "
+                "over MCP — moving the floor is an operator/CLI action behind an "
+                "elevation session. A missing/empty ledger reports floor "
+                "'structured' (fail-closed, never chill). "
+                "epoch_reset_unacknowledged:true means an operator key was reset "
+                "(rekey) and no signed transition has acknowledged the new epoch "
+                "yet — the same pending-operator signal doctor exits non-zero on."
+            ),
+            "inputSchema": _schema([], {"policy": string}),
+            "outputSchema": _schema(
+                ["floor", "epoch_reset_unacknowledged"],
+                {
+                    "floor": cell_enum,
+                    "effective_cell": cell_enum,
+                    "epoch_reset_unacknowledged": boolean,
                 },
             ),
         },
@@ -2312,6 +2336,36 @@ def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> di
     )
 
 
+def _tool_posture_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    # D0/D2: read the floor FRESH off the held ledger handle (never cached). The
+    # posture REPORT is fail-closed at the posture layer (cross-cutting checklist
+    # #1): an absent/empty ledger reports the floor as 'structured', never chill
+    # — independent of the dev registry default. (That is distinct from the
+    # FlooredRegistry chokepoint, where a None floor is the identity no-op so it
+    # does not force-raise a dev default; here we are reporting the POSTURE, not
+    # routing through the registry.)
+    ledger = runtime.posture_ledger
+    raw_floor = ledger.read_floor() if ledger is not None else None
+    floor = "structured" if raw_floor is None else raw_floor
+    payload: dict[str, Any] = {
+        "floor": floor,
+        # Pending-operator signal: a KEY_RESET with no acknowledging transition.
+        # A missing ledger handle has nothing to acknowledge -> False.
+        "epoch_reset_unacknowledged": bool(
+            ledger is not None and ledger.epoch_reset_unacknowledged()
+        ),
+    }
+    policy = _optional_string(args, "policy")
+    if policy is not None:
+        # The floored effective cell == max(floor, registry.cell_for(policy)),
+        # using the SAME FlooredRegistry the routing/explain/list sites use so
+        # posture_get can never disagree with the cell an override would route
+        # to. _floored_registry is fail-closed structured on a missing ledger
+        # via _registry()'s fail_closed default, matching the reported floor.
+        payload["effective_cell"] = _max_tier(floor, _registry(runtime).cell_for(policy))
+    return _tool_result(payload)
+
+
 _TOOL_HANDLERS: dict[str, Callable[["McpRuntime", dict[str, Any]], dict[str, Any]]] = {
     "policy_explain": _tool_policy_explain,
     "policy_list": _tool_policy_list,
@@ -2334,6 +2388,7 @@ _TOOL_HANDLERS: dict[str, Callable[["McpRuntime", dict[str, Any]], dict[str, Any
     "override_list": _tool_override_list,
     "doctor_get": _tool_doctor_get,
     "policy_boundary_check": _tool_policy_boundary_check,
+    "posture_get": _tool_posture_get,
 }
 
 

@@ -190,6 +190,49 @@ def test_policy_list_conforms(tmp_path):
     assert {c["cell"] for c in payload["cells"]} >= {"chill", "protected"}
 
 
+def test_posture_get_conforms_missing_and_floored(tmp_path):
+    import hashlib
+
+    from legis.enforcement import signing as enf_signing
+    from legis.posture.ledger import PostureLedger
+
+    # No ledger -> fail-closed structured floor (cross-cutting checklist #1).
+    runtime, _ = _runtime(
+        tmp_path, registry=PolicyCellRegistry(default_cell="chill")
+    )
+    missing = _conformant(runtime, "posture_get", {})
+    assert missing["floor"] == "structured"
+    assert missing["epoch_reset_unacknowledged"] is False
+
+    # A seeded ledger raised to structured -> per-policy floored effective cell.
+    url = f"sqlite:///{tmp_path / 'posture.db'}"
+    ledger = PostureLedger(url, initialize=True)
+    key = b"k" * 32
+    fp = hashlib.sha256(key).hexdigest()
+    ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
+
+    class _MemSigner:
+        def fingerprint(self):
+            return fp
+
+        def sign(self, fields):
+            return enf_signing.sign(fields, key, version="v3")
+
+    ledger.transition(
+        "structured",
+        signer=_MemSigner(),
+        session_id="s",
+        key_fingerprint=fp,
+        agent_id="op",
+        rationale="raise",
+        recorded_at="t1",
+    )
+    runtime.posture_ledger = ledger
+    floored = _conformant(runtime, "posture_get", {"policy": "anything"})
+    assert floored["floor"] == "structured"
+    assert floored["effective_cell"] == "structured"
+
+
 def test_override_submit_conforms_accepted_self(tmp_path):
     runtime, _ = _runtime(tmp_path, registry=PolicyCellRegistry(default_cell="chill"))
     payload = _conformant(
