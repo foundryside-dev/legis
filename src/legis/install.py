@@ -13,6 +13,7 @@ This mirrors filigree's mechanism (``filigree/src/filigree/install.py`` and
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import importlib.metadata
 import importlib.resources
@@ -25,7 +26,7 @@ import shutil
 import stat
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
@@ -846,10 +847,23 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
 # ``.legis/`` / ``legis.yaml`` surfaces were retired with the weft store
 # consolidation — no legis code reads them (``legis.yaml`` was the per-member
 # config that ``weft.toml`` ``[legis]`` now replaces).
-_LEGIS_IGNORE_RULES = (".weft/legis/",)
+#
+# The operator-elevation surfaces (``operator_session.json`` ephemeral session
+# metadata, ``operator.age`` wrapped operator key) live UNDER ``.weft/legis/`` and
+# are already covered by the subtree rule, but are also pinned explicitly and
+# root-anchored (``/.weft/...``) per the posture-ratchet plan (Phase 6) so the
+# operator-secret-shaped paths are individually visible in ``.gitignore`` — a
+# reviewer reading the file sees, by name, that they are never committed.
+_LEGIS_IGNORE_RULES = (
+    ".weft/legis/",
+    "/.weft/legis/operator_session.json",
+    "/.weft/legis/operator.age",
+)
 _LEGIS_IGNORE_BLOCK = (
     "\n# Legis — machine-written runtime state (regenerated/local; never commit)\n"
     ".weft/legis/\n"
+    "/.weft/legis/operator_session.json\n"
+    "/.weft/legis/operator.age\n"
 )
 
 
@@ -956,7 +970,18 @@ _SECRET_MCP_ENV_KEYS = frozenset({
     # never copied verbatim into .mcp.json as "safe operator-owned env".
     "LEGIS_FILIGREE_HMAC_KEY",
     "OPENROUTER_API_KEY",
+    # The operator-authority key (posture-ratchet, Phase 6). It is minted at
+    # install and handed to a custody backend; it must NEVER be copied into
+    # .mcp.json where the agent process can read it back as plaintext. The
+    # ``LEGIS_OPERATOR_KEY_*`` family (e.g. the age passphrase var) is scrubbed
+    # by prefix in ``_safe_mcp_env``.
+    "LEGIS_OPERATOR_KEY",
 })
+
+# Operator-key family scrubbed by PREFIX in ``_safe_mcp_env`` — any
+# ``LEGIS_OPERATOR_KEY*`` var (the key itself and its passphrase/unlock kin) is
+# secret-shaped and never belongs in agent-readable .mcp.json.
+_REJECTED_MCP_ENV_PREFIXES = ("LEGIS_OPERATOR_KEY",)
 
 _REJECTED_MCP_ENV_KEYS = _UNSAFE_MCP_ENV_KEYS | _SECRET_MCP_ENV_KEYS
 
@@ -1003,6 +1028,8 @@ def _safe_mcp_env(env: Any) -> dict[str, str] | None:
         if not isinstance(key, str) or not isinstance(value, str):
             return None
         if key in _REJECTED_MCP_ENV_KEYS:
+            continue
+        if any(key.startswith(prefix) for prefix in _REJECTED_MCP_ENV_PREFIXES):
             continue
         safe[key] = value
     return safe
@@ -1116,3 +1143,177 @@ def register_mcp_json(
     servers["legis"] = desired
     _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
     return True, "Registered legis server in .mcp.json"
+
+
+# ---------------------------------------------------------------------------
+# Posture ledger genesis + operator-key mint (posture-ratchet, Phase 6)
+# ---------------------------------------------------------------------------
+#
+# Install "stands up" the signed posture floor: it mints the operator-authority
+# key ONCE, hands it to a custody backend (never the ledger, never .mcp.json),
+# and writes a single keyless ``GENESIS`` record at ``floor="chill"`` carrying
+# only the key's *fingerprint*. From then on the agent process never sees the
+# key bytes; ``posture set`` signs through the backend.
+#
+# Fail-closed / idempotent (spec §5): a second install over an existing ledger
+# — whether its tail is the GENESIS or a Phase-11 ``KEY_RESET`` — re-mints
+# nothing and appends nothing. The ledger's own ``read_all`` non-empty guard
+# (``PostureLedger.genesis``) is the source of truth; install mirrors it so it
+# does not even mint a throwaway key on the idempotent path.
+
+
+class OperatorKeyCustodyError(RuntimeError):
+    """The minted operator key could not be placed in custody.
+
+    Raised by the default key sink when a backend cannot persist the key (no age
+    passphrase, no shipped keychain adapter). Install treats this as fail-closed:
+    NO ``GENESIS`` is written (the sink runs before the genesis append), so the
+    ledger never carries a fingerprint the operator cannot later sign against. A
+    bare ``legis install`` reports this as a *deferred* posture step (re-run with
+    custody configured), not a hard failure of the whole install.
+    """
+
+
+# A sink that persists the minted key into the chosen custody backend. The key
+# crosses this boundary exactly once, at install; the default sink below routes
+# by backend id. Injectable so tests can observe the hand-off without a live
+# keychain / writing an age blob.
+KeySink = Callable[[str, str], None]
+
+
+def posture_db_url_for_install() -> str:
+    """The posture-ledger store URL, resolved against the install cwd.
+
+    A thin indirection over :func:`legis.config.posture_db_url` so install (and
+    its tests) name one symbol; the resolver is cwd-relative by design (the CLI
+    runs install with ``cwd == project_root``).
+    """
+    from legis.config import posture_db_url
+
+    return posture_db_url()
+
+
+def _keychain_available() -> bool:
+    """Probe whether an OS secure store is reachable for key custody.
+
+    Conservative + injectable: the real probe (Secret Service / Keychain /
+    Credential Manager reachability) is environment-specific and is mocked in
+    tests via ``monkeypatch``. Until a live adapter ships it returns ``False``
+    so install deterministically falls back to the age-file backend rather than
+    claiming a keychain it cannot actually write — fail-closed on custody.
+    """
+    return False
+
+
+def choose_install_backend(*, insecure_env: bool = False) -> str:
+    """Pick the custody backend id at install time (keychain > age-file; env opt-in).
+
+    Mirrors :func:`legis.posture.select_backend` but feeds it the live keychain
+    probe (:func:`_keychain_available`) so the CLI does not re-implement the
+    availability check. ``insecure_env=True`` (the ``--insecure-key-in-env``
+    opt-in) forces the env escape hatch; it is never auto-selected.
+    """
+    from legis.posture import select_backend
+
+    return select_backend(
+        keychain_available=_keychain_available(), insecure_env=insecure_env
+    )
+
+
+def install_posture(
+    project_root: Path,
+    *,
+    backend: str,
+    key_sink: KeySink | None = None,
+    agent_id: str = _DEFAULT_AGENT_ID,
+    recorded_at: str | None = None,
+) -> str | None:
+    """Mint the operator key + write the posture-ledger ``GENESIS``, once.
+
+    Returns the current-epoch ``key_fingerprint`` (the freshly-minted one on a
+    first install, the EXISTING one on the idempotent path), or ``None`` if the
+    ledger could not be read back.
+
+    Steps:
+      1. ``ensure_project_dir(project_root, ".weft", "legis")`` — the
+         project-contained store subtree (symlink-checked).
+      2. open ``PostureLedger(posture_db_url(), initialize=True)`` (the ONE DDL
+         run; subsequent reads/writes open fresh connections).
+      3. **Idempotency guard:** if the store already holds ANY record (a GENESIS
+         or a ``KEY_RESET`` tail) -> no mint, no append; return the existing
+         epoch fingerprint. This mirrors ``PostureLedger.genesis``'s own guard so
+         install never mints a throwaway key on a second pass.
+      4. else: ``mint_key()`` -> hand to the backend via ``key_sink`` -> compute
+         the fingerprint -> ``ledger.genesis(key_fingerprint=fp, ...)``. The key
+         bytes reach ONLY the sink; the ledger stores the fingerprint alone.
+    """
+    from legis.clock import SystemClock
+    from legis.posture import (
+        PostureLedger,
+        key_fingerprint,
+        mint_key,
+    )
+
+    ensure_project_dir(project_root, ".weft", "legis")
+    url = posture_db_url_for_install()
+    ledger = PostureLedger(url, initialize=True)
+
+    # Idempotency guard (spec §5): an existing GENESIS or KEY_RESET tail means
+    # the epoch is already established — re-mint nothing, append nothing.
+    if ledger.store.get_latest_sequence_and_hash()[0] != 0:
+        return ledger.current_epoch_fingerprint()
+
+    key_hex = mint_key()
+    sink = key_sink if key_sink is not None else _default_key_sink
+    # Hand the key to custody BEFORE writing GENESIS: if custody fails we have
+    # written no fingerprint we cannot later sign against (fail-closed).
+    sink(key_hex, backend)
+    fp = key_fingerprint(key_hex)
+
+    when = recorded_at if recorded_at is not None else SystemClock().now_iso()
+    ledger.genesis(key_fingerprint=fp, agent_id=agent_id, recorded_at=when)
+    return fp
+
+
+def _default_key_sink(key_hex: str, backend: str) -> None:
+    """Default custody hand-off for the minted operator key.
+
+    Routes by backend id. ``env`` is a no-op (the operator already placed the
+    key in ``LEGIS_OPERATOR_KEY``). ``age-file`` wraps the key under a passphrase
+    from ``LEGIS_OPERATOR_KEY_AGE_PASSPHRASE`` and writes ``operator.age`` (the
+    blob never contains plaintext — :func:`legis.posture.wrap_key`). ``keychain``
+    requires a live adapter that has not shipped; until then it raises so install
+    fails LOUD rather than silently dropping the key (a dropped key means
+    ``posture set`` would later refuse with no recoverable custody).
+    """
+    if backend == "env":
+        return
+    if backend == "age-file":
+        from legis.config import operator_age_path
+        from legis.posture import wrap_key
+
+        passphrase = os.environ.get("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE")
+        if not passphrase:
+            raise OperatorKeyCustodyError(
+                "age-file operator-key custody needs a passphrase in "
+                "LEGIS_OPERATOR_KEY_AGE_PASSPHRASE; refusing to write an "
+                "unprotected operator key"
+            )
+        blob = wrap_key(key_hex, passphrase)
+        path = operator_age_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # The wrapped blob is binary; write atomically via a temp + replace.
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".operator.age.")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(blob)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp)
+            raise
+        return
+    raise OperatorKeyCustodyError(
+        f"no shipped custody adapter for backend {backend!r}; cannot persist the "
+        "operator key (the live keychain adapter has not shipped)"
+    )

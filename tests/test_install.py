@@ -868,13 +868,24 @@ def test_inject_append_keeps_marker_off_users_last_line(tmp_path):
 
 
 def test_ensure_gitignore_present_among_other_rules_not_duplicated(tmp_path):
-    # legis's rule already present alongside unrelated rules → nothing to add.
-    (tmp_path / ".gitignore").write_text("*.db\n.weft/legis/\n")
+    # All of legis's rules already present alongside unrelated rules → nothing to
+    # add. The posture-ratchet operator-secret paths are now part of the rule set
+    # (root-anchored), so a complete .gitignore lists all three.
+    (tmp_path / ".gitignore").write_text(
+        "*.db\n"
+        ".weft/legis/\n"
+        "/.weft/legis/operator_session.json\n"
+        "/.weft/legis/operator.age\n"
+    )
     ok, msg = ensure_gitignore(tmp_path)
     assert ok
     assert "already" in msg  # detected as present, not re-appended
     content = (tmp_path / ".gitignore").read_text()
-    assert content.count(".weft/legis/") == 1  # not duplicated
+    # The bare subtree line appears exactly once (not re-appended).
+    subtree_lines = [
+        ln for ln in content.splitlines() if ln.strip() == ".weft/legis/"
+    ]
+    assert len(subtree_lines) == 1
 
 
 # ---------------------------------------------------------------------------

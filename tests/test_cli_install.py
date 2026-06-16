@@ -99,6 +99,63 @@ def test_install_subcommand_parses_flags():
 
 
 # ---------------------------------------------------------------------------
+# Posture-ledger install wiring (posture-ratchet, Phase 6)
+# ---------------------------------------------------------------------------
+
+
+def test_install_posture_only_writes_genesis(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", "pw")
+    rc = main(["install", "--posture"])
+    assert rc == 0
+    # GENESIS written, age blob persisted, but no unrelated install artifacts.
+    from legis.posture import PostureLedger
+
+    led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+    recs = led.store.read_all()
+    assert len(recs) == 1
+    assert recs[0].payload["kind"] == "GENESIS"
+    assert recs[0].payload["floor"] == "chill"
+    assert (tmp_path / ".weft" / "legis" / "operator.age").exists()
+    assert not (tmp_path / "CLAUDE.md").exists()
+
+
+def test_install_all_defers_posture_without_custody(tmp_path, monkeypatch, capsys):
+    # A bare `legis install` with no custody configured must NOT hard-fail; the
+    # posture step defers (no GENESIS written) and rc stays 0.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", raising=False)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY", raising=False)
+    rc = main(["install"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "deferred" in out
+    # No genesis was written.
+    db = tmp_path / ".weft" / "legis" / "legis-posture.db"
+    if db.exists():
+        from legis.posture import PostureLedger
+
+        led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+        assert led.store.read_all() == []
+
+
+def test_install_posture_env_backend_opt_in(tmp_path, monkeypatch, capsys):
+    # --insecure-key-in-env selects the env backend; the env sink is a no-op so
+    # the GENESIS lands with no age blob and no custody refusal.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", "ab" * 32)
+    rc = main(["install", "--posture", "--insecure-key-in-env"])
+    assert rc == 0
+    from legis.posture import PostureLedger
+
+    led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+    recs = led.store.read_all()
+    assert len(recs) == 1
+    assert recs[0].payload["kind"] == "GENESIS"
+    assert not (tmp_path / ".weft" / "legis" / "operator.age").exists()
+
+
+# ---------------------------------------------------------------------------
 # MCP-boot refresh wiring
 # ---------------------------------------------------------------------------
 

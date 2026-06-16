@@ -162,6 +162,15 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--gitignore", action="store_true", help="Add legis config rules to .gitignore only")
     install.add_argument("--mcp", action="store_true", help="Register the legis MCP server in .mcp.json only")
     install.add_argument(
+        "--posture", action="store_true",
+        help="Mint the operator key + write the posture-ledger GENESIS only",
+    )
+    install.add_argument(
+        "--insecure-key-in-env", action="store_true",
+        help="Custody the operator key via the plaintext LEGIS_OPERATOR_KEY env "
+             "var (CI/headless escape hatch; emits a warning — never use in prod)",
+    )
+    install.add_argument(
         "--agent-id", default=None,
         help="Agent id stamped in the .mcp.json legis entry "
              "(default: claude-code, or preserve an existing entry's id)",
@@ -269,18 +278,48 @@ def _run_doctor(args) -> int:
 
 def _run_install(args) -> int:
     from legis.install import (
+        OperatorKeyCustodyError,
+        choose_install_backend,
         ensure_gitignore,
         inject_instructions,
         install_claude_code_hooks,
         install_codex_skills,
+        install_posture,
         install_skills,
         register_mcp_json,
     )
 
     project_root = Path.cwd()
     install_all = not any(
-        [args.claude_md, args.agents_md, args.skills, args.codex_skills, args.hooks, args.gitignore, args.mcp]
+        [
+            args.claude_md,
+            args.agents_md,
+            args.skills,
+            args.codex_skills,
+            args.hooks,
+            args.gitignore,
+            args.mcp,
+            args.posture,
+        ]
     )
+
+    def _do_posture() -> tuple[bool, str]:
+        insecure_env = getattr(args, "insecure_key_in_env", False)
+        backend = choose_install_backend(insecure_env=insecure_env)
+        try:
+            fp = install_posture(project_root, backend=backend)
+        except OperatorKeyCustodyError as exc:
+            # Fail-closed but non-fatal to the broader install: NO genesis was
+            # written (the sink runs before the append), so the ledger never
+            # carries a fingerprint the operator cannot sign against. Tell the
+            # operator how to complete custody and re-run --posture.
+            return True, (
+                f"deferred: {exc} "
+                f"(re-run `legis install --posture` once custody is configured)"
+            )
+        if fp is None:
+            return False, "posture ledger could not be read back after genesis"
+        return True, f"posture ledger ready (backend={backend}, key={fp[:12]}…)"
 
     steps: list[tuple[bool, str, object]] = [
         (install_all or args.claude_md, "CLAUDE.md", lambda: inject_instructions(project_root / "CLAUDE.md")),
@@ -290,6 +329,7 @@ def _run_install(args) -> int:
         (install_all or args.hooks, "Claude Code hook", lambda: install_claude_code_hooks(project_root)),
         (install_all or args.gitignore, ".gitignore", lambda: ensure_gitignore(project_root)),
         (install_all or args.mcp, ".mcp.json", lambda: register_mcp_json(project_root, args.agent_id)),
+        (install_all or args.posture, "posture ledger", _do_posture),
     ]
 
     failures = 0
