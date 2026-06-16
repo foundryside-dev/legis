@@ -85,7 +85,11 @@ def explain_policy(
     """
     del entity
     rule = registry.rule_for(policy)
-    cell = rule.cell if rule is not None else registry.default_cell
+    # Derive the effective cell from cell_for, NOT rule.cell: when registry is a
+    # FlooredRegistry (posture floor), cell_for raises the matched-rule/default
+    # cell to the floor (D0/D1). rule_for stays the raw matched rule so
+    # matched_rule/policy_known below still report which rule the agent matched.
+    cell = registry.cell_for(policy)
     explanation = explain_cell(
         cell,
         engine=engine,

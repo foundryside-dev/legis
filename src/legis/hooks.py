@@ -170,6 +170,31 @@ def _cells_posture(root: Path) -> str:
     return f"cells config: {label} ({count} {noun} mapped)"
 
 
+def _posture_floor() -> str:
+    """The governing posture floor for this project — read-only, fail-closed.
+
+    Honesty in the session banner (Phase 4 / D0): an agent that reads only
+    "cells config: absent" would assume chill, while a signed posture floor may
+    be raising every policy to structured/protected. ``initialize=False`` never
+    creates a store; a missing or empty ledger reads as the fail-closed
+    ``structured`` default (design §4) and is reported distinctly from a
+    genuinely-set floor. Never raises into the session banner.
+    """
+    from sqlalchemy.exc import SQLAlchemyError
+
+    from legis.config import posture_db_url
+    from legis.posture.ledger import PostureLedger
+
+    try:
+        floor = PostureLedger(posture_db_url(), initialize=False).read_floor()
+    except (OSError, ValueError, SQLAlchemyError):
+        logger.warning("Posture ledger is unreadable", exc_info=True)
+        return "posture floor: unreadable"
+    if floor is None:
+        return "posture floor: none (fail-closed structured)"
+    return f"posture floor: {floor}"
+
+
 def generate_session_context() -> str:
     """Refresh instruction drift in the cwd and return the session banner.
 
@@ -187,6 +212,11 @@ def generate_session_context() -> str:
         logger.warning("Instruction freshness check failed", exc_info=True)
         return "legis: instruction freshness check failed (see logs)"
     banner = "legis: " + "; ".join(
-        (_instructions_posture(root), _skill_pack_posture(root), _cells_posture(root))
+        (
+            _instructions_posture(root),
+            _skill_pack_posture(root),
+            _cells_posture(root),
+            _posture_floor(),
+        )
     )
     return "\n".join([banner, *messages])

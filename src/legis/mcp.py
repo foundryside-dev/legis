@@ -39,6 +39,7 @@ from legis.policy.cells import (
     load_policy_cells,
 )
 from legis.policy.grammar import PolicyGrammar, PolicyResult, default_grammar
+from legis.posture.floor import FlooredRegistry, _max_tier, floored_registry
 from legis.provenance import Provenance
 from legis.pulls.models import PullRequestState
 from legis.pulls.surface import PullSurface
@@ -168,6 +169,11 @@ class McpRuntime:
     binding_ledger: Any | None = None
     filigree: Any | None = None
     binding_key: bytes | None = None
+    # The posture-floor ledger HANDLE (D2): held once on the runtime, never a
+    # cached floor *value*. read_floor() is called fresh at each cell-resolution
+    # site via _floored_registry. None on a runtime built without posture wiring,
+    # which _floored_registry treats fail-closed as a missing ledger (structured).
+    posture_ledger: Any | None = None
 
 
 def _load_policy_cell_registry() -> PolicyCellRegistry:
@@ -190,7 +196,13 @@ def _load_policy_cell_registry() -> PolicyCellRegistry:
 
 
 def build_runtime(agent_id: str) -> McpRuntime:
-    from legis.config import binding_db_url, governance_db_url, protected_policies
+    from legis.config import (
+        binding_db_url,
+        governance_db_url,
+        posture_db_url,
+        protected_policies,
+    )
+    from legis.posture.ledger import PostureLedger
 
     clock = SystemClock()
     engine = None
@@ -268,6 +280,12 @@ def build_runtime(agent_id: str) -> McpRuntime:
         binding_ledger=binding_ledger,
         filigree=filigree,
         binding_key=binding_key,
+        # D2: hold the ledger HANDLE only; each cell-resolution site reads
+        # read_floor() fresh (never the floor VALUE). initialize=False so
+        # launching the server never creates posture.db — genesis is an
+        # install-time action (Phase 6) and build_runtime must not create local
+        # state (audit H6 / the no-local-state-on-init invariant).
+        posture_ledger=PostureLedger(posture_db_url(), initialize=False),
     )
 
 
@@ -405,6 +423,8 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "cell": {"const": "chill"},
                     "seq": integer,
                     "note": string,
+                    # Optional D4 idempotent-replay-after-floor-rise note.
+                    "floor_warning": string,
                 },
             ),
             _schema(
@@ -415,6 +435,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "seq": integer,
                     **judged_fields,
                     "note": string,
+                    "floor_warning": string,
                 },
             ),
             _schema(
@@ -439,6 +460,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "self_clearable": {"const": False},
                     "next_actions": string_array,
                     "note": string,
+                    "floor_warning": string,
                 },
             ),
             _schema(
@@ -455,6 +477,7 @@ def tool_definitions() -> list[dict[str, Any]]:
                     "operator_instruction": string,
                     "poll_tool": {"const": "signoff_status_get"},
                     "poll_handle": integer,
+                    "floor_warning": string,
                 },
             ),
             _schema(
@@ -1418,6 +1441,28 @@ def _registry(runtime: McpRuntime) -> PolicyCellRegistry:
     return runtime.cell_registry or fail_closed_policy_cells()
 
 
+class _NoLedger:
+    """Stand-in for a runtime with no posture ledger handle (fail-closed).
+
+    read_floor() -> None maps to the structured floor in floored_registry, so a
+    runtime built without posture wiring never self-clears below structured.
+    """
+
+    def read_floor(self) -> str | None:
+        return None
+
+
+def _floored_registry(runtime: McpRuntime) -> FlooredRegistry:
+    """The agent-visible registry with the current posture floor applied (D0).
+
+    Built FRESH at every cell-resolution site: floored_registry reads
+    read_floor() at call time (D2), so the floor is never cached. A missing
+    ledger (None handle or empty store) maps to structured, never chill.
+    """
+    ledger = runtime.posture_ledger or _NoLedger()
+    return floored_registry(_registry(runtime), ledger)
+
+
 def _explanation_payload(explanation) -> dict[str, Any]:
     payload = explanation.to_payload()
     payload["available_moves"] = [
@@ -1633,8 +1678,10 @@ def _verified_records(runtime: McpRuntime) -> list[Any]:
 
 
 def _tool_policy_explain(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    # D0: explain through the FlooredRegistry — explain_policy floors
+    # transparently because FlooredRegistry IS-A PolicyCellRegistry (D1).
     explanation = explain_policy(
-        _registry(runtime),
+        _floored_registry(runtime),
         policy=_require(args, "policy"),
         entity=_require(args, "entity"),
         engine=runtime.engine,
@@ -1645,7 +1692,11 @@ def _tool_policy_explain(runtime: McpRuntime, args: dict[str, Any]) -> dict[str,
 
 
 def _tool_policy_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
-    registry = _registry(runtime)
+    # D0: report the FLOORED effective cell for the default and each rule, so an
+    # agent reading policy_list plans against the real routing — not the raw
+    # registry cell that the floor would silently raise. rule.pattern stays the
+    # raw matched rule (D1); only the cell is the floored effective cell.
+    registry = _floored_registry(runtime)
     cells = []
     # CELL_TIER_ORDER is the canonical cell membership in tier order (it backs
     # VALID_CELLS), so the cells block always covers every governance cell — a
@@ -1674,7 +1725,10 @@ def _tool_policy_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, An
         {
             "default_cell": registry.default_cell,
             "rules": [
-                {"pattern": rule.pattern, "cell": rule.cell}
+                {
+                    "pattern": rule.pattern,
+                    "cell": _max_tier(registry.floor, rule.cell),
+                }
                 for rule in registry.rules
             ],
             "cells": cells,
@@ -1688,13 +1742,24 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     rationale = _require(args, "rationale")
     entity_sei = _optional_string(args, "entity_sei")
     idempotency_key = _optional_string(args, "idempotency_key")
+    # D0: route through the FlooredRegistry. dispatch_cell is the floored
+    # effective cell — engine selection and the whole dispatch below key on it,
+    # never on an unfloored registry cell (so a chill rule under a structured
+    # floor escalates instead of self-clearing).
+    registry = _floored_registry(runtime)
+    dispatch_cell = registry.cell_for(policy)
+    # The idempotency key is floor-INSENSITIVE (D4): hash on the RAW registry
+    # cell, not the floored dispatch cell, so a posture-floor change between an
+    # original submit and a retry does not break the idempotency match — a
+    # genuine retry returns the original outcome (with a floor_warning below).
+    raw_cell = _registry(runtime).cell_for(policy)
     simple_engine = (
         _engine(runtime)
-        if _registry(runtime).cell_for(policy) in ("chill", "coached")
+        if dispatch_cell in ("chill", "coached")
         else runtime.engine
     )
     explanation = explain_policy(
-        _registry(runtime),
+        registry,
         policy=policy,
         entity=entity,
         engine=simple_engine,
@@ -1719,7 +1784,7 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
             policy=policy,
             entity=entity,
             rationale=rationale,
-            cell=explanation.cell,
+            cell=raw_cell,
             file_fingerprint=_optional_string(args, "file_fingerprint"),
             ast_path=_optional_string(args, "ast_path"),
             entity_sei=entity_sei,
@@ -1741,9 +1806,24 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
             runtime, idempotency_key, idempotency_request_hash
         )
         if existing is not None:
-            return _tool_result(
-                _idempotent_override_response(existing.payload, existing.seq)
-            )
+            response = _idempotent_override_response(existing.payload, existing.seq)
+            original_cell = existing.payload.get("extensions", {}).get("mcp_cell")
+            # D4 (warning variant): the replay returns the ORIGINAL outcome (the
+            # record cannot be unwritten), but if the posture floor has RISEN
+            # since it was written, say so — never a silent grandfather past a
+            # raised floor.
+            if (
+                original_cell in CELL_TIER_ORDER
+                and dispatch_cell != original_cell
+                and _max_tier(dispatch_cell, original_cell) == dispatch_cell
+            ):
+                response["floor_warning"] = (
+                    f"idempotent replay recorded at cell {original_cell!r}; the "
+                    f"posture floor now raises this policy to {dispatch_cell!r}. "
+                    f"The original outcome is returned unchanged; a fresh "
+                    f"submission would route to {dispatch_cell!r}."
+                )
+            return _tool_result(response)
     if explanation.cell in ("chill", "coached"):
         override_result = submit_override(
             _engine(runtime),

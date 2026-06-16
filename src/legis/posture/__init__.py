@@ -7,6 +7,7 @@ model and the ledger.
 
 from __future__ import annotations
 
+from legis.posture.floor import FlooredRegistry, floored_registry
 from legis.posture.ledger import PostureLedger
 from legis.posture.records import (
     KIND_GENESIS,
@@ -42,6 +43,7 @@ __all__ = [
     "KIND_TRANSITION",
     "AgeFileSigner",
     "EnvSigner",
+    "FlooredRegistry",
     "InsecureEnvKeyWarning",
     "KeychainSigner",
     "PostureLedger",
@@ -49,6 +51,7 @@ __all__ = [
     "PostureSigner",
     "Session",
     "end_session",
+    "floored_registry",
     "is_active",
     "key_fingerprint",
     "load_session",
