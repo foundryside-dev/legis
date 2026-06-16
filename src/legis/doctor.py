@@ -496,6 +496,236 @@ def check_policy_cells(root: Path) -> DoctorCheck:
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 10: posture-ledger reconciliation (report-only; non-zero on rekey)
+# ---------------------------------------------------------------------------
+
+_POSTURE_DB_NAME = "legis-posture.db"
+_POSTURE_DB_ENV = "LEGIS_POSTURE_DB"
+_OPERATOR_KEY_ENV = "LEGIS_OPERATOR_KEY"
+
+
+def _posture_url(root: Path) -> str:
+    return _store_url(root, _POSTURE_DB_NAME, _POSTURE_DB_ENV)
+
+
+def _posture_db_path(url: str) -> Path | None:
+    """The on-disk path for a file-backed posture store URL, else ``None``."""
+    try:
+        parsed = make_url(url)
+    except Exception:  # noqa: BLE001
+        return None
+    db = parsed.database
+    if parsed.get_backend_name() != "sqlite" or not db or db == ":memory:":
+        return None
+    return Path(db)
+
+
+def check_posture_chain(root: Path) -> DoctorCheck:
+    """Report-only hash-chain integrity for the posture ledger (Task 10.1).
+
+    A missing or zero-byte store is ``ok`` ("no ledger yet") — the floor simply
+    defers to the registry default (fail-closed ``structured``); doctor must NOT
+    create the DB. A schema-present-but-tampered chain is ``error`` (report-only;
+    never auto-repaired). Mirrors :func:`check_audit_chain`'s no-leak posture but
+    special-cases the missing store before the zero-byte schema check so an
+    un-installed project reads as ``ok``, not ``error``."""
+    cid = "store.posture_chain"
+    url = _posture_url(root)
+    db = _posture_db_path(url)
+    if db is not None and (not db.exists() or db.stat().st_size == 0):
+        return DoctorCheck(cid, "ok", message="no ledger yet (floor defers to registry default)")
+    return check_audit_chain(cid, url)
+
+
+def check_posture_ledger(root: Path) -> DoctorCheck:
+    """Distinguish no-file (ok), GENESIS-present (ok, reports floor), and
+    file-but-no-GENESIS (warn) (Task 10.1).
+
+    ``verify_integrity()`` on an empty store returns True (the loop exits at
+    once), so ``check_posture_chain`` would misleadingly say "chain ok" while
+    ``read_floor()`` is ``None`` and the effective floor is fail-closed
+    ``structured``. This check makes the empty-store signal explicit and names
+    the operator action."""
+    cid = "store.posture_ledger"
+    url = _posture_url(root)
+    db = _posture_db_path(url)
+    if db is not None and (not db.exists() or db.stat().st_size == 0):
+        return DoctorCheck(cid, "ok", message="no posture ledger yet")
+    from legis.posture.ledger import PostureLedger
+
+    try:
+        ledger = PostureLedger(url, initialize=False)
+        floor = ledger.read_floor()
+    except Exception as exc:  # noqa: BLE001 — never raise from doctor
+        return DoctorCheck(cid, "error", message=f"cannot read posture ledger: {exc}")
+    if floor is None:
+        return DoctorCheck(
+            cid,
+            "warn",
+            message="store initialized but no genesis record — re-run legis install",
+        )
+    return DoctorCheck(cid, "ok", message=f"floor: {floor}")
+
+
+def _operator_key_provider(fingerprint: str) -> str | None:
+    """Default key provider: produce the hex key for *fingerprint* if a backend
+    can without revealing it elsewhere. Today only the env escape hatch is
+    probeable from the doctor process; keychain/age unlocks are operator-side
+    (re-prompt) and report as unreachable here. Returns the key hex ONLY for
+    internal verification — never rendered in any message."""
+    env_key = os.environ.get(_OPERATOR_KEY_ENV)
+    if env_key:
+        try:
+            from legis.posture.signing import key_fingerprint
+
+            if key_fingerprint(env_key) == fingerprint:
+                return env_key
+        except Exception:  # noqa: BLE001 — malformed env key is just unreachable
+            return None
+    return None
+
+
+def _latest_key_reset(records: list[Any]) -> Any | None:
+    """The most recent KEY_RESET record, or ``None``."""
+    from legis.posture.records import KIND_KEY_RESET
+
+    for rec in reversed(records):
+        if rec.payload.get("kind") == KIND_KEY_RESET:
+            return rec
+    return None
+
+
+def _transition_acknowledges(rec: Any, *, new_fp: str, key_provider: Any) -> bool:
+    """True iff TRANSITION *rec*'s ``operator_sig`` verifies under the new-epoch
+    key (D6). Record-kind presence is insufficient — the signature must verify
+    against a key whose fingerprint equals *new_fp*, proving the transition was
+    signed under the reset's new epoch, not merely placed after it."""
+    from legis.enforcement import signing as _signing
+    from legis.posture.signing import key_fingerprint
+
+    sig = rec.payload.get("operator_sig")
+    if not sig:
+        return False
+    key_hex = key_provider(new_fp)
+    if not key_hex:
+        return False
+    try:
+        if key_fingerprint(key_hex) != new_fp:
+            return False
+        key_bytes = bytes.fromhex(key_hex)
+    except Exception:  # noqa: BLE001
+        return False
+    fields = {k: v for k, v in rec.payload.items() if k != "operator_sig"}
+    fields["chain_seq"] = rec.seq
+    try:
+        return _signing.verify(fields, sig, key_bytes)
+    except Exception:  # noqa: BLE001 — verify failure is non-acknowledgment
+        return False
+
+
+def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCheck:
+    """Non-zero exit on an unacknowledged ``KEY_RESET`` (Task 10.2, D6).
+
+    A ``rekey`` resets the floor to chill and chains a ``KEY_RESET`` carrying a
+    fresh epoch fingerprint — loud and indelible (design §8). Until an operator
+    re-raises the floor with a ``TRANSITION`` whose ``operator_sig`` *verifies*
+    against the new epoch key, the reset is unacknowledged and doctor fails CI
+    (``error`` / ``run_doctor`` returns non-zero). Per D6, a later TRANSITION of
+    the right kind is NOT enough — record-kind presence is replayable; the
+    signature must verify under the new epoch. Missing/empty ledger → ``ok``.
+    Never renders key material (the fingerprint and the verification result are
+    the only signals)."""
+    cid = "store.posture_key_reset"
+    if key_provider is None:
+        key_provider = _operator_key_provider
+    url = _posture_url(root)
+    db = _posture_db_path(url)
+    if db is not None and (not db.exists() or db.stat().st_size == 0):
+        return DoctorCheck(cid, "ok", message="no posture ledger yet")
+    from legis.posture.records import KIND_TRANSITION
+    from legis.store.audit_store import AuditStore
+
+    try:
+        records = AuditStore(url, initialize=False, apply_pragmas=False).read_all()
+    except Exception as exc:  # noqa: BLE001 — never raise from doctor
+        return DoctorCheck(cid, "error", message=f"cannot read posture ledger: {exc}")
+    reset = _latest_key_reset(records)
+    if reset is None:
+        return DoctorCheck(cid, "ok", message="no key-epoch reset")
+    new_fp = reset.payload.get("key_fingerprint")
+    # An acknowledging TRANSITION after the reset whose sig verifies under new_fp.
+    acknowledged = False
+    for rec in records:
+        if rec.seq <= reset.seq:
+            continue
+        if rec.payload.get("kind") != KIND_TRANSITION:
+            continue
+        if _transition_acknowledges(rec, new_fp=new_fp, key_provider=key_provider):
+            acknowledged = True
+            break
+    if acknowledged:
+        return DoctorCheck(cid, "ok", message="key epoch reset acknowledged by a signed transition")
+    agent = reset.payload.get("agent_id") or "unknown"
+    when = reset.payload.get("recorded_at") or "unknown"
+    return DoctorCheck(
+        cid,
+        "error",
+        message=(
+            f"posture key epoch reset on {when} by {agent} — unacknowledged. The floor "
+            "is reset to chill; re-raise it with a signed `legis posture set` under the "
+            "new key (doctor stays non-zero until then). [operator]"
+        ),
+        repairable=False,
+    )
+
+
+def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> DoctorCheck:
+    """Report-only operator-key reachability (Task 10.3).
+
+    Reads the current epoch ``key_fingerprint`` (latest GENESIS/KEY_RESET) and
+    probes whether any backend can produce it WITHOUT revealing the key. If the
+    env escape hatch is set it ``warn``s with the plaintext-in-env honesty note
+    (reachable, but residual); if nothing can produce the fingerprint it
+    ``warn``s that ``posture set`` will refuse until ``rekey``. Never renders the
+    key. Missing/empty ledger → ``ok`` (nothing to reach yet)."""
+    cid = "runtime.operator_key"
+    if key_provider is None:
+        key_provider = _operator_key_provider
+    url = _posture_url(root)
+    db = _posture_db_path(url)
+    if db is not None and (not db.exists() or db.stat().st_size == 0):
+        return DoctorCheck(cid, "ok", message="no posture ledger yet")
+    from legis.posture.ledger import PostureLedger
+
+    try:
+        ledger = PostureLedger(url, initialize=False)
+        epoch_fp = ledger.current_epoch_fingerprint()
+    except Exception as exc:  # noqa: BLE001
+        return DoctorCheck(cid, "error", message=f"cannot read posture ledger: {exc}")
+    if epoch_fp is None:
+        return DoctorCheck(cid, "ok", message="no key epoch yet")
+    if os.environ.get(_OPERATOR_KEY_ENV):
+        return DoctorCheck(
+            cid,
+            "warn",
+            message=(
+                "operator key present in LEGIS_OPERATOR_KEY (plaintext-in-env) — usable "
+                "but a residual: prefer the keychain/age backend. [operator]"
+            ),
+        )
+    if key_provider(epoch_fp) is not None:
+        return DoctorCheck(cid, "ok", message="operator key reachable")
+    return DoctorCheck(
+        cid,
+        "warn",
+        message=(
+            "operator key not reachable in any backend — `posture set` will refuse; "
+            "`legis posture rekey` to recover (resets to chill, mints a new epoch). [operator]"
+        ),
+    )
+
+
 def check_wardline_routing(root: Path) -> DoctorCheck:  # noqa: ARG001
     """Report-only (N3 / C-10(c)): is scan_route's server-owned cell wired?
 
@@ -668,6 +898,10 @@ def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:
     checks.append(check_legacy_stray_db(root))
     checks.append(check_audit_chain("store.governance_chain", _store_url(root, "legis-governance.db", "LEGIS_GOVERNANCE_DB")))
     checks.append(check_audit_chain("store.binding_chain", _store_url(root, "legis-binding.db", "LEGIS_BINDING_DB")))
+    checks.append(check_posture_chain(root))
+    checks.append(check_posture_ledger(root))
+    checks.append(check_posture_key_reset(root))
+    checks.append(check_operator_key_accessible(root))
     checks.append(check_hmac_key(root))
     checks.append(check_policy_cells(root))
     checks.append(check_wardline_routing(root))
