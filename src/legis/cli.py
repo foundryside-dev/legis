@@ -211,6 +211,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-id", default="legis-operator-cli",
         help="Agent id stamped on the TRANSITION record",
     )
+    prekey = posture_sub.add_parser(
+        "rekey",
+        help=(
+            "Lost-key recovery: mint a new operator key epoch, reset the floor "
+            "to chill, and chain a loud KEY_RESET (doctor stays non-zero until "
+            "you re-raise the floor with a signed `posture set` under the new key)"
+        ),
+    )
+    prekey.add_argument(
+        "--backend", default=None,
+        help="Custody backend for the new key (keychain, age-file, env). "
+        "Defaults to the auto-selected backend.",
+    )
+    prekey.add_argument(
+        "--agent-id", default="legis-operator-cli",
+        help="Agent id stamped on the KEY_RESET record",
+    )
 
     operator = subparsers.add_parser(
         "operator",
@@ -381,6 +398,7 @@ def _build_operator_signer(backend_id: str):
 
 
 def _run_posture(args) -> int:
+    from legis.clock import SystemClock
     from legis.config import posture_db_url
     from legis.posture import PostureLedger, load_session, set_floor
     from legis.posture.ledger import PostureSetResult
@@ -434,8 +452,37 @@ def _run_posture(args) -> int:
         print(f"posture floor set to {result.floor} (session {result.session_id})")
         return 0
 
+    if command == "rekey":
+        # Lost-key recovery (Phase 11 / design §8): mint a fresh key epoch, reset
+        # the floor to chill, and chain a loud KEY_RESET. Needs NO open session
+        # and NO old key — a lost key cannot sign, so the indelible, doctor-flagged
+        # record IS the accountability. The new key bytes reach ONLY custody via
+        # the install key-sink; the ledger stores the fingerprint alone.
+        from legis.install import _default_key_sink, choose_install_backend
+
+        backend = args.backend
+        if backend is None:
+            backend = choose_install_backend(insecure_env=False)
+        ledger = PostureLedger(posture_db_url(), initialize=True)
+        try:
+            new_fp = ledger.rekey(
+                agent_id=args.agent_id,
+                recorded_at=SystemClock().now_iso(),
+                key_sink=_default_key_sink,
+                backend=backend,
+            )
+        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+            print(f"posture rekey: refused — {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"posture rekey: new key epoch {new_fp[:12]}… minted (backend={backend}); "
+            f"floor reset to chill. Re-raise it with a signed `legis posture set` "
+            f"under the new key — `legis doctor` stays non-zero until you do."
+        )
+        return 0
+
     # `legis posture` with no subcommand.
-    print("usage: legis posture {show,set}", file=sys.stderr)
+    print("usage: legis posture {show,set,rekey}", file=sys.stderr)
     return 2
 
 

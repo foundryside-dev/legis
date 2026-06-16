@@ -18,6 +18,7 @@ Fail-closed contract (design §4/§5):
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
@@ -259,9 +260,60 @@ class PostureLedger:
             }
         )
 
-    def rekey(self, *args: Any, **kwargs: Any) -> None:
-        """Write a ``KEY_RESET`` genesis chained onto history (Phase 11)."""
-        raise NotImplementedError("rekey lands in Phase 11")
+    def rekey(
+        self,
+        *,
+        agent_id: str,
+        recorded_at: str,
+        key_sink: Callable[[str, str], None] | None = None,
+        backend: str = "env",
+    ) -> str:
+        """Mint a fresh key epoch and chain a loud ``KEY_RESET`` onto history.
+
+        The lost-key / recovery path (design §8). Fail-closed/loud invariants:
+
+          * **Resets to chill.** The ``KEY_RESET`` carries ``floor="chill"`` so
+            the floor can never *rise* across a reset — the post-reset state is
+            the safest-to-self-clear cell, and the operator must re-raise it with
+            a fresh signed ``TRANSITION`` under the new epoch.
+          * **Needs no old key and no open session.** Rekey is the recovery
+            mechanism for a lost custody key, so it deliberately mints a new key
+            without proving possession of the old one (a lost key cannot sign)
+            and without an elevation session — its accountability is the
+            indelible, doctor-flagged ``KEY_RESET`` record, not a countersignature.
+          * **Preserves history.** The reset is ``append``\\ed onto the existing
+            chain (NOT a fresh DB) — every prior record stays present and
+            ``verify_integrity`` holds across the whole ledger.
+          * **Loud.** Exactly one ``KEY_RESET`` is written; doctor then exits
+            non-zero until a signed ``TRANSITION`` verifies under the NEW epoch
+            (Task 10.2 / D6).
+
+        The freshly-minted key bytes reach ONLY the custody ``key_sink`` (handed
+        off BEFORE the record is written, mirroring ``install_posture`` — if
+        custody fails we have written no fingerprint we cannot later sign
+        against); the ledger stores the new fingerprint alone. Returns the new
+        epoch ``key_fingerprint``.
+        """
+        from legis.posture.signing import key_fingerprint, mint_key
+
+        key_hex = mint_key()
+        new_fp = key_fingerprint(key_hex)
+        # Hand the key to custody BEFORE appending the reset: a custody failure
+        # must leave the ledger untouched (no fingerprint we cannot sign against).
+        if key_sink is not None:
+            key_sink(key_hex, backend)
+        record = PostureRecord(
+            kind=KIND_KEY_RESET,
+            floor="chill",
+            key_fingerprint=new_fp,
+            agent_id=agent_id,
+            recorded_at=recorded_at,
+            rationale="key epoch reset (rekey)",
+            operator_sig=None,
+            session_id=None,
+        )
+        self.store.append(record.to_payload())
+        return new_fp
 
 
 # -- the change gate (Phase 5, Task 5.1) -------------------------------------
