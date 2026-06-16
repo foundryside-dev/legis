@@ -22,6 +22,7 @@ The mechanism for "the operator authorizes a change" must respect a hard constra
 ### Goals (v1)
 - `legis install` establishes a **chill** posture floor as a signed genesis record.
 - Posture floor is a single value that acts as a **floor under** the existing per-policy registry; it is the only key-gated, loosenable setting.
+- The floor applies **uniformly across every surface — MCP, HTTP API, and CLI — through one shared `FlooredRegistry` chokepoint.** As part of this, the HTTP API's cell-addressed submit routes are **unified into one policy-routed submit** so the server (not the caller) owns the cell decision; this closes the API floor-bypass door and makes the README's "API/MCP/CLI routed through the same service layer" claim true (see §3a).
 - Install **mints** an operator key and hands it to a custody backend; the key is never written to disk in plaintext by Legis (except the explicit env escape hatch).
 - An **operator elevation session** (`legis operator enable`) — `sudo` for governance signing — unlocks signing for a short, time-boxed, **attributable** window via an OS keychain prompt.
 - A lost key is **recoverable, not catastrophic**: a keyless `rekey` that resets to chill, preserves history, and is loudly recorded.
@@ -45,6 +46,21 @@ Consequences:
 - The floor is the **only** key-gated state and the only thing whose change can loosen the project.
 
 This matches the operator's mental model — one posture knob — while preserving everything already built.
+
+**The `max(floor, …)` is applied once, at the registry boundary, by a `FlooredRegistry` wrapper — the single cross-surface chokepoint.** Every surface that resolves a policy to a cell constructs a `FlooredRegistry(inner_registry, floor)` and calls `cell_for`/`default_cell` through it; no call site does its own `max()`. This is what lets MCP, the HTTP API, and the CLI/hooks all floor identically without duplicated logic. The floor value is read **per request/invocation** via `read_floor()` (a cheap SQLite tail read), so a floor change applies to a long-lived server without a restart.
+
+## 3a. HTTP API governance-routing unification (option b)
+
+The floor's `max(floor, registry.cell_for(policy))` only bites where a policy name is mapped to a cell *by the registry*. Today that mapping happens **only on the MCP/service path** (`src/legis/mcp.py:1693`). The HTTP API instead exposes **one route per cell** and lets the caller address a cell directly (`POST /overrides` = simple-tier self-clear, `POST /protected/overrides`, `POST /signoff/request`, …), so it never calls `cell_for` and the floor cannot reach it. That makes the cell-addressed API a **floor-bypass door**: with `floor=structured`, an API client can still `POST /overrides` and self-clear below the floor.
+
+v1 closes this by **routing the API by policy, exactly like MCP**, rather than bolting on a per-route admission gate:
+
+- The **submit path collapses to one server-routed write.** `POST /overrides` keeps its name but the caller now sends `{policy, entity, rationale, …}`; the server routes via `FlooredRegistry.cell_for(policy)` to the right cell (chill/coached → simple engine; structured → opens a sign-off request; protected → protected gate) and returns a **discriminated outcome** (`accepted` / `blocked` / `escalation_requested{request_seq}` / `signed`), mirroring MCP `override_submit`. The floor now applies to the API through the **same** chokepoint as MCP — no bypass, no separate gate.
+- `POST /protected/overrides` and `POST /signoff/request` as distinct *submit* routes are **removed**, folded into the routed `/overrides`.
+- **Operator-clear routes stay distinct.** `POST /signoff/{seq}/sign` and `POST /protected/operator-override` are operator *authority* actions ("clear request N" / "operator overrides"), not policy submits; they remain operator-authed routes. The unification is the *propose/submit* path only.
+- Non-governance routes (`/git/*`, `/checks/*`, `/signoff/{seq}/bind-issue`, `/filigree/.../closure-gate`) are untouched.
+
+**Why now:** the cell-addressed routes have **no external runtime consumer** (exercised only by legis's own `tests/api/*`; no client SDK). The only cross-member ripple is the **SEI conformance contract** (`docs/federation/sei-conformance.md`), which names these routes — legis-owned, with SEI *semantics* preserved (the unified route keys on SEI identically). That doc + any cross-member SEI conformance vector are updated **in this same release**. Doing the route change now — while the floor concept is brand-new and nothing depends on sub-floor routes staying open — is one atomic contract change instead of two coordinated ones later.
 
 ## 4. The posture ledger
 
@@ -88,8 +104,12 @@ Backends (v1):
 | backend | key at rest | unlock | friction |
 |---|---|---|---|
 | **OS keychain** ⭐ (macOS Keychain / Secret Service / Windows Credential Manager) | secure element / login keychain | biometric / OS auth | none — no manual env import |
-| **age-encrypted file** (`~/.config/legis/operator.age`) | encrypted on disk, portable, zero external dep | passphrase | low |
+| **age-encrypted file** (`~/.config/legis/operator.age`) | encrypted on disk, portable | passphrase | low — see re-prompt note below |
 | **env escape hatch** (`LEGIS_OPERATOR_KEY`) | **plaintext in env** | none | escape hatch only — CI/headless; emits an honest warning that this exposes the key to the process. elspeth-parity, de-emphasized. |
+
+**Crypto is a mandatory dependency.** The age-file backend uses the `cryptography` package (scrypt KDF + AES-GCM); it is a hard dependency, not an optional extra — encrypted-at-rest custody is core to this feature and only grows in importance. (No `age` CLI shell-out.)
+
+**age-file session ergonomics (accepted friction).** For the age-file backend *without* an available OS keychain to hold a session-wrapping secret, each `posture set` within the window **re-prompts for the passphrase** — the session file holds only metadata, never the key or passphrase. This is the honest trade-off and is intentional: the friction is the point; anyone who wants the smooth "no further prompts in the window" experience uses the keychain backend.
 
 Default backend at install: **OS keychain if available, else age-file**; the env escape hatch only on an explicit `--insecure-key-in-env`.
 
@@ -102,13 +122,16 @@ Per-action keychain prompts are replaced by a **time-boxed elevation session**:
 ```
 legis operator enable [--ttl 5m]
    └─ OS keychain prompt ── human auths ──or not
-         └─ on auth: a short-lived local signing agent (ssh-agent style) holds the
-            unlocked signing capability in memory for the TTL; the key never leaves it
+         └─ on auth: a session is opened for the TTL. The key NEVER lands on disk in
+            plaintext; the session file holds only metadata + a backend-specific unlock
+            reference (keychain item id, or an age session-wrapped blob), never the key
                └─ within the window: posture set (and, future, sign-offs/verdicts/commits)
-                  are signed on request with no further prompts
-                     └─ TTL lapses → capability zeroized, session ends → locked
+                  are signed on request — keychain backend: silent (no further prompt);
+                  age-file-without-keychain: re-prompts per set (accepted friction)
+                     └─ TTL lapses → session file deleted (any wrapped blob gone) → locked
 ```
 
+- **v1 session model is a persisted session file, not an in-memory daemon.** `legis` is a fresh process per CLI invocation, so the "ssh-agent style" long-lived signing daemon is deferred to v1.1. v1 uses a two-level key hierarchy: at `enable`, custody is unlocked once; the operator key is held only via a backend-specific unlock reference in `.weft/legis/operator_session.json` (keychain item id, or an age-wrapped blob whose wrapping secret lives in the keychain) — never the raw key, never a passphrase. "Zeroized on TTL lapse" = the session file (and any wrapped blob it held) is deleted; the key in custody is untouched.
 - **Default TTL: 5 minutes**, configurable via `--ttl`; `legis operator disable` ends it early.
 - The human's act of enabling **is** "humans on the loop, not in the loop" — a declaration of presence supervising a burst of work, not per-signature approval.
 
@@ -124,7 +147,8 @@ Changing the floor = appending a `TRANSITION` record. The gate:
 
 **Surfaces:**
 - CLI: `legis posture show` (keyless read), `legis posture set <cell>` (session-gated), `legis posture rekey` (§8), `legis operator enable|disable`.
-- MCP/service: a read-only `posture_get` tool so the agent can learn its effective cell; **no `posture set` over MCP.** This is not a security boundary (the agent can shell out) but an honest interface statement — moving the floor is an operator action. The actual control is custody (§6), not surface.
+- MCP/service: a read-only `posture_get` tool so the agent can learn the global floor **and the floored effective cell for a given policy**; **no `posture set` over MCP.** This is not a security boundary (the agent can shell out) but an honest interface statement — moving the floor is an operator action. The actual control is custody (§6), not surface.
+- HTTP API: the unified policy-routed `POST /overrides` (§3a) enforces the floor through the shared `FlooredRegistry` chokepoint; the floor itself is **not** set over the API (operator action). The API reads the floor per-request.
 
 ## 8. Re-key / lost-key path
 
@@ -153,7 +177,8 @@ Legis states its own residual limits rather than hiding them in comments (`READM
 - **Custody backends:** keychain (mocked secure store), age-file (real encrypt/decrypt round-trip), env escape hatch emits warning. Signer never returns key bytes to caller.
 - **Elevation session:** enable opens window + writes `OPERATOR_SESSION_OPENED`; TTL lapse zeroizes; `disable` ends early; every in-window signature carries `session_id`.
 - **Rekey:** resets to chill, mints new epoch, writes `KEY_RESET` onto existing chain (history preserved), needs no old key, doctor flags it.
-- **Doctor reconciliation:** floor-vs-registry report; ledger discontinuity / epoch-reset surfaced; zero-byte/missing store handled report-only (consistent with existing doctor posture).
+- **Doctor reconciliation:** floor-vs-registry report; ledger discontinuity / epoch-reset surfaced; **`legis doctor` exits non-zero on an unacknowledged `KEY_RESET`** so a rekey (legitimate or attacker-forced) fails CI loudly; zero-byte/missing store handled report-only (consistent with existing doctor posture).
+- **API unification:** unified `POST /overrides` routes by policy through `FlooredRegistry` and returns the discriminated outcome for each cell; a `floor=structured` floor refuses a would-be chill self-clear (no bypass); operator-clear routes (`/signoff/{seq}/sign`, `/protected/operator-override`) unchanged; existing `tests/api/*` rewritten against the unified route; `docs/federation/sei-conformance.md` updated and the SEI conformance vector re-pinned to the new route surface.
 
 ## 11. Future state (tracked in Filigree, not built here)
 
@@ -173,3 +198,13 @@ These share v1's primitive but each is its own risk surface and spec.
 - Elevation sessions (`operator enable`, 5-min TTL) replace per-action prompts and provide the accountability record.
 - Lost key → keyless `rekey` that resets to chill, preserves history, is loudly recorded.
 - v1 scope = elevation-session primitive + posture floor as its only consumer; the rest is future state.
+
+### Decisions resolved post-plan (2026-06-16, against the workflow plan + review)
+
+- **API governance-routing unification is IN scope for v1 (option b).** The HTTP API's cell-addressed submit routes collapse into one policy-routed `POST /overrides`, so the floor applies through the shared `FlooredRegistry` chokepoint across MCP + API + CLI. Chosen over a per-route admission gate because the cell-addressed API is a real floor-bypass door, it has no external runtime consumer, and unifying now is one atomic contract change instead of a coordinated breaking change later. (Reverses the plan's D6, which had scoped the API out.)
+- **`cryptography` is a mandatory dependency** (age-file backend; scrypt + AES-GCM). Not an optional extra.
+- **age-file-without-keychain re-prompts per `posture set`** — accepted friction; the smooth window is the keychain backend's benefit.
+- **`legis doctor` exits non-zero on an unacknowledged `KEY_RESET`** — the rekey friction is intended (CI fails until the operator re-raises the floor with a signed transition).
+- **`posture_get` returns the per-policy floored effective cell**, not just the global floor.
+- **The floor is read per request/invocation** (not cached at startup) so a long-lived API/MCP server applies a floor change without a restart. (Supersedes the plan's D7 startup-read.)
+- **SEI conformance contract** (`docs/federation/sei-conformance.md`) + cross-member SEI vector are updated in this same release to track the unified route surface.
