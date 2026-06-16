@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 from legis.posture.records import (
     KIND_GENESIS,
+    KIND_SESSION_OPENED,
     KIND_TRANSITION,
     PostureRecord,
 )
@@ -172,9 +173,36 @@ class PostureLedger:
 
     # -- Phase 3.2 / Phase 11 signatures (implemented later) -----------------
 
-    def session_opened(self, *args: Any, **kwargs: Any) -> None:
-        """Append an ``OPERATOR_SESSION_OPENED`` record (Phase 3.2)."""
-        raise NotImplementedError("session_opened lands in Phase 3.2")
+    def session_opened(
+        self,
+        *,
+        operator_id: str,
+        enabled_at: str,
+        ttl: int,
+        keychain_auth_ref: str | None,
+        session_id: str,
+    ) -> None:
+        """Append a keyless ``OPERATOR_SESSION_OPENED`` record (design §6).
+
+        The enable IS the operator's countersignature on the whole window
+        (design §6), so the record carries no ``operator_sig``. It records who
+        opened the window, when, for how long, and the backend unlock reference
+        (``keychain_auth_ref`` — the keychain item id, or ``None`` for
+        age-file/env, per D5). Every ``TRANSITION`` produced in the window then
+        carries this ``session_id``, so the trail reads back as "operator X
+        opened a window at T; within it the floor moved A->B".
+        """
+        self.store.append(
+            {
+                "kind": KIND_SESSION_OPENED,
+                "operator_id": operator_id,
+                "enabled_at": enabled_at,
+                "ttl": ttl,
+                "keychain_auth_ref": keychain_auth_ref,
+                "session_id": session_id,
+                "operator_sig": None,
+            }
+        )
 
     def rekey(self, *args: Any, **kwargs: Any) -> None:
         """Write a ``KEY_RESET`` genesis chained onto history (Phase 11)."""

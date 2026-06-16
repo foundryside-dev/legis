@@ -15,6 +15,13 @@ from legis.posture.records import (
     KIND_TRANSITION,
     PostureRecord,
 )
+from legis.posture.session import (
+    Session,
+    end_session,
+    is_active,
+    load_session,
+    open_session,
+)
 from legis.posture.signing import (
     AgeFileSigner,
     EnvSigner,
@@ -40,8 +47,13 @@ __all__ = [
     "PostureLedger",
     "PostureRecord",
     "PostureSigner",
+    "Session",
+    "end_session",
+    "is_active",
     "key_fingerprint",
+    "load_session",
     "mint_key",
+    "open_session",
     "select_backend",
     "unwrap_key",
     "wrap_key",

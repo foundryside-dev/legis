@@ -45,10 +45,18 @@ def test_read_floor_empty_initialized_store_is_none(tmp_path):
     assert ledger.read_floor() is None
 
 
-def test_session_opened_not_implemented_in_phase1(tmp_path):
+def test_session_opened_implemented_in_phase3(tmp_path):
+    # Phase 3.2 supersedes the Phase 1 stub: session_opened now appends a
+    # keyless OPERATOR_SESSION_OPENED record (full coverage in test_session.py).
     ledger = PostureLedger(f"sqlite:///{tmp_path}/posture.db", initialize=True)
-    with pytest.raises(NotImplementedError):
-        ledger.session_opened()
+    ledger.session_opened(
+        operator_id="alice",
+        enabled_at="2026-06-16T14:02:00Z",
+        ttl=300,
+        keychain_auth_ref=None,
+        session_id="sess-1",
+    )
+    assert ledger.store.read_all()[-1].payload["kind"] == "OPERATOR_SESSION_OPENED"
 
 
 def test_rekey_not_implemented_in_phase1(tmp_path):
