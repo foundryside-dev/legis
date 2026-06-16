@@ -8,7 +8,7 @@ model and the ledger.
 from __future__ import annotations
 
 from legis.posture.floor import FlooredRegistry, floored_registry
-from legis.posture.ledger import PostureLedger
+from legis.posture.ledger import PostureLedger, PostureSetResult, set_floor
 from legis.posture.records import (
     KIND_GENESIS,
     KIND_KEY_RESET,
@@ -48,6 +48,7 @@ __all__ = [
     "KeychainSigner",
     "PostureLedger",
     "PostureRecord",
+    "PostureSetResult",
     "PostureSigner",
     "Session",
     "end_session",
@@ -58,6 +59,7 @@ __all__ = [
     "mint_key",
     "open_session",
     "select_backend",
+    "set_floor",
     "unwrap_key",
     "wrap_key",
 ]

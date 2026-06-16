@@ -17,11 +17,13 @@ Fail-closed contract (design §4/§5):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from legis.posture.records import (
     KIND_GENESIS,
+    KIND_KEY_RESET,
     KIND_SESSION_OPENED,
     KIND_TRANSITION,
     PostureRecord,
@@ -29,6 +31,8 @@ from legis.posture.records import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from legis.clock import Clock
 
 
 class _Signer(Protocol):
@@ -93,6 +97,26 @@ class PostureLedger:
         if rec is None:
             return None
         return rec.payload.get("floor")
+
+    def current_epoch_fingerprint(self) -> str | None:
+        """The ``key_fingerprint`` of the current key epoch, or ``None``.
+
+        The epoch is established by the latest ``GENESIS`` / ``KEY_RESET``
+        record (a ``rekey`` mints a new key and chains a ``KEY_RESET`` carrying
+        its fingerprint). A ``TRANSITION`` does NOT open an epoch — it is signed
+        *under* the standing epoch — so we scan for the most recent
+        epoch-opening record and return its fingerprint. ``None`` means no
+        ledger / no epoch yet (fail-closed: the change gate refuses).
+
+        This is a full scan (``read_all``); the change gate resolves it ONCE up
+        front, BEFORE entering ``append_signed`` (Q-M5), never inside the build
+        callback.
+        """
+        records = self.store.read_all()
+        for rec in reversed(records):
+            if rec.payload.get("kind") in (KIND_GENESIS, KIND_KEY_RESET):
+                return rec.payload.get("key_fingerprint")
+        return None
 
     # -- writes --------------------------------------------------------------
 
@@ -207,3 +231,122 @@ class PostureLedger:
     def rekey(self, *args: Any, **kwargs: Any) -> None:
         """Write a ``KEY_RESET`` genesis chained onto history (Phase 11)."""
         raise NotImplementedError("rekey lands in Phase 11")
+
+
+# -- the change gate (Phase 5, Task 5.1) -------------------------------------
+
+# Refusal reasons (stable discriminants so callers can branch / report).
+REFUSED_NO_SESSION = "no_open_session"
+REFUSED_NO_EPOCH = "no_key_epoch"
+REFUSED_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
+REFUSED_SIGNER_ERROR = "signer_error"
+
+
+@dataclass(frozen=True)
+class PostureSetResult:
+    """The single outcome of a :func:`set_floor` call (design §7).
+
+    Exactly one of ``accepted`` is True (one ``TRANSITION`` appended) or False
+    (no record written, floor unchanged). ``reason`` carries a refusal
+    discriminant when refused, or ``None`` on success; ``floor`` is the new
+    floor on success.
+    """
+
+    accepted: bool
+    reason: str | None = None
+    floor: str | None = None
+    session_id: str | None = None
+    detail: str | None = None
+
+
+def set_floor(
+    new_cell: str,
+    *,
+    ledger: PostureLedger,
+    signer: _Signer,
+    agent_id: str,
+    rationale: str,
+    clock: Clock | None = None,
+) -> PostureSetResult:
+    """The posture change gate: append a signed ``TRANSITION`` or refuse.
+
+    Per D3 an open elevation session is REQUIRED — there is no direct-sign path.
+    Fail-closed (design §7): no open session, no key epoch, fingerprint
+    mismatch, or signer failure each yields a refusal with ZERO records written
+    and the floor unchanged. A success writes exactly one ``TRANSITION``. Every
+    outcome is exactly one ``PostureSetResult`` — no silent pass.
+
+    Sequence (all reads resolved BEFORE entering ``append_signed``, Q-M5):
+      1. ``session = load_session()``; absent / lapsed -> refuse.
+      2. Resolve the current-epoch ``key_fingerprint`` from the last
+         GENESIS/KEY_RESET record; if the signer's fingerprint does not match
+         the LEDGER epoch -> refuse (the epoch is the source of truth, not the
+         session's recorded field — closes the concurrent-session race).
+      3. ``ledger.transition(...)`` under the session id. A signer raise inside
+         ``append_signed``'s build -> refusal, no half-write.
+    """
+    from legis.clock import SystemClock
+    from legis.posture import session as _session
+
+    used_clock = clock if clock is not None else SystemClock()
+
+    # 1. An open elevation session is mandatory (D3).
+    sess = _session.load_session()
+    if sess is None:
+        return PostureSetResult(accepted=False, reason=REFUSED_NO_SESSION)
+
+    # 2. Resolve the current-epoch fingerprint up front (tail read before batch).
+    epoch_fp = ledger.current_epoch_fingerprint()
+    if epoch_fp is None:
+        return PostureSetResult(
+            accepted=False,
+            reason=REFUSED_NO_EPOCH,
+            session_id=sess.session_id,
+        )
+    # The signer must hold the current epoch's key. Checking against the LEDGER
+    # epoch (not the session's recorded field) closes the concurrent-session /
+    # rekey race: a signer for a superseded epoch is refused even with a live
+    # session. ``signer.fingerprint()`` may itself fault for a custody backend
+    # (e.g. age-file wrong passphrase) — treat that as a signer-error refusal.
+    try:
+        signer_fp = signer.fingerprint()
+    except Exception as exc:  # noqa: BLE001 — fail-closed: any custody fault refuses
+        return PostureSetResult(
+            accepted=False,
+            reason=REFUSED_SIGNER_ERROR,
+            session_id=sess.session_id,
+            detail=str(exc),
+        )
+    if signer_fp != epoch_fp:
+        return PostureSetResult(
+            accepted=False,
+            reason=REFUSED_FINGERPRINT_MISMATCH,
+            session_id=sess.session_id,
+        )
+
+    # 3. Append exactly one signed TRANSITION. A signer raise inside the build
+    # callback (or a re-checked fingerprint mismatch) propagates out of
+    # append_signed before any row is committed — fail-closed, no half-write.
+    try:
+        ledger.transition(
+            new_cell,
+            signer=signer,
+            session_id=sess.session_id,
+            key_fingerprint=epoch_fp,
+            agent_id=agent_id,
+            rationale=rationale,
+            recorded_at=used_clock.now_iso(),
+        )
+    except Exception as exc:  # noqa: BLE001 — fail-closed: any signer fault refuses
+        return PostureSetResult(
+            accepted=False,
+            reason=REFUSED_SIGNER_ERROR,
+            session_id=sess.session_id,
+            detail=str(exc),
+        )
+
+    return PostureSetResult(
+        accepted=True,
+        floor=new_cell,
+        session_id=sess.session_id,
+    )
