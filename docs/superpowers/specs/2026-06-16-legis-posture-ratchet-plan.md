@@ -19,7 +19,7 @@ This revision folds in four parallel reviews. The headline structural changes fr
 - **D1 — `FlooredRegistry` subclasses `PolicyCellRegistry`.** It overrides `cell_for` (floored via `CELL_TIER_ORDER` index-`max`) and floors `default_cell`. `rule_for` is inherited unchanged so `matched_rule.pattern` still reports the raw rule the agent matched — the floor silently raises the *effective* cell above the matched rule's cell. Because it is a subclass, `explain_policy(registry, ...)` floors automatically when handed a `FlooredRegistry`. (If a subclass proves infeasible against `PolicyCellRegistry`'s `__init__`, fall back to a wrapper that re-implements `cell_for`/`default_cell`/`rule_for` delegating to the inner registry — but the subclass is the default and the test surface is identical either way.)
 - **D2 — Floor value is read per request/invocation; the ledger *handle* is held on the runtime.** `PostureLedger(posture_db_url(), initialize=True)` is constructed once (in `build_runtime` for MCP, in `create_app` for HTTP). `read_floor()` is called fresh at each cell-resolution site. **No `posture_floor` field is cached on `McpRuntime`.** Never construct `PostureLedger(initialize=True)` inside a request handler (it runs DDL and serializes requests under a SQLite DDL lock).
 - **D3 — A session file is required for every `posture set`.** The session file is the accountability record (carries `session_id` into the `TRANSITION`), not an optimization. `EnvSigner` also requires an open session (`backend_id="env"`); the key value is never stored in the session file.
-- **D4 — Idempotency-key replays in MCP `override_submit` are floor-exempt** (the record is already written and cannot be unwritten). This is documented as an accepted residual; a test pins the behavior so it is a conscious choice, not a silent bypass.
+- **D4 — Idempotency-key replays in MCP `override_submit` return the original record but carry a `floor_warning` discriminant** when the current floor is higher than the floor in force when the record was first written. The *action* is floor-exempt (the record cannot be unwritten) but the replay is **not silent**: the response flags "this replay predates the current floor (was `<floor_then>`, now `<floor_now>`)", honoring the no-silent-path rule. A test pins both the original-outcome return and the warning discriminant. *(Resolved 2026-06-16: warning variant chosen over silent exempt.)*
 - **D5 — The age-file backend's `unlock_ref` is `None`.** Re-prompt IS the unlock mechanism; the session file holds only window metadata. Only the keychain backend stores a non-null `unlock_ref` (the keychain item id).
 - **D6 — Doctor "acknowledged KEY_RESET" requires a `TRANSITION` whose `operator_sig` verifies against the NEW epoch `key_fingerprint`**, not merely a later `TRANSITION` record. Record-kind inspection alone is replayable.
 
@@ -71,8 +71,8 @@ Convention anchors: package style follows `src/legis/enforcement/`; store reuse 
 
 - **Modify:** `scripts/check_coverage_floors.py:27-34` (the `FLOORS` map).
 - **Test first:** N/A (this is the CI gate itself). Instead, the verification command is the gate run.
-- **Implementation:** add `'src/legis/posture/': 90.0` to `FLOORS` (matching the security-sensitivity tier of `enforcement/` at 93%; 90 is the floor, aim higher). This must land in the first posture commit so coverage is fail-closed from the start. Confirm the prefix-matching logic at `check_coverage_floors.py:76-82` treats an empty package (no statements yet) gracefully — if it reports "no statements measured" as failure, the floor is added in the same commit as `records.py` so statements exist.
-- **Verify:** `python scripts/check_coverage_floors.py` after Phase 1 lands (expect pass once posture has measured statements ≥ 90%).
+- **Implementation:** add `'src/legis/posture/': 93.0` to `FLOORS` (matching `enforcement/` at 93%, the highest existing tier — this is the most security-sensitive new code). This must land in the first posture commit so coverage is fail-closed from the start. Confirm the prefix-matching logic at `check_coverage_floors.py:76-82` treats an empty package (no statements yet) gracefully — if it reports "no statements measured" as failure, the floor is added in the same commit as `records.py` so statements exist.
+- **Verify:** `python scripts/check_coverage_floors.py` after Phase 1 lands (expect pass once posture has measured statements ≥ 93%).
 
 ---
 
@@ -468,7 +468,7 @@ Create `tests/posture/test_security_honesty.py` asserting the spec's honesty gua
 ## Final full-suite verification
 
 - **Run:** `pytest -q` (entire suite, including rewritten `tests/api/*` and `tests/conformance/*`).
-- **Run:** `python scripts/check_coverage_floors.py` (posture package ≥ 90%).
+- **Run:** `python scripts/check_coverage_floors.py` (posture package ≥ 93%).
 - **Run:** `legis doctor --format json` on (a) a fresh-installed project → exit 0 with `store.posture_chain ok` + `store.posture_ledger ok`; (b) a project with an unacknowledged `KEY_RESET` fixture → exit non-zero; (c) a project whose operator key is unreachable → `warn`.
 - **Run:** the floor-bypass regression at every surface:
   - MCP: floor `structured`, chill-registry policy → `override_submit` escalates AND `policy_explain`/`policy_list` report `structured`.
@@ -510,7 +510,7 @@ What changed in response to each critical/high finding:
 - **(Architecture medium — session unlock_ref ambiguity):** Resolved as **Decision D5**: age-file `unlock_ref` is `None` (re-prompt is the unlock); keychain stores the item id. Test `test_age_backend_unlock_ref_is_none`.
 - **(Quality critical — concurrent session race):** Resolved as single-active-session (`test_second_enable_replaces_first`) plus fingerprint validation against the **ledger epoch**, not the session field (`test_set_refused_fingerprint_mismatch`).
 - **(Quality critical — protected source/SEI binding survives route collapse):** Added named assertions `test_protected_cell_source_binding_preserved` and `test_protected_cell_sei_binding_preserved`.
-- **(Quality high — posture coverage floor):** Added Task 0.3: `'src/legis/posture/': 90.0` in `scripts/check_coverage_floors.py`, landing in the first posture commit.
+- **(Quality high — posture coverage floor):** Added Task 0.3: `'src/legis/posture/': 93.0` in `scripts/check_coverage_floors.py`, landing in the first posture commit.
 - **(Quality high — genesis after KEY_RESET / idempotent-after-rekey):** Added `test_genesis_blocked_after_key_reset` and `test_install_idempotent_after_rekey`.
 - **(Quality/systems high — KEY_RESET acknowledgment must verify the new-epoch signature):** Resolved as **Decision D6**; doctor now calls `signing.verify` against the new epoch fingerprint. Test `test_key_reset_acknowledged_requires_new_epoch_fingerprint`.
 - **(Quality high — Q-M5 batch invariant):** Added `test_no_read_inside_transition_batch`; `transition()` resolves the epoch fingerprint via a tail read BEFORE `append_signed`.
@@ -528,7 +528,16 @@ What changed in response to each critical/high finding:
 
 ## Appendix B — Open questions for the operator
 
-These genuinely need John's decision before (or early in) implementation:
+**All six resolved by John on 2026-06-16** (questions retained below for context):
+
+- **Q1 — single active session:** confirmed; `operator enable` **replaces** any prior session (one active `operator_session.json`).
+- **Q2 — idempotency replays:** **warning variant** chosen (not silent floor-exempt) — the replay returns the original outcome but carries a `floor_warning` discriminant when the current floor is higher than the floor at write time (see D4).
+- **Q3 — coverage floor:** raised to **93%**, matching `enforcement/`.
+- **Q4 — `cryptography>=42`:** confirmed as the provisional bound; a P3 follow-up to revisit after supply-chain research is filed (Filigree `legis-ea02d6c6a8`).
+- **Q5 — `FlooredRegistry` subclass (D1):** confirmed, **with the composition-wrapper fallback pre-approved** so implementation is never blocked mid-phase.
+- **Q6 — env-backend CI session (D3):** confirmed; CI runs `legis operator enable --insecure-key-in-env` before `posture set` so every signature carries a `session_id` (no implicit synthetic-session path).
+
+The original questions, for context:
 
 1. **Single active session vs. concurrent sessions.** The plan resolves the concurrent-session race by making `operator enable` **replace** any prior session (exactly one active `operator_session.json`). The spec's accountability model (§6) is compatible with this, but it means a second operator's `enable` silently supersedes the first's window. Confirm single-active-session is acceptable, or specify a multi-session policy (e.g., refuse a second enable while one is live).
 
