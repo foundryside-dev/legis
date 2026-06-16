@@ -192,6 +192,53 @@ def build_parser() -> argparse.ArgumentParser:
         help="Output format: human text (default) or machine-readable json",
     )
 
+    posture = subparsers.add_parser(
+        "posture",
+        help="Read the signed posture floor (show) or move it (set, needs an open operator session)",
+    )
+    posture_sub = posture.add_subparsers(dest="posture_command")
+    posture_sub.add_parser("show", help="Print the current posture floor")
+    pset = posture_sub.add_parser(
+        "set",
+        help="Move the floor to <cell>; requires an open operator session (legis operator enable)",
+    )
+    pset.add_argument("cell", help="Target floor cell (e.g. chill, coached, structured, protected)")
+    pset.add_argument(
+        "--rationale", default="operator posture change",
+        help="Rationale stamped on the signed TRANSITION record",
+    )
+    pset.add_argument(
+        "--agent-id", default="legis-operator-cli",
+        help="Agent id stamped on the TRANSITION record",
+    )
+
+    operator = subparsers.add_parser(
+        "operator",
+        help="Open (enable) or close (disable) the operator elevation session that authorizes posture set",
+    )
+    operator_sub = operator.add_subparsers(dest="operator_command")
+    op_enable = operator_sub.add_parser(
+        "enable",
+        help=(
+            "Open an elevation session (sudo for governance signing). "
+            "CI/headless bootstrap: set LEGIS_OPERATOR_KEY, run "
+            "`legis operator enable --insecure-key-in-env`, then `legis posture set <cell>`."
+        ),
+    )
+    op_enable.add_argument(
+        "--ttl", default="5m",
+        help="Session window, e.g. 300, 5m, 1h (default: 5m)",
+    )
+    op_enable.add_argument(
+        "--operator-id", default=None,
+        help="Operator identity recorded on the session (default: $USER or 'operator')",
+    )
+    op_enable.add_argument(
+        "--insecure-key-in-env", action="store_true",
+        help="Use the plaintext LEGIS_OPERATOR_KEY env backend (CI/headless escape hatch; emits a warning)",
+    )
+    operator_sub.add_parser("disable", help="End the current operator elevation session")
+
     return parser
 
 
@@ -274,6 +321,205 @@ def _run_doctor(args) -> int:
     from legis.doctor import run_doctor
 
     return run_doctor(Path(args.root), repair=args.fix, fmt=args.format)
+
+
+def _parse_ttl(spec: str) -> int:
+    """Parse a TTL like ``300``, ``5m``, ``1h`` into seconds.
+
+    A bare integer is seconds; ``s``/``m``/``h`` suffixes scale. Fail-closed:
+    an unparseable value raises ``ValueError`` so the caller refuses rather than
+    opening a silently-wrong (e.g. zero-length) window.
+    """
+    s = spec.strip().lower()
+    if not s:
+        raise ValueError("empty TTL")
+    units = {"s": 1, "m": 60, "h": 3600}
+    if s[-1] in units:
+        value, scale = s[:-1], units[s[-1]]
+    else:
+        value, scale = s, 1
+    n = int(value)
+    if n <= 0:
+        raise ValueError(f"TTL must be positive, got {spec!r}")
+    return n * scale
+
+
+def _build_operator_signer(backend_id: str):
+    """Construct the custody signer for an open session's backend (Phase 7).
+
+    Mirrors the install-time custody routing: ``env`` -> :class:`EnvSigner`
+    (plaintext escape hatch, behind its own opt-in), ``age-file`` ->
+    :class:`AgeFileSigner` over the at-rest blob with a per-sign passphrase
+    re-prompt, ``keychain`` -> not shipped (raises LOUD). Fail-closed: any
+    custody gap raises rather than returning a wrong-key signer.
+    """
+    from legis.posture import AgeFileSigner, EnvSigner
+
+    if backend_id == "env":
+        return EnvSigner(insecure_env=True)
+    if backend_id == "age-file":
+        import os
+
+        from legis.config import operator_age_path
+
+        blob_path = operator_age_path()
+        if not blob_path.exists():
+            raise RuntimeError(
+                f"age-file custody blob {blob_path} is missing; re-run `legis install --posture`"
+            )
+        blob = blob_path.read_bytes()
+        passphrase = os.environ.get("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE")
+        if not passphrase:
+            raise RuntimeError(
+                "age-file custody needs the passphrase in "
+                "LEGIS_OPERATOR_KEY_AGE_PASSPHRASE to sign the posture change"
+            )
+        return AgeFileSigner(blob=blob, passphrase_cb=lambda: passphrase)
+    raise RuntimeError(
+        f"no shipped custody adapter for backend {backend_id!r}; cannot sign the posture change"
+    )
+
+
+def _run_posture(args) -> int:
+    from legis.config import posture_db_url
+    from legis.posture import PostureLedger, load_session, set_floor
+    from legis.posture.ledger import PostureSetResult
+
+    command = getattr(args, "posture_command", None)
+
+    if command == "show":
+        # Read path: open the ledger handle without running DDL (initialize=False)
+        # so a `show` never mutates local state on launch (Phase-4 reconciliation).
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        floor = ledger.read_floor()
+        if floor is None:
+            print("posture floor: structured (no ledger)")
+        else:
+            print(f"posture floor: {floor}")
+        return 0
+
+    if command == "set":
+        # Per D3 a posture change REQUIRES an open elevation session; there is no
+        # direct-sign path. Resolve the session's backend, build its signer, and
+        # run the change gate, which is fail-closed end to end.
+        session = load_session()
+        if session is None:
+            print(
+                "posture set: refused — no open operator session. Run "
+                "`legis operator enable` first.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            signer = _build_operator_signer(session.backend_id)
+        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+            print(f"posture set: refused — {exc}", file=sys.stderr)
+            return 1
+
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        result: PostureSetResult = set_floor(
+            args.cell,
+            ledger=ledger,
+            signer=signer,
+            agent_id=args.agent_id,
+            rationale=args.rationale,
+        )
+        if not result.accepted:
+            detail = f" ({result.detail})" if result.detail else ""
+            print(
+                f"posture set: refused — {result.reason}{detail}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"posture floor set to {result.floor} (session {result.session_id})")
+        return 0
+
+    # `legis posture` with no subcommand.
+    print("usage: legis posture {show,set}", file=sys.stderr)
+    return 2
+
+
+def _run_operator(args) -> int:
+    from legis.clock import SystemClock
+    from legis.config import posture_db_url
+    from legis.posture import (
+        PostureLedger,
+        end_session,
+        open_session,
+    )
+
+    command = getattr(args, "operator_command", None)
+
+    if command == "disable":
+        end_session()
+        print("operator session ended")
+        return 0
+
+    if command == "enable":
+        import os
+
+        try:
+            ttl = _parse_ttl(args.ttl)
+        except ValueError as exc:
+            print(f"operator enable: refused — invalid --ttl: {exc}", file=sys.stderr)
+            return 1
+
+        insecure_env = getattr(args, "insecure_key_in_env", False)
+        operator_id = (
+            args.operator_id
+            or os.environ.get("USER")
+            or "operator"
+        )
+
+        # Resolve + verify custody up front so `enable` cannot open a window the
+        # operator can never sign through. Building the signer is the unlock:
+        # env reads LEGIS_OPERATOR_KEY (and emits the plaintext warning),
+        # age-file re-prompts per sign (unlock_ref stays None, D5), keychain is
+        # the only backend carrying a non-null unlock_ref (its item id).
+        from legis.install import choose_install_backend
+
+        backend_id = choose_install_backend(insecure_env=insecure_env)
+        try:
+            signer = _build_operator_signer(backend_id)
+        except Exception as exc:  # noqa: BLE001 — fail-closed: no session on custody gap
+            print(f"operator enable: refused — {exc}", file=sys.stderr)
+            return 1
+
+        # The keychain item id is the only non-null unlock_ref (D5); env/age-file
+        # carry None (re-prompt / resident plaintext is the unlock).
+        unlock_ref = getattr(signer, "_item_id", None)
+
+        clock = SystemClock()
+        session = open_session(
+            ttl=ttl,
+            operator_id=operator_id,
+            backend_id=backend_id,
+            unlock_ref=unlock_ref,
+        )
+        # The env path STILL opens a session (D3): every TRANSITION it later
+        # produces carries this session_id, so there is no auth path that
+        # bypasses session accountability.
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        ledger.session_opened(
+            operator_id=operator_id,
+            enabled_at=clock.now_iso(),
+            ttl=ttl,
+            keychain_auth_ref=unlock_ref,
+            session_id=session.session_id,
+        )
+        if insecure_env:
+            print(
+                "WARNING: --insecure-key-in-env uses the plaintext LEGIS_OPERATOR_KEY "
+                "backend, readable by this process; use keychain/age-file in production."
+            )
+        print(
+            f"operator session opened for {operator_id} "
+            f"(backend={backend_id}, window={ttl}s, session={session.session_id})"
+        )
+        return 0
+
+    print("usage: legis operator {enable,disable}", file=sys.stderr)
+    return 2
 
 
 def _run_install(args) -> int:
@@ -497,6 +743,12 @@ def main(argv: list[str] | None = None, *, run=uvicorn.run) -> int:
 
     if args.command == "doctor":
         return _run_doctor(args)
+
+    if args.command == "posture":
+        return _run_posture(args)
+
+    if args.command == "operator":
+        return _run_operator(args)
 
     parser.print_help(sys.stderr)
     return 2
