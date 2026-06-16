@@ -176,12 +176,20 @@ def test_transition_fingerprint_mismatch_refused(tmp_path):
 
 
 def test_no_read_inside_transition_batch(tmp_path):
-    """transition() must resolve any tail read BEFORE entering append_signed.
+    """transition() must resolve any tail read BEFORE entering append_signed (Q-M5).
 
-    The build_payload callback runs under the BEGIN IMMEDIATE batch lock; a
-    fresh-connection read there trips _assert_no_batch_in_progress. We trap that
-    by failing read_all/read_by_seq/get_latest_sequence_and_hash if called while
-    the store reports in_batch().
+    append_signed() acquires its own connection via ``self._engine.begin()`` and
+    never sets the thread-local batch handle, so ``in_batch()`` is False
+    throughout the build() callback — an ``if store.in_batch(): raise`` guard can
+    never fire (it is a structural false-green). Instead we bind to the path the
+    build callback actually uses: monkeypatch the three store read methods to
+    raise UNCONDITIONALLY for the duration of transition(), and assert
+    transition() still succeeds. That proves the build callback issues NO
+    fresh-connection read (any read would surface our RuntimeError and fail the
+    call); the caller must have resolved every read before entering the batch.
+
+    Mutation check: injecting ``self.store.read_all()`` inside build() (or any of
+    these reads) makes transition() raise here, turning this test RED.
     """
     ledger = PostureLedger(_url(tmp_path), initialize=True)
     key = b"k" * 32
@@ -189,24 +197,30 @@ def test_no_read_inside_transition_batch(tmp_path):
     ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
 
     store = ledger.store
-    orig_get = store.get_latest_sequence_and_hash
-    orig_read_all = store.read_all
-    orig_read_by_seq = store.read_by_seq
+    calls: dict[str, int] = {
+        "get_latest_sequence_and_hash": 0,
+        "read_all": 0,
+        "read_by_seq": 0,
+    }
 
-    def guard(name, fn):
+    def forbid(name):
         def wrapped(*a, **k):
-            if store.in_batch():
-                raise AssertionError(f"{name} called inside append_signed batch")
-            return fn(*a, **k)
+            calls[name] += 1
+            raise RuntimeError(
+                f"{name} must not be called during transition() — all reads "
+                "must be resolved before entering the append_signed batch (Q-M5)"
+            )
 
         return wrapped
 
-    import types
+    store.get_latest_sequence_and_hash = forbid("get_latest_sequence_and_hash")  # type: ignore[method-assign]
+    store.read_all = forbid("read_all")  # type: ignore[method-assign]
+    store.read_by_seq = forbid("read_by_seq")  # type: ignore[method-assign]
 
-    store.get_latest_sequence_and_hash = guard("get_latest_sequence_and_hash", orig_get)  # type: ignore[method-assign]
-    store.read_all = guard("read_all", orig_read_all)  # type: ignore[method-assign]
-    store.read_by_seq = guard("read_by_seq", orig_read_by_seq)  # type: ignore[method-assign]
-
+    # transition() must complete without ever touching those reads. (The caller
+    # resolved key_fingerprint above and passes it in; the build callback issues
+    # no read.) If any read fires, the forbid() RuntimeError propagates out of
+    # append_signed and this call raises — failing the test.
     ledger.transition(
         "structured",
         signer=_MemSigner(key),
@@ -216,5 +230,14 @@ def test_no_read_inside_transition_batch(tmp_path):
         rationale="r",
         recorded_at="t1",
     )
-    assert ledger.read_floor() == "structured"
-    del types
+
+    assert calls == {
+        "get_latest_sequence_and_hash": 0,
+        "read_all": 0,
+        "read_by_seq": 0,
+    }
+
+    # The TRANSITION was actually persisted: reopen a fresh ledger (whose store
+    # has the real, unpatched read methods) and confirm the floor moved.
+    reopened = PostureLedger(_url(tmp_path), initialize=False)
+    assert reopened.read_floor() == "structured"
