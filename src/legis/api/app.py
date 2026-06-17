@@ -593,7 +593,7 @@ def create_app(
 
         if cell == "structured":
             try:
-                result = _request_signoff(
+                signoff_result = _request_signoff(
                     signoff_gate,
                     identity=identity,
                     policy=body.policy,
@@ -612,8 +612,8 @@ def create_app(
             return {
                 "outcome": "escalation_requested",
                 "cell": "structured",
-                "request_seq": result.seq,
-                "cleared": result.cleared,
+                "request_seq": signoff_result.seq,
+                "cleared": signoff_result.cleared,
             }
 
         if cell == "protected":
@@ -641,8 +641,11 @@ def create_app(
                     "cell": "protected",
                     "required_inputs": missing,
                 }
+            # The protected cell always requires both inputs (_PROTECTED_INPUTS),
+            # so the `missing` guard above guarantees they are present here.
+            assert body.file_fingerprint is not None and body.ast_path is not None
             try:
-                result = _submit_protected_override(
+                protected_result = _submit_protected_override(
                     protected_gate,
                     identity=identity,
                     policy=body.policy,
@@ -660,15 +663,15 @@ def create_app(
                 raise HTTPException(status_code=404, detail=str(exc)) from exc
             except InvalidArgumentError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc
-            response.status_code = 201 if result.accepted else 409
+            response.status_code = 201 if protected_result.accepted else 409
             return {
-                "outcome": "accepted" if result.accepted else "blocked",
+                "outcome": "accepted" if protected_result.accepted else "blocked",
                 "cell": "protected",
-                "seq": result.seq,
-                "verdict": result.verdict.value,
-                "judge_model": result.judge_model,
-                "judge_rationale": result.judge_rationale,
-                "signature": result.signature,
+                "seq": protected_result.seq,
+                "verdict": protected_result.verdict.value,
+                "judge_model": protected_result.judge_model,
+                "judge_rationale": protected_result.judge_rationale,
+                "signature": protected_result.signature,
             }
 
         raise HTTPException(status_code=422, detail=f"unsupported policy cell {cell!r}")
