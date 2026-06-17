@@ -20,6 +20,8 @@ coverage.json
 
 # Local tooling config (machine-specific, never commit)
 .mcp.json
+# Claude Code scheduled-tasks runtime lock (transient; never commit)
+.claude/*.lock
 
 # Agent instruction files — filigree-generated, regenerated each session
 AGENTS.md
@@ -32,9 +34,10 @@ CLAUDE.md
 # Loomweave — code-archaeology index/cache + config
 .loomweave/
 loomweave.yaml
-# Wardline — scanner cache + config
+# Wardline — scanner cache + config + transient scan output
 .wardline/
 wardline.yaml
+findings.jsonl
 # Legis — local audit/scratch databases + their SQLite WAL sidecars
 # (audit data is never committed) and local working dir / config
 *.db
@@ -43,5 +46,7 @@ wardline.yaml
 # Federated runtime-state subtree (legis is the sole writer; never .weft/ wholesale)
 .weft/legis/
 
-# Filigree issue tracker
+# Developer config / local tooling — not part of the solution
+.claude/
+.agents/
 .weft/

@@ -68,12 +68,17 @@ def test_install_renders_fail_and_continues_when_a_step_raises(tmp_path, monkeyp
     assert rc == 1
 
 
-def test_session_context_silent_when_fresh(tmp_path, monkeypatch, capsys):
+def test_session_context_banner_only_when_fresh(tmp_path, monkeypatch, capsys):
+    # N-1: a fresh project still gets the one-line posture banner — silence is
+    # indistinguishable from a broken command — but no drift messages.
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LEGIS_POLICY_CELLS", raising=False)
     install.inject_instructions(tmp_path / "CLAUDE.md")
     rc = main(["session-context"])
     assert rc == 0
-    assert capsys.readouterr().out == ""
+    out = capsys.readouterr().out
+    assert out.startswith("legis: instructions current")
+    assert out.count("\n") == 1  # banner line only, no refresh messages
 
 
 def test_session_context_prints_on_drift(tmp_path, monkeypatch, capsys):
@@ -91,6 +96,63 @@ def test_install_subcommand_parses_flags():
     assert args.claude_md is True
     assert args.hooks is True
     assert args.agents_md is False
+
+
+# ---------------------------------------------------------------------------
+# Posture-ledger install wiring (posture-ratchet, Phase 6)
+# ---------------------------------------------------------------------------
+
+
+def test_install_posture_only_writes_genesis(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", "pw")
+    rc = main(["install", "--posture"])
+    assert rc == 0
+    # GENESIS written, age blob persisted, but no unrelated install artifacts.
+    from legis.posture import PostureLedger
+
+    led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+    recs = led.store.read_all()
+    assert len(recs) == 1
+    assert recs[0].payload["kind"] == "GENESIS"
+    assert recs[0].payload["floor"] == "chill"
+    assert (tmp_path / ".weft" / "legis" / "operator.age").exists()
+    assert not (tmp_path / "CLAUDE.md").exists()
+
+
+def test_install_all_defers_posture_without_custody(tmp_path, monkeypatch, capsys):
+    # A bare `legis install` with no custody configured must NOT hard-fail; the
+    # posture step defers (no GENESIS written) and rc stays 0.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", raising=False)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY", raising=False)
+    rc = main(["install"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "deferred" in out
+    # No genesis was written.
+    db = tmp_path / ".weft" / "legis" / "legis-posture.db"
+    if db.exists():
+        from legis.posture import PostureLedger
+
+        led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+        assert led.store.read_all() == []
+
+
+def test_install_posture_env_backend_opt_in(tmp_path, monkeypatch, capsys):
+    # --insecure-key-in-env selects the env backend; the env sink is a no-op so
+    # the GENESIS lands with no age blob and no custody refusal.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", "ab" * 32)
+    rc = main(["install", "--posture", "--insecure-key-in-env"])
+    assert rc == 0
+    from legis.posture import PostureLedger
+
+    led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+    recs = led.store.read_all()
+    assert len(recs) == 1
+    assert recs[0].payload["kind"] == "GENESIS"
+    assert not (tmp_path / ".weft" / "legis" / "operator.age").exists()
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,72 @@
+# Build the Legis member Astro site (site/) and deploy to GitHub Pages.
+#
+# The site deploys to legis.foundryside.dev (CNAME in site/public/CNAME,
+# copied verbatim into the build output). It consumes the shared
+# @weft/site-kit, which lives in a SUBDIRECTORY of a DIFFERENT repo (the weft
+# hub). npm cannot install a git subdirectory directly, so a fetch step
+# sparse-checks-out packages/site-kit into site/vendor/site-kit/ before
+# `npm install` resolves the `file:./vendor/site-kit` dependency.
+name: Deploy legis site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'site/**'
+      - '.github/workflows/deploy-site.yml'
+  workflow_dispatch:
+
+# GitHub Pages deploy permissions.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One in-flight Pages deploy at a time; don't cancel a running deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: site
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Fetch @weft/site-kit
+        # Sparse-fetch packages/site-kit from the weft hub repo into
+        # vendor/site-kit/ so the file: dependency resolves on install.
+        run: npm run fetch-site-kit
+
+      - name: Install
+        # The preinstall hook also runs fetch-site-kit; this is idempotent.
+        run: npm install --no-audit --no-fund
+
+      - name: Build
+        # prebuild hook copies @weft/site-kit/assets into public/_site-kit.
+        run: npm run build
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

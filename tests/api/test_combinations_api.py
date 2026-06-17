@@ -69,7 +69,7 @@ def test_scan_results_route_surface_override(tmp_path):
     body = {"cell": "surface_override", "agent_id": "agent-1", "scan": {"findings": [
         {"rule_id": "PY-WL-101", "message": "untrusted reaches trusted",
          "severity": "ERROR", "kind": "defect", "fingerprint": "fp1",
-         "qualname": "m.f", "properties": {}, "suppressed": "active"}]}}
+         "qualname": "m.f", "properties": {}, "suppression_state": "active"}]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 200
     assert resp.json()["routed"][0]["mode"] == "surface_override"
@@ -98,6 +98,33 @@ def test_bind_issue_endpoint_attaches_sei_from_cleared_record(tmp_path):
     # SEI sourced from the trail; content_hash is "" because request() records no
     # loomweave ext — the honest behaviour of the real record.
     assert fil.attached == [("ISSUE-1", "loomweave:eid:abc", "", "legis", req.seq, None)]
+
+
+def test_bind_issue_endpoint_maps_filigree_failure_to_502(tmp_path):
+    # Filigree wired but down/redirecting/malformed: nothing bound, recoverable.
+    # The route must surface a typed 502 (parity with the MCP adapter's
+    # FILIGREE_UNAVAILABLE), not let FiligreeError escape as an untyped 500.
+    from legis.filigree.client import FiligreeError
+
+    class _DownFiligree(_FakeFiligree):
+        def attach(self, *a, **k):
+            raise FiligreeError("POST /attach connection refused")
+
+    gate = SignoffGate(AuditStore(f"sqlite:///{tmp_path / 'sg.db'}"),
+                       FixedClock("2026-06-02T12:00:00+00:00"))
+    req = gate.request(
+        policy="PY-WL-101",
+        entity_key=EntityKey.from_sei("loomweave:eid:abc"),
+        rationale="needs a human",
+        agent_id="agent-1",
+    )
+    gate.sign_off(request_seq=req.seq, operator_id="operator-1")
+
+    c = _client(tmp_path, filigree=_DownFiligree(), signoff_gate=gate)
+    resp = c.post(f"/signoff/{req.seq}/bind-issue", json={"issue_id": "ISSUE-1"})
+
+    assert resp.status_code == 502
+    assert "filigree unavailable" in resp.json()["detail"]
 
 
 def test_bind_issue_endpoint_uses_resolved_backfill_for_locator_keyed_request(tmp_path):
@@ -304,7 +331,7 @@ def test_scan_results_surface_only_records_non_gating(tmp_path):
     c = _client(tmp_path)
     body = {"cell": "surface_only", "agent_id": "agent-1", "scan": {"findings": [
         {"rule_id": "PY-WL-101", "message": "m", "severity": "INFO", "kind": "defect",
-         "fingerprint": "fp1", "qualname": "m.f", "properties": {}, "suppressed": "active"}]}}
+         "fingerprint": "fp1", "qualname": "m.f", "properties": {}, "suppression_state": "active"}]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 200
     assert resp.json()["routed"][0]["mode"] == "surface_only"
@@ -321,9 +348,9 @@ def test_scan_results_cell_by_severity_routes_per_finding(tmp_path):
             "cell_by_severity": {"CRITICAL": "surface_override", "INFO": "surface_only"},
             "scan": {"findings": [
                 {"rule_id": "R-C", "message": "m", "severity": "CRITICAL", "kind": "defect",
-                 "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppressed": "active"},
+                 "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppression_state": "active"},
                 {"rule_id": "R-I", "message": "m", "severity": "INFO", "kind": "defect",
-                 "fingerprint": "i", "qualname": "m.g", "properties": {}, "suppressed": "active"}]}}
+                 "fingerprint": "i", "qualname": "m.g", "properties": {}, "suppression_state": "active"}]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 200
     modes = {r["fingerprint"]: r["mode"] for r in resp.json()["routed"]}
@@ -335,9 +362,9 @@ def test_scan_results_fail_on_routes_threshold_per_finding(tmp_path):
     body = {"agent_id": "a", "cell": "surface_override", "fail_on": "ERROR",
             "scan": {"findings": [
                 {"rule_id": "R-E", "message": "m", "severity": "ERROR", "kind": "defect",
-                 "fingerprint": "e", "qualname": "m.f", "properties": {}, "suppressed": "active"},
+                 "fingerprint": "e", "qualname": "m.f", "properties": {}, "suppression_state": "active"},
                 {"rule_id": "R-W", "message": "m", "severity": "WARN", "kind": "defect",
-                 "fingerprint": "w", "qualname": "m.g", "properties": {}, "suppressed": "active"}]}}
+                 "fingerprint": "w", "qualname": "m.g", "properties": {}, "suppression_state": "active"}]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 200
     routed = {r["fingerprint"]: r for r in resp.json()["routed"]}
@@ -357,7 +384,7 @@ def test_scan_results_unknown_fail_on_is_422(tmp_path):
     body = {"agent_id": "a", "cell": "surface_only", "fail_on": "SEVERE",
             "scan": {"findings": [
                 {"rule_id": "R-W", "message": "m", "severity": "WARN", "kind": "defect",
-                 "fingerprint": "w", "qualname": "m.g", "properties": {}, "suppressed": "active"}]}}
+                 "fingerprint": "w", "qualname": "m.g", "properties": {}, "suppression_state": "active"}]}}
 
     resp = c.post("/wardline/scan-results", json=body)
 
@@ -371,7 +398,7 @@ def test_scan_results_block_escalate_without_gate_is_409(tmp_path):
     body = {"agent_id": "a", "cell_by_severity": {"CRITICAL": "block_escalate"},
             "scan": {"findings": [
                 {"rule_id": "R-C", "message": "m", "severity": "CRITICAL", "kind": "defect",
-                 "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppressed": "active"}]}}
+                 "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppression_state": "active"}]}}
     assert c.post("/wardline/scan-results", json=body).status_code == 409
 
 
@@ -392,7 +419,7 @@ def test_scan_results_block_escalate_only_needs_no_engine(tmp_path):
     c = TestClient(create_app(signoff_gate=sg))  # NOT _client: no enforcement injected
     body = {"cell": "block_escalate", "agent_id": "a", "scan": {"findings": [
         {"rule_id": "R-C", "message": "m", "severity": "CRITICAL", "kind": "defect",
-         "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppressed": "active"}]}}
+         "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppression_state": "active"}]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 200
     assert resp.json()["routed"][0]["mode"] == "block_escalate"
@@ -423,7 +450,7 @@ def test_scan_results_rejects_suppressed_defect_without_proof(tmp_path):
     c = _client(tmp_path)
     scan = {"findings": [
         {"rule_id": "R-C", "message": "m", "severity": "CRITICAL", "kind": "defect",
-         "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppressed": "waived"}
+         "fingerprint": "c", "qualname": "m.f", "properties": {}, "suppression_state": "waived"}
     ]}
     resp = c.post("/wardline/scan-results",
                   json={"cell": "surface_only", "agent_id": "a", "scan": scan})
@@ -441,7 +468,7 @@ def test_scan_results_accepts_diagnostic_properties(tmp_path):
         {"rule_id": "R-C", "message": "m", "severity": "CRITICAL", "kind": "defect",
          "fingerprint": "c", "qualname": "m.f",
          "properties": {"sink": "os.system", "actual_return": "UNKNOWN_RAW"},
-         "suppressed": "active"}
+         "suppression_state": "active"}
     ]}
     resp = c.post("/wardline/scan-results",
                   json={"cell": "surface_override", "agent_id": "a", "scan": scan})
@@ -454,7 +481,7 @@ def test_scan_results_rejects_oversized_finding_batch_without_writing(tmp_path):
     c = _client(tmp_path)
     finding = {"rule_id": "R", "message": "m", "severity": "INFO", "kind": "defect",
                "fingerprint": "fp", "qualname": "m.f", "properties": {},
-               "suppressed": "active"}
+               "suppression_state": "active"}
     scan = {"findings": [{**finding, "fingerprint": f"fp-{i}"} for i in range(501)]}
     resp = c.post("/wardline/scan-results",
                   json={"cell": "surface_only", "agent_id": "a", "scan": scan})
@@ -467,7 +494,7 @@ def test_scan_results_server_owned_routing_rejects_request_routing(tmp_path, mon
     c = _client(tmp_path)
     body = {"cell": "surface_override", "agent_id": "a", "scan": {"findings": [
         {"rule_id": "R", "message": "m", "severity": "INFO", "kind": "defect",
-         "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppressed": "active"}
+         "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppression_state": "active"}
     ]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 403
@@ -479,7 +506,7 @@ def test_scan_results_default_rejects_request_owned_routing(tmp_path, monkeypatc
     c = _client(tmp_path)
     body = {"cell": "surface_only", "agent_id": "a", "scan": {"findings": [
         {"rule_id": "R", "message": "m", "severity": "INFO", "kind": "defect",
-         "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppressed": "active"}
+         "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppression_state": "active"}
     ]}}
 
     resp = c.post("/wardline/scan-results", json=body)
@@ -493,7 +520,7 @@ def test_scan_results_can_use_server_owned_single_cell(tmp_path, monkeypatch):
     c = _client(tmp_path)
     body = {"agent_id": "a", "scan": {"findings": [
         {"rule_id": "R", "message": "m", "severity": "INFO", "kind": "defect",
-         "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppressed": "active"}
+         "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppression_state": "active"}
     ]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 200
@@ -517,7 +544,7 @@ def test_scan_results_requires_signed_artifact_when_configured(tmp_path, monkeyp
         "tree_sha": "b" * 40,
         "findings": [
             {"rule_id": "R", "message": "m", "severity": "INFO", "kind": "defect",
-             "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppressed": "active"}
+             "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppression_state": "active"}
         ],
     }
 
@@ -539,7 +566,7 @@ def test_scan_results_records_verified_artifact_provenance(tmp_path, monkeypatch
         "tree_sha": "b" * 40,
         "findings": [
             {"rule_id": "R", "message": "m", "severity": "INFO", "kind": "defect",
-             "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppressed": "active"}
+             "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppression_state": "active"}
         ],
     })
 
@@ -565,15 +592,14 @@ def _dirty_wardline_scan():
         "dirty": True,
         "findings": [
             {"rule_id": "R", "message": "m", "severity": "INFO", "kind": "defect",
-             "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppressed": "active"}
+             "fingerprint": "fp", "qualname": "m.f", "properties": {}, "suppression_state": "active"}
         ],
     }
 
 
-def test_scan_results_dirty_tree_is_amber_skip_not_red(tmp_path, monkeypatch):
-    # P1: key configured, dirty + unsigned, no dev-mode -> HTTP 200 typed amber
-    # SKIPPED_DIRTY_TREE (distinguishable from the 422 generic red); nothing
-    # governed.
+def test_scan_results_dirty_tree_is_error_skip_not_success(tmp_path, monkeypatch):
+    # P1: key configured, dirty + unsigned, no dev-mode -> typed
+    # SKIPPED_DIRTY_TREE, but as a non-2xx result because nothing was governed.
     monkeypatch.setenv("LEGIS_WARDLINE_ARTIFACT_KEY", "wardline-key")
     monkeypatch.delenv("LEGIS_WARDLINE_ALLOW_DIRTY", raising=False)
     c = _client(tmp_path)
@@ -582,11 +608,17 @@ def test_scan_results_dirty_tree_is_amber_skip_not_red(tmp_path, monkeypatch):
                   json={"cell": "surface_only", "agent_id": "a",
                         "scan": _dirty_wardline_scan()})
 
-    assert resp.status_code == 200
+    assert resp.status_code == 409
     body = resp.json()
     assert body["outcome"] == "SKIPPED_DIRTY_TREE"
     assert body["routed"] == []
     assert c.get("/overrides").json() == []
+    # N4: HTTP body carries the same structured, actionable fields as MCP
+    # (both single-sourced on WardlineDirtyTreeError.to_payload()).
+    assert body["reason"] == "SKIPPED_DIRTY_TREE"
+    assert body["posture"] == "ci_artifact_key_configured"
+    assert body["cause"] == "dirty_unsigned_artifact"
+    assert "LEGIS_WARDLINE_ALLOW_DIRTY" in " ".join(body["remediation"])
 
 
 def test_scan_results_dirty_tree_governs_under_devmode_optin(tmp_path, monkeypatch):
@@ -610,8 +642,8 @@ def test_scan_results_dirty_tree_governs_under_devmode_optin(tmp_path, monkeypat
 def test_scan_results_devmode_optin_is_strict_and_fails_safe(tmp_path, monkeypatch):
     # The dev-mode opt-in is `LEGIS_WARDLINE_ALLOW_DIRTY == "1"` exactly. A
     # governing knob that gates UNSIGNED artifacts must fail safe: any value other
-    # than "1" (truthy-looking "true", "0", "yes") must NOT govern — it stays the
-    # typed amber skip. Pins the strict parse against a future drift to truthiness.
+    # than "1" (truthy-looking "true", "0", "yes") must NOT govern — it stays a
+    # typed recoverable failure. Pins the strict parse against a future drift to truthiness.
     monkeypatch.setenv("LEGIS_WARDLINE_ARTIFACT_KEY", "wardline-key")
     for value in ("0", "true", "True", "yes", "2", ""):
         monkeypatch.setenv("LEGIS_WARDLINE_ALLOW_DIRTY", value)
@@ -619,7 +651,7 @@ def test_scan_results_devmode_optin_is_strict_and_fails_safe(tmp_path, monkeypat
         resp = c.post("/wardline/scan-results",
                       json={"cell": "surface_only", "agent_id": "a",
                             "scan": _dirty_wardline_scan()})
-        assert resp.status_code == 200, value
+        assert resp.status_code == 409, value
         assert resp.json()["outcome"] == "SKIPPED_DIRTY_TREE", value
         assert resp.json()["routed"] == [], value
 
@@ -628,7 +660,7 @@ def test_scan_results_single_cell_still_works(tmp_path):
     c = _client(tmp_path)
     body = {"cell": "surface_override", "agent_id": "agent-1", "scan": {"findings": [
         {"rule_id": "PY-WL-101", "message": "m", "severity": "ERROR", "kind": "defect",
-         "fingerprint": "fp1", "qualname": "m.f", "properties": {}, "suppressed": "active"}]}}
+         "fingerprint": "fp1", "qualname": "m.f", "properties": {}, "suppression_state": "active"}]}}
     resp = c.post("/wardline/scan-results", json=body)
     assert resp.status_code == 200
     assert resp.json()["routed"][0]["mode"] == "surface_override"

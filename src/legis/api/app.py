@@ -32,6 +32,7 @@ from legis.config import (
     binding_db_url,
     check_db_url,
     governance_db_url,
+    posture_db_url,
     protected_policies,
     pull_db_url,
 )
@@ -43,19 +44,24 @@ from legis.enforcement.signoff import SignoffGate
 from legis.git.pull_request import PullRequestSource
 from legis.git.rename_feed import build_rename_feed
 from legis.git.surface import GitError, GitSurface
-from legis.governance.gaps import find_lineage_integrity, find_orphan_gaps
-from legis.filigree.client import FiligreeClient
+from legis.filigree.client import FiligreeClient, FiligreeError
 from legis.governance.binding_ledger import BindingError, BindingLedger
-from legis.governance.signoff_binding import bind_signoff_to_issue
 from legis.identity.entity_key import EntityKey
 from legis.identity.resolver import IdentityResolver
 from legis.service.errors import (
     AuditIntegrityError,
+    BindingUnavailableError,
     InvalidArgumentError,
+    NotClearedError,
     NotEnabledError,
+    NotFoundError,
+    UnresolvedInputError,
     WardlineRoutingError,
 )
+from legis.service.governance import bind_signoff_issue as _bind_signoff_issue
 from legis.service.governance import compute_override_rate as _compute_override_rate
+from legis.service.governance import read_identity_gaps as _read_identity_gaps
+from legis.service.governance import read_lineage_integrity as _read_lineage_integrity
 from legis.service.governance import evaluate_policy as _evaluate_policy
 from legis.service.governance import request_signoff as _request_signoff
 from legis.service.governance import resolve_for_record as _resolve_for_record
@@ -64,11 +70,15 @@ from legis.service.governance import submit_operator_override as _submit_operato
 from legis.service.governance import submit_override as _submit_override
 from legis.service.governance import submit_protected_override as _submit_protected_override
 from legis.service.governance import verified_records as _verified_records
+from legis.service.explain import explain_policy as _explain_policy
 from legis.service.wardline import (
     resolve_scan_routing,
     route_wardline_scan as _route_wardline_scan,
 )
+from legis.policy.cells import PolicyCellRegistry
 from legis.policy.grammar import PolicyGrammar, default_grammar
+from legis.posture.floor import floored_registry
+from legis.posture.ledger import PostureLedger
 from legis.pulls.models import PullRequest, PullRequestState
 from legis.pulls.surface import PullSurface
 from legis.wardline.governor import WardlineCellPolicy
@@ -102,6 +112,15 @@ def _token_actor_from_mapping(
         if hmac.compare_digest(credentials.credentials, token):
             actor, scope_sep, scope_raw = actor_spec.partition(":")
             scopes = {scope.strip() for scope in scope_raw.split("|") if scope.strip()}
+            # AUTH-1: an unscoped actor entry (no ``:scope`` segment) is rejected by
+            # default. The ``LEGIS_ALLOW_UNSCOPED_API_TOKENS=1`` escape hatch restores
+            # the pre-H7 compat behaviour where an unscoped token is accepted — and
+            # because the scope check below only fires when ``scope_sep`` is truthy, an
+            # unscoped token then satisfies *every* required_scope, **operator
+            # included**. The flag name does not say so: enabling it grants unscoped
+            # tokens full operator authority. It is a human-set env var (never
+            # agent-reachable, C-8); prefer explicit ``actor:writer=``/``actor:operator=``
+            # scoping and leave this off unless you intend that authority.
             if not scope_sep and os.environ.get("LEGIS_ALLOW_UNSCOPED_API_TOKENS") != "1":
                 raise HTTPException(
                     status_code=403,
@@ -170,6 +189,25 @@ def _recorded_actor(authenticated_actor: str, body_actor: str | None) -> str:
     return authenticated_actor if _authenticated_actor_configured() else (body_actor or authenticated_actor)
 
 
+def _unresolved_input_http(exc: UnresolvedInputError) -> HTTPException:
+    """422 for a non-resolving inline entity_sei (weft SEI-on-entry fail-closed).
+
+    The structured weft-reason rides in the detail so the agent can repair the
+    input without parsing message text; nothing was recorded.
+    """
+    return HTTPException(
+        status_code=422,
+        detail={
+            "error": str(exc),
+            "weft_reason": {
+                "kind": "unresolved_input",
+                "cause": exc.cause,
+                "fix": exc.fix,
+            },
+        },
+    )
+
+
 def verify_writer(credentials: HTTPAuthorizationCredentials | None = Security(security)) -> str:
     return _verify_secret(credentials, "agent", "writer")
 
@@ -180,18 +218,20 @@ def verify_operator(credentials: HTTPAuthorizationCredentials | None = Security(
 
 class OverrideIn(BaseModel):
     policy: str
-    entity: str  # a locator today (pre-SEI); identity_stable=False
+    entity: str  # a locator/symbol (L2 resolve); identity_stable=False if unresolved
     rationale: str
     agent_id: str | None = None
-
-
-class ProtectedIn(BaseModel):
-    policy: str
-    entity: str
-    rationale: str
-    agent_id: str | None = None
-    file_fingerprint: str
-    ast_path: str
+    # weft SEI-on-entry (L1): an SEI the agent already holds, bound at the point of
+    # entry. When set, legis verifies it is alive and keys the record on it; a
+    # non-resolving value is rejected (422 unresolved_input) and records nothing.
+    entity_sei: str | None = None
+    # Protected-cell inputs (Phase 9 unification): the source/AST binding the
+    # protected gate requires. Optional on the unified body — when the floored
+    # cell is ``protected`` and either is absent, the route returns the
+    # ``need_inputs`` discriminant (422) naming them, mirroring the MCP
+    # ``NEED_INPUTS`` outcome rather than a generic InvalidArgumentError.
+    file_fingerprint: str | None = None
+    ast_path: str | None = None
 
 
 class OperatorOverrideIn(BaseModel):
@@ -201,13 +241,7 @@ class OperatorOverrideIn(BaseModel):
     operator_id: str | None = None
     file_fingerprint: str
     ast_path: str
-
-
-class SignoffRequestIn(BaseModel):
-    policy: str
-    entity: str
-    rationale: str
-    agent_id: str | None = None
+    entity_sei: str | None = None
 
 
 class SignoffSignIn(BaseModel):
@@ -276,28 +310,6 @@ def _pull_to_dict(pr: PullRequest) -> dict:
     return d
 
 
-def _binding_entity_from_backfill(
-    records: list[Any], original_seq: int
-) -> tuple[EntityKey, str] | None:
-    for rec in reversed(records):
-        payload = rec.payload
-        if payload.get("event") != "SEI_BACKFILL":
-            continue
-        if payload.get("original_seq") != original_seq:
-            continue
-        try:
-            entity_key = EntityKey.from_dict(payload["entity_key"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not entity_key.identity_stable:
-            continue
-        content_hash = payload.get("extensions", {}).get("loomweave", {}).get(
-            "content_hash"
-        ) or ""
-        return entity_key, content_hash
-    return None
-
-
 def create_app(
     repo_path: str | Path | None = None,
     check_surface: CheckSurface | None = None,
@@ -312,6 +324,8 @@ def create_app(
     binding_key: bytes | None = None,
     pull_requests: PullRequestSource | None = None,
     pull_surface: PullSurface | None = None,
+    cell_registry: PolicyCellRegistry | None = None,
+    posture_ledger: PostureLedger | None = None,
 ) -> FastAPI:
     app = FastAPI(title="legis", version=__version__)
     source_root = Path(repo_path) if repo_path is not None else Path(os.getcwd())
@@ -371,12 +385,39 @@ def create_app(
             from legis.governance.binding_ledger import BindingLedger
             bind_db_url = binding_db_url()
             binding_ledger = BindingLedger(AuditStore(bind_db_url), clock, hmac_key)
+    # Posture floor (design §4, D0/D2): the unified /overrides route resolves the
+    # governing cell through a FlooredRegistry. The cell registry and the posture
+    # ledger HANDLE are composed once here; the floor VALUE is read fresh on every
+    # request via floored_registry(...) (never cached — D2). Per the Phase-4
+    # reconciliation the ledger handle is opened ``initialize=False`` so creating
+    # the app never writes posture.db — genesis is an install-time action and a
+    # bare ``create_app`` must not create local state (audit H6). A missing/empty
+    # ledger reads ``None`` -> the registry's own (fail-closed) default stands.
+    if cell_registry is None:
+        from legis.mcp import _load_policy_cell_registry
+
+        cell_registry = _load_policy_cell_registry()
+    if posture_ledger is None:
+        posture_ledger = PostureLedger(posture_db_url(), initialize=False)
+
     state: dict[str, Any] = {
         "checks": check_surface,
         "enforcement": enforcement,
         "grammar": grammar,
         "pulls": pull_surface,
+        "cell_registry": cell_registry,
+        "posture_ledger": posture_ledger,
     }
+
+    def floored() -> Any:
+        """The per-request FlooredRegistry (floor read fresh on the shared ledger).
+
+        D2: the ledger HANDLE is shared; ``read_floor()`` is called on each
+        invocation (AuditStore's NullPool opens a fresh connection per read, so
+        concurrent requests are safe). Never constructs ``PostureLedger`` here —
+        that would run DDL and serialize requests under a SQLite DDL lock.
+        """
+        return floored_registry(state["cell_registry"], state["posture_ledger"])
 
     def git() -> GitSurface:
         return GitSurface(repo_path or os.getcwd())
@@ -505,37 +546,135 @@ def create_app(
     def checks_for_pr(pr: int) -> list[dict]:
         return [_check_to_dict(r) for r in checks().for_pr(pr)]
 
-    # --- simple-tier enforcement surface (WP-2.1 chill / WP-2.2 coached) ---
+    # --- unified governance-routed override surface (Phase 9) ---
+    #
+    # One policy-routed POST /overrides collapses the three old cell-addressed
+    # submit routes. The governing cell is resolved through a FlooredRegistry
+    # (floor read per request, D0/D2); the route never trusts a config-era
+    # protected_set or a caller-named cell. Discriminated outcome (mirrors the
+    # MCP override_submit contract):
+    #
+    #   chill      -> {outcome: accepted, cell: chill, seq}                 201
+    #   coached    -> {outcome: accepted|blocked, cell: coached, seq, ...}  201/409
+    #   structured -> {outcome: escalation_requested, request_seq}          202
+    #   protected  -> {outcome: accepted|blocked, cell: protected, seq}     201/409
+    #              -> {outcome: need_inputs, required_inputs}               422
 
     @app.post("/overrides")
     def post_override(body: OverrideIn, response: Response, actor: str = Depends(verify_writer)) -> dict:
-        protected_set = (
-            trail_verifier.protected_policies if trail_verifier is not None else frozenset()
-        )
-        if body.policy in protected_set:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Policy {body.policy!r} is protected; use the protected overrides endpoint instead."
+        registry = floored()
+        cell = registry.cell_for(body.policy)
+        recorded_actor = _recorded_actor(actor, body.agent_id)
+
+        if cell in ("chill", "coached"):
+            try:
+                result = _submit_override(
+                    engine(),
+                    identity=identity,
+                    policy=body.policy,
+                    entity=body.entity,
+                    rationale=body.rationale,
+                    agent_id=recorded_actor,
+                    entity_sei=body.entity_sei,
+                )
+            except UnresolvedInputError as exc:
+                raise _unresolved_input_http(exc) from exc
+            # ACCEPTED → 201 (took effect); BLOCKED → 409 (did not). Full body
+            # either way so the agent gets the judge's reasoning to revise.
+            response.status_code = 201 if result.accepted else 409
+            return {
+                "outcome": "accepted" if result.accepted else "blocked",
+                "cell": cell,
+                "seq": result.seq,
+                "verdict": result.verdict.value if result.verdict else None,
+                "judge_model": result.judge_model,
+                "judge_rationale": result.judge_rationale,
+            }
+
+        if cell == "structured":
+            try:
+                signoff_result = _request_signoff(
+                    signoff_gate,
+                    identity=identity,
+                    policy=body.policy,
+                    entity=body.entity,
+                    rationale=body.rationale,
+                    agent_id=recorded_actor,
+                    entity_sei=body.entity_sei,
+                )
+            except UnresolvedInputError as exc:
+                raise _unresolved_input_http(exc) from exc
+            except NotEnabledError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            # 202 (not 201): a structured escalation is PENDING, never an
+            # acceptance — an old "201 == accepted" reader must not misread it.
+            response.status_code = 202
+            return {
+                "outcome": "escalation_requested",
+                "cell": "structured",
+                "request_seq": signoff_result.seq,
+                "cleared": signoff_result.cleared,
+            }
+
+        if cell == "protected":
+            # NEED_INPUTS pre-check: the protected gate needs the source/AST
+            # binding. Absent either → return the discriminant naming the missing
+            # inputs (422), aligned with MCP's NEED_INPUTS, not a generic 422.
+            explanation = _explain_policy(
+                registry,
+                policy=body.policy,
+                entity=body.entity,
+                engine=None,
+                protected_gate=protected_gate,
+                signoff_gate=signoff_gate,
             )
-        result = _submit_override(
-            engine(),
-            identity=identity,
-            policy=body.policy,
-            entity=body.entity,
-            rationale=body.rationale,
-            agent_id=_recorded_actor(actor, body.agent_id),
-        )
-        # ACCEPTED → 201 (the override took effect); BLOCKED → 409 (it did not,
-        # the agent must correct or convince). Full body either way so the agent
-        # gets the judge's reasoning to revise.
-        response.status_code = 201 if result.accepted else 409
-        return {
-            "accepted": result.accepted,
-            "seq": result.seq,
-            "verdict": result.verdict.value if result.verdict else None,
-            "judge_model": result.judge_model,
-            "judge_rationale": result.judge_rationale,
-        }
+            supplied = {"file_fingerprint": body.file_fingerprint, "ast_path": body.ast_path}
+            missing = [
+                item.to_payload()
+                for item in explanation.required_inputs
+                if not supplied.get(item.field)
+            ]
+            if missing:
+                response.status_code = 422
+                return {
+                    "outcome": "need_inputs",
+                    "cell": "protected",
+                    "required_inputs": missing,
+                }
+            # The protected cell always requires both inputs (_PROTECTED_INPUTS),
+            # so the `missing` guard above guarantees they are present here.
+            assert body.file_fingerprint is not None and body.ast_path is not None
+            try:
+                protected_result = _submit_protected_override(
+                    protected_gate,
+                    identity=identity,
+                    policy=body.policy,
+                    entity=body.entity,
+                    rationale=body.rationale,
+                    agent_id=recorded_actor,
+                    file_fingerprint=body.file_fingerprint,
+                    ast_path=body.ast_path,
+                    source_root=source_root,
+                    entity_sei=body.entity_sei,
+                )
+            except UnresolvedInputError as exc:
+                raise _unresolved_input_http(exc) from exc
+            except NotEnabledError as exc:
+                raise HTTPException(status_code=404, detail=str(exc)) from exc
+            except InvalidArgumentError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            response.status_code = 201 if protected_result.accepted else 409
+            return {
+                "outcome": "accepted" if protected_result.accepted else "blocked",
+                "cell": "protected",
+                "seq": protected_result.seq,
+                "verdict": protected_result.verdict.value,
+                "judge_model": protected_result.judge_model,
+                "judge_rationale": protected_result.judge_rationale,
+                "signature": protected_result.signature,
+            }
+
+        raise HTTPException(status_code=422, detail=f"unsupported policy cell {cell!r}")
 
     def verified_governance_records():
         try:
@@ -550,36 +689,13 @@ def create_app(
         return [r.payload for r in verified_governance_records()]
 
     # --- complex-tier enforcement surface (WP-3.1 structured / WP-3.2 protected) ---
-
-    @app.post("/protected/overrides")
-    def post_protected_override(
-        body: ProtectedIn, response: Response, actor: str = Depends(verify_writer)
-    ) -> dict:
-        try:
-            result = _submit_protected_override(
-                protected_gate,
-                identity=identity,
-                policy=body.policy,
-                entity=body.entity,
-                rationale=body.rationale,
-                agent_id=_recorded_actor(actor, body.agent_id),
-                file_fingerprint=body.file_fingerprint,
-                ast_path=body.ast_path,
-                source_root=source_root,
-            )
-        except NotEnabledError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except InvalidArgumentError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        response.status_code = 201 if result.accepted else 409
-        return {
-            "accepted": result.accepted,
-            "seq": result.seq,
-            "verdict": result.verdict.value,
-            "judge_model": result.judge_model,
-            "judge_rationale": result.judge_rationale,
-            "signature": result.signature,
-        }
+    #
+    # The structured (sign-off) and protected submit paths are reached through the
+    # unified ``POST /overrides`` route above (Phase 9 unification): the floored
+    # cell drives the dispatch. Only the operator-clear routes remain distinct,
+    # because they carry the ``verify_operator`` authority the writer surface must
+    # not. ``POST /protected/overrides`` and ``POST /signoff/request`` are gone
+    # (they now 404) — the cell, not the URL, selects the gate.
 
     @app.post("/protected/operator-override", status_code=201)
     def post_operator_override(body: OperatorOverrideIn, operator: str = Depends(verify_operator)) -> dict:
@@ -594,7 +710,10 @@ def create_app(
                 file_fingerprint=body.file_fingerprint,
                 ast_path=body.ast_path,
                 source_root=source_root,
+                entity_sei=body.entity_sei,
             )
+        except UnresolvedInputError as exc:
+            raise _unresolved_input_http(exc) from exc
         except NotEnabledError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except InvalidArgumentError as exc:
@@ -606,65 +725,43 @@ def create_app(
             "signature": result.signature,
         }
 
-    @app.post("/signoff/request", status_code=202)
-    def post_signoff_request(body: SignoffRequestIn, actor: str = Depends(verify_writer)) -> dict:
-        try:
-            result = _request_signoff(
-                signoff_gate,
-                identity=identity,
-                policy=body.policy,
-                entity=body.entity,
-                rationale=body.rationale,
-                agent_id=_recorded_actor(actor, body.agent_id),
-            )
-        except NotEnabledError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"seq": result.seq, "cleared": result.cleared}
-
     @app.post("/signoff/{request_seq}/bind-issue", status_code=201)
     def bind_issue(
         request_seq: int, body: BindIssueIn, actor: str = Depends(verify_writer)
     ) -> dict:
-        if filigree is None:
-            raise HTTPException(status_code=404, detail="filigree binding not enabled")
-        if signoff_gate is None:
-            raise HTTPException(status_code=404, detail="structured cell not enabled")
-        # Fail-closed trail verification via the single service decision rather
-        # than an inline re-implementation (Q-H2): integrity + HMAC tamper check.
+        # The whole bind decision — fail-closed trail verification, cleared
+        # request, SEI/content_hash sourced from the record (never the caller),
+        # SEI_BACKFILL recovery — is the single service decision shared with the
+        # MCP signoff_bind_issue tool (Q-H2). This route only maps errors.
         try:
-            records = _verified_records(signoff_gate, trail_verifier, signoff_gate.records)
-        except AuditIntegrityError as exc:
-            raise HTTPException(status_code=500, detail=str(exc)) from exc
-        req = signoff_gate.request_record(request_seq)
-        if req is None:
-            raise HTTPException(
-                status_code=404, detail="no sign-off request at seq"
-            )
-        if not signoff_gate.is_cleared(request_seq):
-            raise HTTPException(status_code=409, detail="sign-off not cleared")
-        # The SEI and content_hash come from the recorded request, never the
-        # caller — binding only what was actually signed off.
-        entity_key = EntityKey.from_dict(req["entity_key"])
-        content_hash = req.get("extensions", {}).get("loomweave", {}).get(
-            "content_hash"
-        ) or ""
-        if not entity_key.identity_stable:
-            backfilled = _binding_entity_from_backfill(records, request_seq)
-            if backfilled is not None:
-                entity_key, content_hash = backfilled
-        try:
-            return bind_signoff_to_issue(
+            return _bind_signoff_issue(
+                signoff_gate,
+                trail_verifier,
                 filigree,
                 issue_id=body.issue_id,
-                entity_key=entity_key,
-                content_hash=content_hash,
-                signoff_seq=request_seq,
+                request_seq=request_seq,
                 key=binding_key,
                 ledger=binding_ledger,
             )
-        except ValueError as exc:
+        except NotEnabledError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except AuditIntegrityError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        except NotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except NotClearedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except BindingUnavailableError as exc:
             # A locator-keyed (non-SEI) sign-off can't be rename-stably bound.
-            raise HTTPException(status_code=409, detail=str(exc))
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FiligreeError as exc:
+            # Filigree is wired but down, redirecting, or returned malformed data.
+            # Nothing was bound; this is recoverable (retry after Filigree is
+            # healthy), so surface a typed 502 — the MCP adapter maps the same
+            # condition to FILIGREE_UNAVAILABLE — instead of an untyped 500.
+            raise HTTPException(
+                status_code=502, detail=f"filigree unavailable: {exc}"
+            ) from exc
 
     @app.get("/signoff/{request_seq}/binding")
     def get_binding(request_seq: int) -> dict:
@@ -722,32 +819,18 @@ def create_app(
     # A tampered protected trail raises HTTP 500 before any scan is attempted.
     # When no client is wired there is nothing stable to probe.
 
+    # Both reads (GOV-1/GOV-2 honesty discipline: status "unavailable" vs
+    # "checked"/three-way, never a bare [] false-green) are single service
+    # decisions shared with the MCP identity_gap_list / lineage_integrity_get
+    # tools (Q-H2). verified_governance_records maps a tampered trail to 500.
+
     @app.get("/governance/identity-gaps")
-    def identity_gaps() -> list[dict]:
-        if identity is None or identity.client is None:
-            return []
-        gaps = find_orphan_gaps(verified_governance_records(), identity.client)
-        return [{"sei": g.sei, "reason": g.reason, "lineage": g.lineage} for g in gaps]
+    def identity_gaps() -> dict:
+        return _read_identity_gaps(identity, verified_governance_records)
 
     @app.get("/governance/lineage-integrity")
     def lineage_integrity() -> dict:
-        if identity is None or identity.client is None:
-            return {
-                "status": "unavailable",
-                "divergences": [],
-                "unavailable": [{"reason": "loomweave client not configured"}],
-            }
-        integrity = find_lineage_integrity(verified_governance_records(), identity.client)
-        return {
-            "status": "unverified" if integrity.unavailable else "verified",
-            "divergences": [
-                {"sei": d.sei, "recorded_length": d.recorded_length,
-                 "current_length": d.current_length} for d in integrity.divergences
-            ],
-            "unavailable": [
-                {"sei": u.sei, "reason": u.reason} for u in integrity.unavailable
-            ],
-        }
+        return _read_lineage_integrity(identity, verified_governance_records)
 
     # --- agent-programmable policy grammar (WP-4.1) ---
 
@@ -768,8 +851,8 @@ def create_app(
 
     # --- wardline suite-combination surface (WP-6.1) ---
 
-    @app.post("/wardline/scan-results")
-    def wardline_scan_results(body: ScanResultsIn, actor: str = Depends(verify_writer)) -> dict:
+    @app.post("/wardline/scan-results", response_model=None)
+    def wardline_scan_results(body: ScanResultsIn, actor: str = Depends(verify_writer)) -> dict[str, Any] | JSONResponse:
         try:
             routing = resolve_scan_routing(
                 server_cell=os.environ.get("LEGIS_WARDLINE_CELL"),
@@ -792,7 +875,7 @@ def create_app(
         needs_engine = bool(routing.cells & {WardlineCellPolicy.SURFACE_OVERRIDE,
                                              WardlineCellPolicy.SURFACE_ONLY})
         try:
-            routed = _route_wardline_scan(
+            result = _route_wardline_scan(
                 body.scan,
                 agent_id=_recorded_actor(actor, body.agent_id),
                 identity=identity,
@@ -809,18 +892,25 @@ def create_app(
                 allow_dirty=os.environ.get("LEGIS_WARDLINE_ALLOW_DIRTY") == "1",
             )
         except WardlineDirtyTreeError as exc:
-            # Amber, not red: a dirty dev tree is "environment not ready", not a
-            # broken/tampered scan. 200 with a typed skip so a harness can tell
-            # it apart from the 422 generic failure and nothing is governed.
-            return {
-                "outcome": exc.reason,
-                "routed": [],
-                "detail": str(exc),
-            }
+            # Environment-not-ready, not success: nothing was governed, so the
+            # transport must not share the 2xx signal with ROUTED. Keep the
+            # typed/actionable payload so callers can branch on the cause.
+            return JSONResponse(status_code=409, content=exc.to_payload())
         except WardlinePayloadError as exc:
             raise HTTPException(status_code=422, detail=f"invalid Wardline scan: {exc}")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
-        return {"outcome": ScanOutcome.ROUTED, "routed": routed}
+        # Echo the scan-level posture at the root (opp #6), identical contract to
+        # the MCP scan_route surface, so an HTTP caller can likewise distinguish a
+        # keyless dev pass from a CI-signed verified pass.
+        return {
+            "outcome": ScanOutcome.ROUTED,
+            "routed": result.routed,
+            "artifact_status": result.artifact_status,
+            # The honesty surface: distinguishes key-absent (verification
+            # DISABLED) from a key that failed to verify, identical contract to
+            # the MCP scan_route surface (PDR-0023).
+            "artifact_status_reason": result.artifact_status_reason,
+        }
 
     return app

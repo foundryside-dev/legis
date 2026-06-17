@@ -1,0 +1,448 @@
+---
+// ============================================================
+// legis.foundryside.dev — the Legis member site.
+//
+// Built on the member-page template (IA §5.1), block order:
+//   Nav+breadcrumb → Hero → What it is → Key capabilities →
+//   Usage snapshot → How it composes → Status & honest limits →
+//   Links/pointers → CTA → Footer.
+//
+// Driven entirely by @weft/site-kit data — the roster, the matrix
+// slice, and cross-subdomain links come from ROSTER / MATRIX, never
+// hardcoded here, so this site and the hub cannot drift (IA §1.3, §3).
+// Surface facts that move (version, tool counts) are snapshots with a
+// repo pointer, never bare restated numbers (IA §5.1 invariants).
+//
+// Light theme only (the kit pins it). No emoji in product copy.
+// Machine facts in mono. Honest to a fault — never an all-green state.
+// ============================================================
+import Layout from '@weft/site-kit/layouts/Layout.astro';
+import { Button, Badge, Tag, Banner, MemberMark, SeiTag, EnrichmentChip } from '@weft/site-kit/components';
+import {
+  getMember,
+  pairingsFor,
+  partnerOf,
+  memberUrl,
+  repoUrl,
+  SEI_SPINE,
+} from '@weft/site-kit/data';
+
+const SELF = 'legis';
+const me = getMember(SELF); // roster entry — name, lang, thread, tagline, repo
+const REPO = me.repo;
+const LACUNA_URL = memberUrl('lacuna');
+const SPINE_URL = SEI_SPINE.hubAnchor;
+
+// This member's slice of the combination matrix (IA §2.2). Each pairing links
+// cross-subdomain to the partner — the matrix IS the sanctioned cross-link
+// channel. Honest status is intrinsic; 'partial'/'planned' never read as 'live'.
+const pairings = pairingsFor(SELF);
+const statusTone = (s) => (s === 'live' ? 'ok' : s === 'partial' ? 'warn' : 'neutral');
+
+// The 2×2 enforcement cells (sourced from ~/legis/README.md "The governance
+// 2×2"). Two agent-set axes: governance structure (simple/complex) × LLM judge
+// (off/on). Substance is fixed; wording tightened to the cell sentences.
+const CELLS = [
+  {
+    name: 'chill',
+    axes: 'simple · judge off',
+    line: 'CI flags the violation; the agent self-reports a recordable override; the human reviews the trail asynchronously. No LLM, no crypto, no ceremony.',
+  },
+  {
+    name: 'coached',
+    axes: 'simple · judge on',
+    line: 'The same flow, but an LLM judge evaluates the proposed override before it records — an interactive wall behind one config flag. The agent cannot self-clear past the judge.',
+  },
+  {
+    name: 'structured',
+    axes: 'complex · judge off',
+    line: 'Block + escalate without a model in the loop: a designated human operator signs off before the gate clears. Hard gates, explicit human authority, no LLM in the critical path.',
+  },
+  {
+    name: 'protected',
+    axes: 'complex · judge on',
+    line: 'The full machinery: HMAC-signed verdicts bound to source bytes + AST node, a decay sweep that re-runs suppressions through the judge, and the override-rate gate.',
+  },
+];
+
+// Key capabilities (IA §5.1 block 3) — sourced from products/legis.md and the
+// MCP reference. 3–5 first-principles things it gives you.
+const CAPABILITIES = [
+  {
+    head: 'Verdicts you can act on',
+    body: 'policy_evaluate returns CLEAR / VIOLATION / UNKNOWN with an honest provenance_gap — a verdict resolves with identity_stable:false flagged when a sibling capability is absent, never silently rounded up to green.',
+  },
+  {
+    head: 'One override verb, four cells',
+    body: 'override_submit routes to the governing cell server-side and returns a discriminated outcome (ACCEPTED_SELF / ACCEPTED_BY_JUDGE / BLOCKED / ESCALATED_PENDING / NEED_INPUTS). NEED_INPUTS comes back as a guided non-error, not a failure.',
+  },
+  {
+    head: 'SEI-keyed audit lineage',
+    body: 'Every verdict, override, and sign-off lands in an append-only trail keyed on Stable Entity Identity, so the record survives rename and move. A tampered trail reads as AUDIT_INTEGRITY_FAILURE, never silently.',
+  },
+  {
+    head: 'Git/CI provenance + the rename feed',
+    body: 'Branch, commit, pull-request, and check context around the work — plus git_rename_feed_get, the contract-locked provider seam Loomweave’s SEI matcher consumes.',
+  },
+];
+---
+
+<Layout
+  title="Legis — git/CI governance & attestations"
+  description="Legis: one attributable, tamper-evident audit record instead of a silent pass. Verdicts CLEAR/VIOLATION/UNKNOWN with an honest provenance_gap, a 2×2 enforcement model, SEI-keyed lineage — a discipline, not a hardened security boundary."
+  member={SELF}
+  breadcrumb
+  repo={REPO}
+>
+  {/* ---------------------------------------------------------------- */}
+  {/* 1 · Hero — the honesty headline + member dossier terminal        */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="hero">
+    <div class="wrap">
+      <p class="eyebrow">Legis · git/CI governance &amp; attestations · {me.lang}</p>
+      <h1 class="hero__title">One attributable, tamper-evident record — instead of a silent pass.</h1>
+      <p class="hero__sub">
+        Every agent action at the git/CI boundary that breaks a policy produces exactly one
+        identity-stable audit record — and Legis grades <strong>who must answer</strong>
+        (self-record / LLM-judge / human sign-off) <strong>server-side</strong>, so the agent
+        never chooses how cheaply it clears a gate.
+      </p>
+      <div class="hero__cta">
+        <Button client:idle as="a" href="#cells">See the 2×2 →</Button>
+        <Button client:idle as="a" variant="secondary" href={REPO} rel="noopener">Read the repo →</Button>
+      </div>
+
+      {/* member dossier terminal — Legis's own fact + sibling enrichment, at
+          least one non-present state (IA §3.4, §5.1). Honest by construction. */}
+      <div class="terminal">
+        <div class="terminal__lines">
+          <div><span class="terminal__prompt">$</span> legis <span class="terminal__arg">policy_evaluate</span> {'{ policy, target }'}</div>
+          <div class="terminal__dim">verdict → one SEI-keyed record; identity_stable flagged honestly…</div>
+        </div>
+        <div class="terminal__chips">
+          <SeiTag client:visible value={SEI_SPINE.sampleSei} copyable />
+          <EnrichmentChip client:visible state="present" peer="legis" />
+          <EnrichmentChip client:visible state="present" peer="loomweave" />
+          <EnrichmentChip client:visible state="absent" peer="filigree" />
+          <EnrichmentChip client:visible state="unavailable" peer="charter" />
+        </div>
+        <p class="terminal__cap">version snapshot <code>v1.0.0</code> — the gold release. Moving facts live in <a href={REPO} rel="noopener">the repo</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 2 · What it is                                                   */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="band">
+    <div class="wrap">
+      <p class="eyebrow">What it is</p>
+      <h2 class="h2">The federation&rsquo;s governance surface — the one judge.</h2>
+      <p class="lede">
+        Legis is the Weft authority for change provenance and governance over change: it answers
+        <em>what changed, in which branch/commit/PR/check context, and what governance or attestation
+        state exists for that change?</em> It owns the verdicts, the enforcement cells, the
+        HMAC-signed protected records, and the SEI-keyed sign-off ledger.
+      </p>
+      <Banner client:visible tone="info" title="A discipline, not a hardened security boundary.">
+        Legis is a <strong>&ldquo;forced me to do the right thing&rdquo;</strong> discipline. Its worth is the
+        effort the threat model forces and the residual tiers it names honestly (raw DB-file write,
+        model-robustness, response-integrity-rests-on-TLS) — not a claim to withstand an attacker who
+        already holds those capabilities. The system is only as load-bearing as the effort put into it.
+      </Banner>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 3a · The 2×2 enforcement cells (load-bearing for this page)      */}
+  {/* ---------------------------------------------------------------- */}
+  <section id="cells" class="section">
+    <div class="wrap">
+      <p class="eyebrow">The governance 2×2 · graded enforcement</p>
+      <h2 class="h2">When a policy fires, the cell decides who answers.</h2>
+      <p class="lede">
+        Two independent, agent-set axes: how much governance <strong>structure</strong> you want
+        (simple / complex), and whether an LLM <strong>judge</strong> sits inline (off / on). The base
+        stays weightless — a solo project that never switches Legis on pays nothing — and every cell
+        is genuinely useful.
+      </p>
+      <div class="grid grid--2">
+        {CELLS.map((c) => (
+          <article class="card card--cell">
+            <div class="cell__head">
+              <span class="cell__name">{c.name}</span>
+              <span class="cell__axes">{c.axes}</span>
+            </div>
+            <p class="cell__line">{c.line}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 3b · Key capabilities                                            */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="band">
+    <div class="wrap">
+      <p class="eyebrow">Key capabilities</p>
+      <h2 class="h2">What it gives an agent at the boundary.</h2>
+      <div class="grid grid--2">
+        {CAPABILITIES.map((c) => (
+          <article class="card card--cap">
+            <h3 class="cap__head">{c.head}</h3>
+            <p class="cap__body">{c.body}</p>
+          </article>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 4 · Usage snapshot — curated CLI/MCP quick-start (not reference) */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow">Usage snapshot</p>
+      <h2 class="h2">Legis runs as a service; agents drive it over MCP.</h2>
+      <p class="lede">
+        A curated quick-start, not the full surface. The complete CLI (nine subcommands) and the
+        21-tool MCP catalogue live in the repo — see the pointers below.
+      </p>
+      <div class="terminal terminal--well">
+        <div class="terminal__lines">
+          <div><span class="terminal__prompt">$</span> legis install                       <span class="terminal__dim"># instruction block, skill, hook, .mcp.json</span></div>
+          <div><span class="terminal__prompt">$</span> legis serve                         <span class="terminal__dim"># start the HTTP governance service</span></div>
+          <div><span class="terminal__prompt">$</span> legis mcp --agent-id <span class="terminal__arg">&lt;id&gt;</span>           <span class="terminal__dim"># attributable MCP stdio surface</span></div>
+          <div><span class="terminal__prompt">$</span> legis doctor --fix                  <span class="terminal__dim"># view + safe-repair install/config health</span></div>
+        </div>
+      </div>
+      <table class="verbs">
+        <thead>
+          <tr><th>surface</th><th>verb</th><th>does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>MCP</code></td><td><code>policy_evaluate</code></td><td>verdict (CLEAR / VIOLATION / UNKNOWN) without recording an override</td></tr>
+          <tr><td><code>MCP</code></td><td><code>policy_explain</code></td><td>which cell governs this policy/entity, and the move you may make next</td></tr>
+          <tr><td><code>MCP</code></td><td><code>override_submit</code></td><td>one verb routes all four cells; returns a discriminated outcome envelope</td></tr>
+          <tr><td><code>MCP</code></td><td><code>signoff_status_get</code></td><td>poll a structured sign-off request by <code>seq</code></td></tr>
+          <tr><td><code>MCP</code></td><td><code>git_rename_feed_get</code></td><td>the contract-locked git-rename provider seam</td></tr>
+          <tr><td><code>MCP</code></td><td><code>scan_route</code></td><td>route a Wardline scan finding into governance</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 5 · How it composes — this member's matrix slice (sourced)       */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="band">
+    <div class="wrap">
+      <p class="eyebrow">How it composes · {me.name}&rsquo;s pairings</p>
+      <h2 class="h2">Each pair lights up a capability neither tool has alone.</h2>
+      <p class="lede">
+        Legis is a <strong>consumer</strong> of identity, never an authority, and never re-adjudicates
+        trust — <span class="nowrap">Wardline analyses, Legis governs: one judge, not two</span>. A
+        <code>partial</code> or <code>planned</code> pairing is never rendered as <code>live</code>.
+      </p>
+      <div class="grid grid--2">
+        {pairings.map((p) => {
+          const partner = partnerOf(p, SELF);
+          const partnerUrl = memberUrl(partner);
+          return (
+            <article class="card card--pair">
+              <div class="pair__head">
+                <span class="pair__mark"><MemberMark client:visible member={SELF} /></span>
+                <span class="pair__plus" aria-hidden="true">+</span>
+                <a class="pair__mark" href={partnerUrl}><MemberMark client:visible member={partner} /></a>
+                <span class="pair__status">
+                  <Badge client:visible tone={statusTone(p.status)} dot>{p.status}</Badge>
+                </span>
+              </div>
+              <p class="pair__cap">{p.capability}</p>
+              {p.note && <p class="pair__note">{p.note}</p>}
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 6 · Status & honest limits (mandatory, non-empty)               */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="section">
+    <div class="wrap">
+      <p class="eyebrow">Status &amp; honest limits</p>
+      <h2 class="h2">What it is, and what it is not.</h2>
+      <p class="lede">
+        Legis is at <code>v1.0.0</code> — the gold release; all four 2×2 cells work end-to-end. It is a
+        governance-<em>honesty</em> tool, so it states its own residual limits in the open rather than
+        leaving them in source comments.
+      </p>
+      <ul class="limits">
+        <li><strong>Consumer of identity, never an authority.</strong> Legis treats <SeiTag client:visible value={SEI_SPINE.sampleSei} plain /> as opaque — never derived, parsed, or reinterpreted. {SEI_SPINE.consumerNote} <a href={SPINE_URL} rel="noopener">Read the SEI spine →</a></li>
+        <li><strong>The coached cell is a model-robustness wall, not a cryptographic one.</strong> A prompt injection that persuades the judge clears it. For verdicts that must not rest on the model&rsquo;s word, use the <code>protected</code> cell.</li>
+        <li><strong>Tamper-evidence assumes the signing key is out of reach.</strong> It is not absolute against an actor with raw write access to the governance <code>.db</code>; keep the store on storage only the operator controls.</li>
+        <li><strong>The git-rename seam is contract-locked, operative pending Loomweave.</strong> The provider seam is built; operative use is jointly gated on Loomweave driving a committed rev-range.</li>
+      </ul>
+      <Banner client:visible tone="warn" title="The full adversarial threat model is published — attack recipes and all.">
+        Both pre-1.0 adversarial reviews ship in the open, including the reproduced attack recipes for
+        every residual above (<code>docs/release-1.0-risk-audit.md</code> and
+        <code>docs/release-1.0-pre-ship-review.md</code>). Legis holds itself to the honesty bar it enforces.
+      </Banner>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 7 · Links / pointers                                            */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="band">
+    <div class="wrap">
+      <p class="eyebrow">Links &amp; pointers</p>
+      <h2 class="h2">The authoritative surfaces.</h2>
+      <ul class="links">
+        <li><a href={REPO} rel="noopener">Repository</a> <span class="links__dim">— authority for the endpoint list and policy grammar (<code>README.md</code>, <code>src/legis/mcp.py</code>, <code>CHANGELOG.md</code>)</span></li>
+        <li><a href={`${REPO}/blob/main/docs/guide/cli-reference.md`} rel="noopener">CLI reference</a> <span class="links__dim">— the nine subcommands, flags, exit codes</span></li>
+        <li><a href={`${REPO}/blob/main/docs/reference/mcp.md`} rel="noopener">MCP tool reference</a> <span class="links__dim">— all 21 tools, key arguments, the error envelope</span></li>
+        <li><a href={`${REPO}/blob/main/docs/guide/configuration.md`} rel="noopener">Configuration guide</a> <span class="links__dim">— what each cell costs to enable, env vars, escape hatches</span></li>
+        <li><a href={`${REPO}/blob/main/docs/federation/sei-conformance.md`} rel="noopener">SEI conformance</a> <span class="links__dim">— Legis&rsquo;s consumer posture and obligations</span></li>
+      </ul>
+    </div>
+  </section>
+
+  {/* ---------------------------------------------------------------- */}
+  {/* 8 · CTA — see it on the specimen / read the doctrine            */}
+  {/* ---------------------------------------------------------------- */}
+  <section class="cta">
+    <div class="wrap cta__inner">
+      <span class="cta__dot" style={`background:${me.thread}`}></span>
+      <div class="cta__copy">
+        <p class="cta__lead">Want to see it actually run?</p>
+        <p class="cta__sub">
+          <code>make tour</code> the whole federation against <strong>Lacuna</strong>, the demonstration
+          specimen — governance routing over a small app with catalogued flaws, analyzed by every member at once.
+        </p>
+      </div>
+      <span class="cta__btns">
+        <Button client:idle as="a" variant="secondary" href={LACUNA_URL}>See it on the specimen →</Button>
+        <Button client:idle as="a" variant="secondary" href="https://weft.foundryside.dev/#doctrine" rel="noopener">Read the doctrine →</Button>
+      </span>
+    </div>
+  </section>
+</Layout>
+
+<style>
+  /* Page-local layout. Brand atoms (colors, type, motifs) come ONLY from the
+     site-kit token layer — no new colors, no dark mode (light theme only).
+     Legis's thread color is read via --member-legis (walnut) from the kit. */
+  .wrap { max-width: var(--width-content); margin: 0 auto; padding: 0 36px; }
+  .nowrap { white-space: nowrap; }
+  .eyebrow {
+    font: var(--type-mono-sm); text-transform: uppercase;
+    letter-spacing: var(--tracking-caps); color: var(--text-muted);
+    font-size: var(--text-xs); margin: 0 0 14px;
+  }
+  .h2 { font: var(--type-h1); color: var(--text-strong); margin: 0 0 16px; max-width: 26ch; }
+  .lede { font: var(--type-body); color: var(--text-body); max-width: 64ch; margin: 0 0 26px; }
+  .lede code, .pair__cap code, .limits code, .links code, .cta__sub code,
+  .terminal__cap code { font-family: var(--font-mono); font-size: 0.92em; color: var(--text-strong); }
+
+  .section { padding: 64px 0; }
+  .band {
+    padding: 64px 0; background: var(--bg-sunken);
+    border-top: 1px solid var(--border-hairline);
+    border-bottom: 1px solid var(--border-hairline);
+  }
+
+  /* hero */
+  .hero { padding: 78px 0 64px; border-bottom: 1px solid var(--border-hairline); }
+  .hero__title {
+    font: var(--type-display); color: var(--member-legis);
+    letter-spacing: -0.025em; line-height: 1.05;
+    max-width: 18ch; margin: 0 0 22px;
+  }
+  .hero__sub { font: var(--type-body); font-size: var(--text-lg); color: var(--text-body); max-width: 60ch; margin: 0 0 28px; }
+  .hero__sub strong { color: var(--text-strong); }
+  .hero__cta { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 40px; }
+
+  .terminal {
+    background: var(--surface-inverse); border-radius: var(--radius-lg);
+    padding: 18px 20px; max-width: 720px; box-shadow: var(--shadow-lg);
+  }
+  .terminal--well { max-width: 760px; }
+  .terminal__lines { font: var(--type-mono); color: var(--text-on-inverse); font-size: var(--text-xs); line-height: 1.7; white-space: pre; overflow-x: auto; }
+  .terminal__prompt { color: var(--ash-500); }
+  .terminal__arg { color: var(--indigo-300); }
+  .terminal__dim { color: var(--ash-500); }
+  .terminal__chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .terminal__cap { font: var(--type-mono-sm); color: var(--text-muted); margin: 12px 0 0; }
+  .terminal__cap a { color: var(--indigo-700); }
+
+  /* cards (shared) */
+  .grid { display: grid; gap: 16px; }
+  .grid--2 { grid-template-columns: repeat(2, 1fr); }
+  .card {
+    background: var(--surface-card); border: 1px solid var(--border-hairline);
+    border-radius: var(--radius-lg); overflow: hidden; box-shadow: var(--shadow-xs);
+    padding: 18px;
+  }
+
+  /* 2×2 cell card */
+  .card--cell { border-top: 3px solid var(--member-legis); }
+  .cell__head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+  .cell__name { font: var(--type-mono); font-weight: var(--fw-semibold); color: var(--text-strong); text-transform: lowercase; }
+  .cell__axes { font: var(--type-mono-sm); color: var(--text-faint); margin-left: auto; }
+  .cell__line { font: var(--type-body-sm); color: var(--text-body); margin: 0; }
+
+  /* capability card */
+  .cap__head { font: var(--type-h3); color: var(--text-strong); margin: 0 0 8px; }
+  .cap__body { font: var(--type-body-sm); color: var(--text-body); margin: 0; }
+
+  /* usage verbs table */
+  .verbs { width: 100%; border-collapse: collapse; margin-top: 18px; font: var(--type-body-sm); }
+  .verbs th { text-align: left; font: var(--type-mono-sm); color: var(--text-faint); text-transform: uppercase; letter-spacing: var(--tracking-caps); padding: 8px 12px; border-bottom: 1px solid var(--border-hairline); }
+  .verbs td { padding: 9px 12px; border-bottom: 1px solid var(--border-hairline); color: var(--text-body); vertical-align: top; }
+  .verbs td code { font-family: var(--font-mono); color: var(--text-strong); font-size: 0.9em; }
+
+  /* matrix pair card */
+  .card--pair { padding: 16px; }
+  .pair__head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .pair__mark { text-decoration: none; }
+  a.pair__mark:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .pair__plus { color: var(--text-faint); font-family: var(--font-mono); }
+  .pair__status { margin-left: auto; }
+  .pair__cap { font: var(--type-body-sm); color: var(--text-body); margin: 0; }
+  .pair__note { font: var(--type-mono-sm); color: var(--text-faint); margin: 8px 0 0; line-height: 1.5; }
+
+  /* honest-limits list */
+  .limits { margin: 0 0 22px; padding-left: 18px; color: var(--text-body); font: var(--type-body-sm); }
+  .limits li { margin: 10px 0; line-height: var(--leading-normal); }
+  .limits strong { color: var(--text-strong); }
+  .limits a { color: var(--indigo-700); }
+
+  /* links list */
+  .links { margin: 0; padding-left: 18px; color: var(--text-body); font: var(--type-body); }
+  .links li { margin: 9px 0; }
+  .links a { color: var(--indigo-700); text-decoration: none; }
+  .links a:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .links__dim { color: var(--text-muted); }
+
+  /* cta strip */
+  .cta { padding: 40px 0; background: var(--bg-sunken); border-top: 1px solid var(--border-hairline); }
+  .cta__inner { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .cta__dot { width: 12px; height: 12px; border-radius: 3px; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.08); }
+  .cta__copy { flex: 1 1 360px; }
+  .cta__lead { font: var(--type-body); font-weight: var(--fw-semibold); color: var(--text-strong); margin: 0 0 2px; }
+  .cta__sub { font: var(--type-body-sm); color: var(--text-muted); margin: 0; }
+  .cta__sub code { font-family: var(--font-mono); color: var(--text-strong); }
+  .cta__btns { flex: none; display: flex; gap: 10px; flex-wrap: wrap; }
+
+  @media (max-width: 880px) {
+    .grid--2 { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 720px) {
+    .wrap { padding: 0 18px; }
+    .hero { padding: 56px 0 48px; }
+  }
+</style>

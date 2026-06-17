@@ -17,8 +17,63 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class EvidenceResult:
     ok: bool
-    code: str  # "ok" | "shadowed" | "not_exercised" | "policy_not_asserted"
+    code: str  # "ok" | "disabled" | "shadowed" | "not_exercised" | "policy_not_asserted"
     reason: str
+
+
+# pytest markers that mean "this test does not run, or is not expected to pass"
+# — a test carrying one cannot stand as live behavioural evidence (POLICY-1).
+_DISABLING_MARKERS = frozenset({"skip", "skipif", "xfail"})
+
+
+def _disabling_marker(decorator: ast.expr) -> str | None:
+    """Return the marker name if ``decorator`` is a pytest skip / skipif / xfail
+    marker, else ``None``.
+
+    Deliberately broad and fail-closed: it matches the terminal attribute or bare
+    name (``pytest.mark.skip``, ``mark.xfail``, ``m.skipif(...)``, or a bare
+    ``skip`` imported under that name), with or without a call. Fingerprints now
+    include decorators, but the marker's import alias can still live outside the
+    function source being pinned, so a chain match anchored on a literal
+    ``pytest`` would leave the alias path open for a freshly pinned disabled
+    test. The population of evidence tests is tiny and the only decorators
+    legitimately placed on them are pytest markers, so over-matching merely
+    (loudly) blocks a boundary a human then resolves, whereas
+    under-matching would silently let a disabled test satisfy the gate — the exact
+    false-green this closes.
+
+    Residuals it does NOT catch, by design (POLICY-1 / 2026-06-09 review):
+    - A module-level ``pytestmark = pytest.mark.skip`` or a class-level
+      ``@pytest.mark.skip`` on the test's enclosing class. The runtime gate only
+      has ``inspect.getsource`` of the test function/method — it structurally
+      cannot see module globals or the class decorator — so flagging them would
+      break the Q-L5 runtime/static parity contract.
+    - An ALIASED disabling marker bound to a name, e.g. ``skipper =
+      pytest.mark.skip`` then ``@skipper``: the decorator surfaces only as
+      ``Name('skipper')`` and knowing it MEANS skip requires the out-of-function
+      assignment, which the runtime gate cannot see (resolving it would break
+      parity). It is catchable only by a name-heuristic that fails closed on any
+      decorator whose terminal name is not an allow-listed safe marker — NOT
+      adopted here because it would false-positive on legitimate markers
+      (``parametrize``, ``usefixtures``, custom project markers) and there are
+      currently zero shipped ``@policy_boundary`` decoration sites, so the live
+      exposure is nil. Tracked as a post-1.0 hardening.
+    - A fixture-mediated skip: a pinned evidence test whose conftest fixture is
+      later edited to call ``pytest.skip()`` never runs, yet its fingerprint is
+      unchanged (the fixture body lives in another file). Out-of-band signal,
+      genuinely parity-bound.
+    All are the same false-green class; they are documented here rather than
+    silently absent so the gate's guarantee is stated honestly.
+    """
+    expr: ast.expr = decorator
+    if isinstance(expr, ast.Call):
+        expr = expr.func
+    name: str | None = None
+    if isinstance(expr, ast.Attribute):
+        name = expr.attr
+    elif isinstance(expr, ast.Name):
+        name = expr.id
+    return name if name in _DISABLING_MARKERS else None
 
 
 def _name_targets(target: ast.AST) -> set[str]:
@@ -66,6 +121,25 @@ def evaluate_test_evidence(
     boundary_names: set[str],
     suppresses: tuple[str, ...],
 ) -> EvidenceResult:
+    # Disabled-evidence (highest priority, POLICY-1): a test carrying a pytest
+    # skip / skipif / xfail marker does not run (or is not expected to pass), so
+    # it cannot stand as live behavioural evidence — independent of whether it
+    # otherwise exercises the boundary and asserts the policy. Fingerprints catch
+    # post-review decorator drift; this evaluator catches the case where someone
+    # pins the disabled decorated test itself. Both gate callers route through
+    # here, so the detection lands on the runtime gate and the static scanner
+    # identically.
+    if test_fn is not None:
+        for decorator in test_fn.decorator_list:
+            marker = _disabling_marker(decorator)
+            if marker is not None:
+                return EvidenceResult(
+                    False,
+                    "disabled",
+                    f"evidence test is disabled by a pytest @...{marker} marker "
+                    "and cannot serve as running behavioural evidence",
+                )
+
     # Exercise (stricter): a call inside an uninvoked nested helper does not count.
     func_called = False
     if test_fn is not None:

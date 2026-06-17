@@ -40,6 +40,13 @@ class BrokenLineageClient(FakeClient):
         raise RuntimeError("loomweave down")
 
 
+class ResolveFailsClient(FakeClient):
+    def resolve_sei(self, sei):
+        from legis.identity.loomweave_client import LoomweaveError
+
+        raise LoomweaveError("GET /identity/sei timed out")
+
+
 def test_orphaned_sei_surfaces_a_gap(tmp_path):
     store = _store(tmp_path, _rec("loomweave:eid:alive"), _rec("loomweave:eid:dead"))
     client = FakeClient({
@@ -117,3 +124,19 @@ def test_explicit_null_entity_key_does_not_crash_lineage_integrity(tmp_path):
     result = find_lineage_integrity(store.read_all(), FakeClient({}))
     assert result.divergences == []
     assert result.unavailable == []
+
+
+def test_identity_gap_read_degrades_to_unavailable_on_loomweave_error(tmp_path):
+    # GOV-2: a transient Loomweave failure during the check must surface as
+    # status "unavailable", not escape as INTERNAL_ERROR — the read exists to
+    # distinguish "could not check" from a checked-empty gap list.
+    from types import SimpleNamespace
+
+    from legis.service.governance import read_identity_gaps
+
+    store = _store(tmp_path, _rec("loomweave:eid:s"))
+    identity = SimpleNamespace(client=ResolveFailsClient({}))
+    result = read_identity_gaps(identity, store.read_all)
+    assert result["status"] == "unavailable"
+    assert result["gaps"] == []
+    assert "loomweave check failed" in result["unavailable"][0]["reason"]

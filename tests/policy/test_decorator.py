@@ -3,6 +3,7 @@ import importlib.util
 
 import pytest
 
+from legis.policy.boundary_scan import _source_segment_with_decorators
 from legis.policy.decorator import (
     PolicyBoundaryMetadata,
     fingerprint,
@@ -14,15 +15,15 @@ from legis.policy.decorator import (
 # --- Q-L5: the runtime gate and the static scanner must agree ---
 
 def _static_fingerprint(module_source: str, name: str) -> str:
-    """Reproduce the static scanner's extraction: the FunctionDef segment
-    (decorators excluded) run through the shared canonicalization."""
+    """Reproduce the static scanner's extraction: the decorated function source
+    run through the shared canonicalization."""
     tree = ast.parse(module_source)
     node = next(
         n
         for n in ast.walk(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
     )
-    segment = ast.get_source_segment(module_source, node) or ""
+    segment = _source_segment_with_decorators(module_source, node)
     return fingerprint_source(segment)
 
 
@@ -54,17 +55,17 @@ _DECORATED_TEST_MODULE = (
 
 
 def test_runtime_and_static_fingerprints_agree_for_decorated_test(tmp_path):
-    # The crux of Q-L5: inspect.getsource includes the @deco line, while
-    # ast.get_source_segment of the FunctionDef does not — decorator-insensitive
-    # normalization makes the two paths converge.
+    # The crux of Q-L5 after decorator-sensitive hashing: runtime and static
+    # extraction must both include decorator lines so semantic test decorators
+    # are pinned without making the two paths diverge.
     runtime = _runtime_fingerprint(tmp_path, _DECORATED_TEST_MODULE, "referenced_test")
     static = _static_fingerprint(_DECORATED_TEST_MODULE, "referenced_test")
     assert runtime == static
 
 
 def test_runtime_and_static_fingerprints_agree_for_class_method(tmp_path):
-    # Class methods are indented and may be decorated; dedent + decorator strip
-    # must still make the two extraction paths agree.
+    # Class methods are indented and may be decorated; dedent + decorated-source
+    # extraction must still make the two paths agree.
     module = (
         "import functools\n"
         "\n"
@@ -90,6 +91,22 @@ def test_fingerprint_source_is_crlf_invariant():
     lf = "def t():\n    assert True\n"
     crlf = lf.replace("\n", "\r\n")
     assert fingerprint_source(lf) == fingerprint_source(crlf)
+
+
+def test_fingerprint_source_changes_when_decorators_change():
+    undecorated = (
+        "def test_x():\n"
+        "    result = guarded({'p': 'PY-WL-101'})\n"
+        "    assert result == 'ok', 'PY-WL-101'\n"
+    )
+    skipped = "@pytest.mark.skip(reason='later disabled')\n" + undecorated
+    parametrized = "@pytest.mark.parametrize('n', [1, 2])\n" + undecorated
+    wrapped = "@custom_wrapper\n" + undecorated
+
+    base = fingerprint_source(undecorated)
+    assert fingerprint_source(skipped) != base
+    assert fingerprint_source(parametrized) != base
+    assert fingerprint_source(wrapped) != base
 
 
 def test_fingerprint_source_unparsable_fragment_falls_back():

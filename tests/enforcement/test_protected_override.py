@@ -39,5 +39,5 @@ def test_operator_override_is_distinct_signed_and_accepted(tmp_path):
     payload = store.read_all()[0].payload
     ext = payload["extensions"]
     assert ext["judge_verdict"] == "OVERRIDDEN_BY_OPERATOR"   # distinct from ACCEPTED
-    assert ext["judge_metadata_signature"].startswith("hmac-sha256:v2:")
+    assert ext["judge_metadata_signature"].startswith("hmac-sha256:v3:")
     assert payload["agent_id"] == "op-sec-lead"

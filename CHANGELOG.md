@@ -5,6 +5,280 @@ All notable changes to Legis are documented here. The format follows
 versions per [PEP 440](https://peps.python.org/pep-0440/) /
 [SemVer](https://semver.org/) (pre-release: `1.0.0rc1`).
 
+## [Unreleased]
+
+_Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
+
+## [1.0.0] — 2026-06-13
+
+This is the gold release — the legis unit of the coordinated **Weft 1.0** launch. It
+aggregates everything since the last published candidate (`1.0.0rc4`). 1.0.0 was first
+cut 2026-06-09; a P0 governance-honesty false-green (G1) found *after* that cut re-opened
+it as internal `1.0.0rc5` to close G1 plus a batch of post-cut hardening — the dogfood-4
+fail-degrade close-out and the MCP-surface completion below. The internal rc candidates
+were never published; this 2026-06-13 cut is the launch.
+
+### Fixed — fail-degrade close-out (dogfood-4, 2026-06-12/13)
+
+- **Boundary scan fails degraded, never dead, on hostile source (A2, weft-9784d0e654).**
+  `policy/boundary_scan.py` wraps both `ast.parse` and the AST visitor walk per file; a
+  pathological file (deep nesting / oversized expression) yields a
+  `POLICY_BOUNDARY_FILE_TOO_COMPLEX` finding ("file skipped, scan continued") instead of
+  escaping and killing the run. The degrade path is now exercised through the real
+  visitor-walk path (the original test validated the wrong handler) and broadened to
+  catch `MemoryError`, not only `RecursionError`; a 20 000-term BinOp regression fixture
+  pins it. (conventions C-13.)
+- **`override_submit` / `scan_route` outputSchemas declare top-level `type: object`
+  (A6, weft-cca2ecbe12).** The discriminated `oneOf` success envelopes carry the
+  top-level type, made unrepresentable-when-missing via a `_one_of` helper so a
+  type-less variant cannot regress.
+- **Dead transport-signing remnants removed (G6).** Retiring the legis→Filigree
+  transport-HMAC (G11) leaves no dead code: stale helpers/comments deleted; the retired
+  `LEGIS_FILIGREE_HMAC_KEY` is kept only in the `.mcp.json` scrub set so a stale operator
+  env can't silently re-enable a dropped header.
+
+### Tests / contracts (launch prep, 2026-06-12/13)
+
+- The SEI oracle is driven from a vendored Loomweave authority fixture (loaded + parsed
+  once, cached), and a shared Weft dirty-scan artifact conformance vector is added — the
+  cross-member wire contract is byte-exact and self-verifying on both ends.
+
+### Added (MCP surface gap analysis, 2026-06-11)
+
+Three read-only tools close the remaining self-service gaps on the agent
+surface (18 → 21 tools):
+
+- **`override_list`** — the verified governance-trail read (the same records
+  `GET /overrides` serves), each with its `seq` handle, filterable by `policy`,
+  `entity`, or `submitted_by` (the *recorded* agent_id — a read filter; caller
+  identity stays launch-bound and is never a call argument). Verified-records-
+  only honesty: a tampered trail is `AUDIT_INTEGRITY_FAILURE`, never silently
+  read.
+- **`doctor_get`** — report-only install/config posture, the same JSON payload
+  `legis doctor --format json` emits (single-sourced via `doctor_payload`).
+  Never repairs anything: `--fix` stays operator/CLI (C-8); the schema carries
+  no repair knob.
+- **`policy_boundary_check`** — the `@policy_boundary` behavioural-evidence
+  scan joins the policy-authoring loop over MCP, returning a discriminated
+  `PASS` / `FINDINGS` outcome (`root` defaults to `<repo_root>/src`,
+  `repo_root` to the server's source root).
+
+### Changed (MCP schema discoverability, 2026-06-11)
+
+- **Every MCP tool now declares an `outputSchema`.** All 21 tools advertise
+  their success-payload shape in `tools/list` (discriminated `oneOf` envelopes
+  for `override_submit` and `scan_route`); the uniform error envelope
+  (`error_code` / `message` / `recoverable` / `next_action`) is a shared
+  definition (`ERROR_ENVELOPE_SCHEMA`), not a per-tool clause. A conformance
+  vector drives each tool per outcome variant and validates the emitted
+  payload against its declared schema, so payload/schema drift fails in CI,
+  not in a client.
+- **`pull_request_get.number` is declared `integer` (minimum 1)** — the schema
+  now agrees with the handler (`_require_int`), matching
+  `signoff_status_get.seq`; string coercion still tolerated server-side.
+- **`check_list.target_type` declares its enum** (`commit | branch | pr`,
+  single-sourced with the handler's dispatch) and notes that `pr` needs an
+  integer-coercible target — first-call success instead of a discover-by-
+  failing retry loop.
+
+### Fixed (lacuna dogfood second pass, 2026-06-11)
+
+- **N-9 / LEG-1 — `policy_explain` now says when a policy name is unknown.**
+  The payload carries an explicit `policy_known` boolean (true iff a registry
+  rule matched; false means the name fell through to `default_cell` and may be
+  hallucinated), additive alongside `matched_rule`. The tool description
+  documents the signal. `policy_list` per-cell rows never carry it.
+- **LEG-2 — error remediation now rides where agents actually read it.** Every
+  MCP error envelope appends `next_action: …` to the *text* content (the
+  `{code}: {message}` first line stays stable for parsing clients);
+  `structuredContent` is unchanged. Terse `NotEnabledError` messages now name
+  the operator knob — e.g. `binding ledger not enabled: ask the operator to set
+  LEGIS_HMAC_KEY (out-of-band) and relaunch` — phrased as operator actions per
+  C-8 (keys stay out of agent reach).
+- **N-1 — `legis session-context` is never silent.** It always prints a
+  one-line posture banner (instructions / skill pack / cells-config posture,
+  derived only from what the hook process can see — never the MCP server's
+  runtime env), followed by any refresh messages; the internal-failure path
+  emits a failure line instead of exiting 0 mutely.
+
+### Security / honesty (federation cross-member hardening, 2026-06-10/11)
+
+A P0 false-green found after the first 1.0.0 cut, plus the incident follow-through
+that made the fix *real* rather than locally tested. Legis re-opened the release
+rather than ship final with a governance-honesty blocker open.
+
+- **G1 — an absent `findings` key is now a red, not a vacuous green.** The
+  Wardline→legis scan contract carries defects under the key `findings`, but
+  `active_defects` did `scan.get("findings", [])` — so a silent producer rename
+  (`findings` → `findings_list`), re-signed HMAC-clean, *verified* cleanly and read
+  as **zero** active defects: the entire defect flow breaking silently under a green
+  `verified` status. The HMAC does not defend against this — it proves authenticity,
+  not schema conformance. `active_defects()` now raises `WardlinePayloadError` when
+  the key is absent, distinguishing "key absent" (drift/tamper → red) from "key
+  present, empty list" (a genuinely clean scan → `[]`). The guard sits at
+  `active_defects()` — the single choke every posture (keyed *and* keyless) routes
+  through — not at `verify_wardline_artifact()`, which returns early in the keyless
+  posture before any field check. Verified closed by adversarial replay across both
+  postures.
+- **G1, made real — shared cross-member conformance vector.** The G1 fix initially
+  had only a local test, but root cause #2 of the incident was "hand-transcribed
+  contracts with no shared test". The producer (Wardline `core/legis.py`) and every
+  consumer (legis ingest) now load the *same* canonical wire-contract bytes
+  (`tests/contract/weft/vectors/wardline_scan_artifact.v1.json`); the byte-exact
+  `expected_signature` doubles as the canonical-JSON + HMAC drift detector. The
+  second hand-copied golden literal in `test_ingest.py` is single-sourced from the
+  vector.
+- **G1 twin (value axis) — an unknown `kind` token is rejected loudly.**
+  `active_defects` selected the gate population with a bare `kind == "defect"`, so a
+  defect whose kind token drifted out of Wardline's vocabulary (re-signed HMAC-clean)
+  fell through the skip and vanished under a green status — the same false-green
+  class on the value axis. `KNOWN_KINDS` / `DEFECT_KIND` are now carried verbatim
+  from Wardline `core/finding.py::Kind`; an unknown kind is rejected, known
+  non-defect kinds stay legitimately excluded.
+- **JUDGE-3 vocabulary hygiene — the judge-emittable and gate-clearing verdict sets
+  are single-sourced.** `Verdict.model_emittable()` / `Verdict.accepting()` are now
+  the sole source of truth for "an LLM judge may emit this" and "this verdict cleared
+  a gate"; `judge.py`, `lifecycle.py`, and `protected.py` consume them instead of
+  re-inlining the member tuples, so the JUDGE-3 guard (a model must never emit
+  `OVERRIDDEN_BY_OPERATOR`) and the accepting set cannot drift apart. `CELL_TIER_ORDER`
+  becomes the canonical ordered cell membership; `VALID_CELLS` and `policy_list`
+  derive from it, so a new cell can no longer be silently omitted from `policy_list`.
+- **G11 — verification posture stated plainly.** The `weft_signing` and Filigree
+  client docstrings now name the transport-open reality: legis does not emit
+  `X-Weft-*` request HMAC headers on the classic Filigree bind route. The app-level
+  `binding_signature` is still sent in the JSON body; integrity rests on TLS and
+  legis's own `BindingLedger`, not on a sibling checking transport headers. The
+  legacy HMAC helper remains only as a deterministic formula seam for historical
+  vectors and future verifier work.
+- **G12 — real-Filigree bind + closure-gate test scaffold.** A live-daemon
+  integration test (skipped unless `LEGIS_FILIGREE_TEST_URL` + `LEGIS_FILIGREE_TEST_ISSUE`
+  are set) asserts the bind *persists* (reads the association back — something the
+  `FakeFiligree` echo structurally cannot prove), all bound fields round-trip, the
+  closure-gate clears over real HTTP, and the keyless bind is accepted.
+
+### Fixed (post-first-cut code review, 2026-06-10)
+
+Three bugs from the 2026-06-10 review, closed in the re-opened candidate:
+
+- **doctor: `check_filigree_binding_scope` triggers on an unscoped binding URL, not a
+  local install.** The install-parity gate false-greened the federation-consumer case
+  (no local marker + an unscoped remote `--filigree-url`): a remote server-mode
+  daemon fail-closes the unscoped write (N1) while doctor read all-clear. Binding-
+  presence strictly subsumes the old gate; the dead `_filigree_installed` helper is
+  dropped. (Reverses the rc4-era install-parity check.)
+- **doctor: `render_text` reports repaired checks.** `--fix` now includes repaired
+  checks (status `ok` + `fixed=True`) in the rendered set with a "fixed N item(s)"
+  banner, so the text view reports what it repaired and the `[fixed]` tag is reachable.
+- **enforcement: a raising operator-supplied validator is a veto, not a fail-open.**
+  `ProtectedGate.submit` now gates the validator on the `ACCEPTED` path and wraps it
+  in `try/except` — a validator that raises is treated as a veto (→ `BLOCKED`) instead
+  of an unhandled 500, and no longer runs on an already-`BLOCKED` submit.
+
+### Security / honesty (second pre-1.0 adversarial review, 2026-06-09)
+
+A second independent adversarial review re-attacked the first audit's (self-verified)
+fixes. The crypto-threshold assumption held; these gaps it surfaced are now closed:
+
+- **JUDGE-3 — protected cell is now fail-closed unconditionally.** A judge `ACCEPTED`
+  in the protected cell is advisory and is downgraded to `BLOCKED` (escalate to
+  operator sign-off) unless a deterministic, non-LLM validator confirms it — a policy
+  is protected by virtue of being *routed* to the cell, no longer by separate
+  membership in `LEGIS_PROTECTED_POLICIES`. Previously the Q-H3 downgrade was gated on
+  that exact-match set, which diverges from the glob-capable cell routing, so a
+  protected-cell policy outside the set (including any glob route, and the empty-set
+  default) had its `ACCEPTED` signed as authoritative on the model's word — a silent
+  fail-open. **Behavior change:** in the default config (no validator wired), all
+  protected overrides now require operator sign-off. `protected_policies` now drives
+  only a config-hygiene warning (an undeclared protected-cell policy) and the
+  read-side signature requirement.
+- **GOV-2 — `/governance/identity-gaps` no longer reports a false all-clear.** It now
+  returns a `{status, gaps}` envelope (`status: "unavailable"` when the Loomweave
+  client is unwired vs `"checked"`), so "could not check" is distinguishable from
+  "checked, zero orphan gaps" — the same false-green shape GOV-1 fixed on the sibling
+  lineage-integrity endpoint. *Response-shape change for this endpoint* (was a bare
+  list).
+- **F1 — `TrailVerifier` docstring corrected.** It no longer claims that flipping an
+  in-record flag cannot downgrade a protected record to "unsigned, skip"; the
+  modify-to-unsigned and tail-truncation residuals of the raw-file-write tier are now
+  documented honestly (code hardening tracked post-1.0).
+- **POLICY-1 — aliased-marker / fixture-skip residuals documented.** The evidence-
+  liveness gate's `_disabling_marker` now honestly documents that an aliased disabling
+  marker (`skipper = pytest.mark.skip; @skipper`) and a fixture-mediated `pytest.skip()`
+  are not caught (zero shipped `@policy_boundary` sites today; name-heuristic hardening
+  tracked post-1.0).
+- **ID-SEI-1 — `LEGIS_ALLOW_INSECURE_REMOTE_HTTP` now warns.** Permitting plaintext to
+  a remote Loomweave/Filigree voids the SEI/binding TLS custody seal (responses are not
+  HMAC-signed); the bypass now logs a warning and is documented as dev/loopback-only.
+- **ID-SEI-2 — `alive` is now strict-bool.** A non-bool truthy `alive` from a
+  buggy/hostile Loomweave (e.g. the string `"false"`, or `1`) no longer promotes to a
+  stable SEI identity; it degrades fail-closed.
+
+Dogfood-#2 governance honesty (convention C-10) — branch-local; merge/release
+gated on the filigree-first propagation. Capability confinement (proposed C-8) is
+preserved: operator signing keys stay out of agent reach, no key is auto-provisioned
+or relocated, and no MCP tool enables a cell or self-grants authority (pinned by
+`test_c8_no_agent_reachable_enablement_or_signing_surface`).
+
+### Changed
+- **Adopt Wardline's `suppression_state` key (W3, weft-ef79348eb2).** Wardline
+  renamed the per-finding output key `suppressed` → `suppression_state` across all
+  surfaces, including the **signed** legis scan artifact — which changed the
+  canonical signed bytes and broke the Wardline→legis hop (`legis_e2e` red). legis
+  ingest (`WardlineFinding.from_wire` + `active_defects`) now reads the new key; the
+  values (active/waived/suppressed/baselined/judged) are unchanged. Clean break: a
+  finding carrying only the legacy `suppressed` key reads as `active` and **over**-gates
+  (fail-safe — never silently drops a defect). No signing/canonical change was needed
+  (legis's signer already reproduces Wardline's rekeyed golden byte-for-byte). Added the
+  **legis-side cross-impl golden mirror** legis was missing — `sign(_GOLDEN_FIELDS,
+  _GOLDEN_KEY) == hmac-sha256:v2:2b2cf09…` over `suppression_state` — so the signed hop
+  is self-verifying on both ends, not only in Wardline's opt-in oracle.
+- **Honest, actionable unconfigured-governance errors (N3, weft-df8d2ef454 — C-10(c)).**
+  legis no longer "ships dark and quiet": the two inert axes now name their concrete
+  enablement path. `INVALID_CELL_SPEC` (scan_route, server-owned routing unset) names
+  `LEGIS_WARDLINE_CELL` / `LEGIS_WARDLINE_CELL_BY_SEVERITY`; `CELL_NOT_ENABLED` is split
+  into the keyless simple tier (map the policy via `policy/cells.toml` /
+  `LEGIS_POLICY_CELLS`, `LEGIS_DEV_DEFAULT_CELLS=1` for the chill dev default) and the
+  complex tier (`LEGIS_HMAC_KEY`, operator-held, out-of-band + relaunch). Subsumes Le1.
+  Fail-closed is preserved — the errors become honest, nothing auto-opens.
+- **Honest `SKIPPED_DIRTY_TREE` skip payload (N4, weft-a7a92a40dd — C-10(d)).** The
+  dirty-tree skip is no longer a prose-only blob: `WardlineDirtyTreeError.to_payload()`
+  is the single source both transports (MCP `structuredContent` + HTTP body) serialize,
+  carrying machine-switchable `reason` / `posture` / `cause` / `remediation` (commit for
+  a signed artifact, or the `LEGIS_WARDLINE_ALLOW_DIRTY=1` operator opt-in) while still
+  governing nothing. The dirty-snapshot opt-in stays an env-only operator switch — no
+  `scan_route` call argument was added. (Compounds with sibling finding C1: loomweave's
+  tracked runtime DB perpetually dirties the tree; that fix is loomweave-side.)
+- **`install.filigree_scope` doctor check is gated on filigree being installed.** The
+  report-only unscoped-binding warning only fires when filigree is actually set up in
+  the project (file-existence probe: `.filigree.conf` AND a resolved store config — no
+  import of filigree, staying decoupled from its schema). An unscoped binding only
+  fail-closes against a server-mode filigree daemon, so the warning is noise when
+  filigree is absent. When it does fire, the message now names it as operator-owned (the
+  `--filigree-url` is operator-pinned in wardline's `.mcp.json` entry; legis never writes
+  it), so the check stays `repairable=False` and names the operator action instead of
+  implying `--fix` can resolve it.
+- **`legis doctor --format json` checks now carry a `repairable` field** (bool). Additive
+  — every check object gains the key; no existing key changed.
+
+### Added
+- **Two report-only `legis doctor` checks (N3).** `runtime.policy_cells` and
+  `runtime.wardline_routing` report whether the governance surface is wired and, when
+  not, name the exact enablement keys (warn, never auto-fixed; presence-only — they
+  write nothing and never render a key value).
+- **`legis doctor --fix`** — canonical spelling of the repair flag (`--repair` stays a
+  working alias, no break for scripts). Each check now carries a `repairable` bit, and
+  the text view tags every problem `[fixed]` / `[auto-fixable]` / `[operator]` with a
+  footer that points auto-fixable items at `legis doctor --fix` and tells the operator
+  that `[operator]` items need out-of-band config + a relaunch. Distinguishes "doctor
+  can repair this" from "only you can" at a glance.
+
+### Docs
+- **Charter: self-asserted write actor (C3, weft-f506e5f845).** `legis-charter.md`'s
+  known-gaps note now also covers legis's *own* audit records — `agent_id` / `operator_id`
+  are self-asserted (launch-bound + HMAC-tamper-evident, but not authenticated); the
+  narrative `verified_author: null` maps to these stored fields. The governed subject's
+  SEI is still resolved; only the actor is unauthenticated.
+
 ## [1.0.0rc4] — 2026-06-08
 
 ### Added
@@ -225,16 +499,14 @@ listed as not-yet-built.
   direct resolver call can no longer silently ignore its override. No change to
   the resolved URLs for existing deployments.
 - **Weft-component transport-HMAC seam extracted to `weft_signing`** — the
-  Loomweave SEI client and the Filigree association client signed their requests
-  with byte-for-byte copies of the same `X-Weft-Component` scheme
-  (`_json_body_bytes` / `_path_and_query` / `sign_*_request` /
-  `*_hmac_key_from_env`). The wire format now has a single definition; both
-  clients delegate to it (component name and channel env var parameterised), so
-  a future canonicalization or header change can no longer touch one channel and
-  silently diverge the other. The shared serializer deliberately stays off
-  `canonical.canonical_json` (whose `ensure_ascii=False` would change the signed
-  bytes). Behavior-preserving — existing per-channel golden vectors unchanged,
-  plus a new cross-channel anti-drift test. No change to signatures on the wire.
+  Loomweave SEI client and legacy Filigree request-signing helper had byte-for-byte
+  copies of the same `X-Weft-Component` scheme (`_json_body_bytes` /
+  `_path_and_query` / `sign_*_request` / `*_hmac_key_from_env`). The formula now has
+  a single definition for Loomweave signing plus Filigree historical vectors. The
+  live Filigree association client no longer emits those headers; its app-level
+  `binding_signature` remains in the JSON body. The shared serializer deliberately
+  stays off `canonical.canonical_json` (whose `ensure_ascii=False` would change the
+  signed bytes).
 - **Wardline scan-routing validation centralised in the service layer** — "is
   request-side routing allowed, and is the cell-spec well-formed?" is a
   governance decision that was hand-copied into both the HTTP
@@ -310,19 +582,9 @@ WP-M1 service-layer extraction, consolidated behind a stable version.
   `HTTPException`, so both HTTP and the forthcoming MCP adapter drive one code
   path. Behavior-preserving; FastAPI handlers are now thin adapters.
 
-### Known limitations
-- The agent-facing **MCP surface** is designed and decomposed
-  (`docs/superpowers/specs/2026-06-03-legis-mcp-surface-design.md`) with WP-M1
-  landed; WP-M2..M6 (registry + `legis_explain`, the MCP stdio server, the
-  write/governance tools, safety hardening, judge reason-classification) are not
-  yet built.
-- The git-rename provider to Loomweave is contract-locked but operatively gated on
-  Loomweave driving a committed rev-range.
-- `HttpLoomweave` runs loopback-unauthenticated; sibling-gated work packages
-  (Filigree signature column, live-Loomweave oracle + HMAC auth, operative
-  git-rename feed) remain.
-
-[1.0.0rc4]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc3...HEAD
+[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc4...v1.0.0
+[1.0.0rc4]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc3...v1.0.0rc4
 [1.0.0rc3]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc2...v1.0.0rc3
 [1.0.0rc2]: https://github.com/foundryside-dev/legis/releases/tag/v1.0.0rc2
 [1.0.0rc1]: https://github.com/foundryside-dev/legis/releases/tag/v1.0.0rc1

@@ -1,0 +1,107 @@
+{
+  "contract": "weft/wardline-scan-artifact",
+  "version": 1,
+  "description": "Shared Weft conformance vector for the Wardline->legis signed scan-artifact wire contract. The PRODUCER (wardline core/legis.py) and every CONSUMER (legis wardline/ingest.py) load this SAME file in CI. A rename on either side that drifts the wire shape fails a vector here instead of silently breaking the cross-member defect flow. Root cause #2 of the Weft incident 2026-06-10: hand-transcribed contracts with no shared test. Covers G1 (findings-key presence) and the G1 twin (kind-value vocabulary).",
+  "findings_key": "findings",
+  "known_kinds": ["defect", "fact", "classification", "metric", "suggestion"],
+  "defect_kind": "defect",
+  "signing": {
+    "key_utf8": "test-shared-secret-key",
+    "scheme": "hmac-sha256:v2",
+    "covers": "canonical_json(artifact MINUS the 'artifact_signature' key) — ensure_ascii=False, sorted keys, compact (\",\",\":\") separators, then HMAC-SHA256 hex prefixed 'hmac-sha256:v2:'",
+    "note": "expected_signature pins the byte-exact cross-impl HMAC. If either side's canonical-JSON+HMAC formula diverges, the signature stops reproducing here — caught in CI, never in prod. The hex is identical to wardline's golden (wardline/tests/unit/core/test_legis_artifact.py)."
+  },
+  "valid": [
+    {
+      "name": "golden_single_active_defect",
+      "description": "The authoritative signed golden: one active defect. A consumer's signer MUST reproduce expected_signature byte-for-byte; active_defects selects exactly this finding.",
+      "artifact": {
+        "scanner_identity": "wardline@1.0.0rc1",
+        "rule_set_version": "sha256:deadbeef",
+        "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "tree_sha": "tttttttttttttttttttttttttttttttttttttttt",
+        "findings": [
+          {
+            "rule_id": "PY-WL-101",
+            "message": "leak",
+            "severity": "ERROR",
+            "kind": "defect",
+            "fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "qualname": "svc.leaky",
+            "properties": {"declared_return": "INTEGRAL", "actual_return": "EXTERNAL_RAW"},
+            "suppression_state": "active"
+          }
+        ]
+      },
+      "expected_signature": "hmac-sha256:v2:2b2cf09548572b58fd01c359d1b6a16c3c1181f1cbfe8e4f5ada6fcd21f35ac4",
+      "expected_active_fingerprints": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+    },
+    {
+      "name": "clean_scan_empty_findings",
+      "description": "G1 over-correction guard: a genuinely clean scan carries findings:[] (key PRESENT, list empty) and ingests cleanly with zero active defects — it must NOT be confused with the absent-key drift case.",
+      "artifact": {"findings": []},
+      "expected_active_fingerprints": []
+    },
+    {
+      "name": "known_non_defect_kinds_are_excluded",
+      "description": "G1 twin over-correction guard: every known NON-defect kind is legitimately not in the gate population — skipped, never rejected.",
+      "artifact": {
+        "findings": [
+          {"rule_id": "WLN-M1", "message": "telemetry", "severity": "NONE", "kind": "metric", "fingerprint": "m1", "suppression_state": "active"},
+          {"rule_id": "WLN-F1", "message": "engine fact", "severity": "NONE", "kind": "fact", "fingerprint": "f1", "suppression_state": "active"},
+          {"rule_id": "WLN-C1", "message": "classification", "severity": "NONE", "kind": "classification", "fingerprint": "c1", "suppression_state": "active"},
+          {"rule_id": "WLN-S1", "message": "hint", "severity": "INFO", "kind": "suggestion", "fingerprint": "s1", "suppression_state": "active"}
+        ]
+      },
+      "expected_active_fingerprints": []
+    }
+  ],
+  "invalid": [
+    {
+      "name": "absent_findings_key",
+      "description": "G1: no findings key at all is drift/tamper (a rename leaves it absent). Must reject — never read as zero defects under a green status.",
+      "artifact": {"scanner_identity": "wardline@1.0.0rc1"},
+      "reject_match": "findings"
+    },
+    {
+      "name": "renamed_findings_key",
+      "description": "G1: a real CRITICAL defect arrives under a renamed batch key. The consumer must reject the payload, not route zero defects.",
+      "artifact": {
+        "findings_list": [
+          {"rule_id": "PY-WL-900", "message": "sqli", "severity": "CRITICAL", "kind": "defect", "fingerprint": "sqli", "suppression_state": "active"}
+        ]
+      },
+      "reject_match": "findings"
+    },
+    {
+      "name": "drifted_defect_kind_value",
+      "description": "G1 twin (value axis): a defect whose kind token drifted out of the Wardline vocabulary (e.g. 'defect'->'vulnerability', re-signed HMAC-clean) must be LOUD, never silently skipped out of the gate population.",
+      "artifact": {
+        "findings": [
+          {"rule_id": "PY-WL-901", "message": "rce", "severity": "CRITICAL", "kind": "vulnerability", "fingerprint": "rce", "suppression_state": "active"}
+        ]
+      },
+      "reject_match": "kind"
+    },
+    {
+      "name": "unknown_suppression_state",
+      "description": "A defect carrying an out-of-vocabulary suppression_state is malformed and rejected.",
+      "artifact": {
+        "findings": [
+          {"rule_id": "PY-WL-902", "message": "m", "severity": "ERROR", "kind": "defect", "fingerprint": "x", "suppression_state": "haunted"}
+        ]
+      },
+      "reject_match": "unsupported suppression state"
+    },
+    {
+      "name": "waived_defect_without_proof",
+      "description": "An agent-initiated waiver with no suppression proof anywhere is rejected — an agent must not be able to silently dismiss a defect.",
+      "artifact": {
+        "findings": [
+          {"rule_id": "PY-WL-903", "message": "m", "severity": "ERROR", "kind": "defect", "fingerprint": "w", "suppression_state": "waived"}
+        ]
+      },
+      "reject_match": "suppression proof"
+    }
+  ]
+}

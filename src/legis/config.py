@@ -15,13 +15,10 @@ keeps them in agreement. The default URLs are therefore cwd-relative
 (``sqlite:///.weft/legis/...``), preserving the historical resolution semantics.
 
 **weft.toml is enrich-only, never load-bearing.** The operator-authored
-``weft.toml`` may carry a ``[legis]`` table; we read it but never write it.
-The single enrichment knob is ``store_dir`` (relocate the subtree; relative to
-the project root, or absolute). Per-DB overrides remain the ``LEGIS_*_DB`` env
-vars, which take precedence over weft.toml — a precedence the ``*_db_url()``
-resolvers below implement directly (via ``_resolve_db_url``), so every consumer
-gets it by calling the resolver, not by re-wrapping it. An absent file, an
-absent ``[legis]`` section, or even a malformed weft.toml must still boot on the
+``weft.toml`` may carry a ``[legis]`` table, but repo-local data must not decide
+where governance stores live. Per-DB relocation is deliberately limited to
+operator environment overrides (``LEGIS_*_DB``). An absent file, an absent
+``[legis]`` section, or even a malformed weft.toml must still boot on the
 built-in defaults — legis never *depends* on weft.toml (Doctrine §5 deletion
 test).
 
@@ -29,22 +26,26 @@ test).
 (``legis-governance.db`` &c.). Existing deployments move their files into
 ``.weft/legis/`` or pin the ``LEGIS_*_DB`` env vars.
 
-**Keys are out of scope.** Operator-held signing keys are the authority-key
-carve-out — capability-confined and deliberately not agent-reachable. They are
-env-provided secrets, not files under this subtree; nothing here touches key
-storage.
+**Keys are out of scope — with one deliberate carve-out.** Operator-held
+signing keys are the authority-key carve-out: capability-confined and
+deliberately not agent-reachable. Config still touches no key *plaintext*.
+
+The posture-ratchet feature (spec §5/§6) amends this doctrine narrowly: an
+operator-authority key is *minted at install* and held by a custody backend
+(OS keychain / age-encrypted file / env escape hatch). Two new in-scope paths
+appear under this subtree as a result — ``operator_session.json`` (ephemeral
+elevation-session metadata + an unlock *reference*, never the key) and
+``operator.age`` (the age-file backend's *encrypted* blob). Both are
+gitignored at install. The key plaintext itself is still never written to disk
+by legis except via the explicit ``--insecure-key-in-env`` escape hatch.
 """
 
 from __future__ import annotations
 
-import logging
 import os
-import tomllib
 from pathlib import Path
 
 from sqlalchemy.engine import make_url
-
-logger = logging.getLogger(__name__)
 
 WEFT_MEMBER = "legis"
 
@@ -54,12 +55,14 @@ _CHECK_DB_NAME = "legis-checks.db"
 _GOVERNANCE_DB_NAME = "legis-governance.db"
 _BINDING_DB_NAME = "legis-binding.db"
 _PULL_DB_NAME = "legis-pulls.db"
+_POSTURE_DB_NAME = "legis-posture.db"
 
 # Per-DB override env vars. Highest precedence (see ``_resolve_db_url``).
 _CHECK_DB_ENV = "LEGIS_CHECK_DB"
 _GOVERNANCE_DB_ENV = "LEGIS_GOVERNANCE_DB"
 _BINDING_DB_ENV = "LEGIS_BINDING_DB"
 _PULL_DB_ENV = "LEGIS_PULL_DB"
+_POSTURE_DB_ENV = "LEGIS_POSTURE_DB"
 
 # Public, stably-ordered (override env var, default filename) for every store.
 # THE single source of store identity so consumers (e.g. ``legis doctor``) never
@@ -70,6 +73,7 @@ STORE_DB_SPECS: tuple[tuple[str, str], ...] = (
     (_GOVERNANCE_DB_ENV, _GOVERNANCE_DB_NAME),
     (_BINDING_DB_ENV, _BINDING_DB_NAME),
     (_PULL_DB_ENV, _PULL_DB_NAME),
+    (_POSTURE_DB_ENV, _POSTURE_DB_NAME),
 )
 
 # Protected-policy set: the policy names whose judge-ACCEPTED verdicts are
@@ -83,42 +87,12 @@ def project_root() -> Path:
     return Path.cwd()
 
 
-def _weft_legis_config() -> dict:
-    """Read the operator-authored ``[legis]`` table from ``weft.toml``.
-
-    Returns an empty enrichment ({}) when the file is absent, has no ``[legis]``
-    table, or cannot be parsed — weft.toml is never load-bearing, so a missing
-    or broken operator file degrades to built-in defaults rather than failing
-    boot. We are READ-ONLY here; this function never writes weft.toml.
-    """
-    path = project_root() / "weft.toml"
-    try:
-        with path.open("rb") as fh:
-            data = tomllib.load(fh)
-    except FileNotFoundError:
-        return {}
-    except (OSError, tomllib.TOMLDecodeError):
-        # A broken operator file must not be load-bearing. Surface it on the log
-        # (so a fat-fingered weft.toml is diagnosable) but boot on defaults.
-        logger.warning(
-            "weft.toml present but unreadable (%s); legis booting on built-in "
-            "store defaults",
-            path,
-            exc_info=True,
-        )
-        return {}
-    section = data.get(WEFT_MEMBER)
-    return section if isinstance(section, dict) else {}
-
-
 def _store_dir() -> Path:
-    """The runtime-state subtree: ``.weft/legis`` by default, or the operator's
-    ``[legis] store_dir`` if set. Relative paths resolve against cwd at connect
-    time (three-slash URL); an absolute store_dir yields an absolute URL.
+    """The built-in runtime-state subtree.
+
+    Repo-local ``weft.toml`` is intentionally ignored here. Load-bearing store
+    relocation must come from explicit ``LEGIS_*_DB`` operator env vars.
     """
-    configured = _weft_legis_config().get("store_dir")
-    if isinstance(configured, str) and configured:
-        return Path(configured)
     return Path(".weft") / WEFT_MEMBER
 
 
@@ -135,8 +109,7 @@ def _sqlite_url(path: Path) -> str:
 def _resolve_db_url(env_var: str, db_name: str) -> str:
     """Resolve a store URL with the documented precedence (module docstring):
     the per-DB ``LEGIS_*_DB`` override wins; otherwise the URL is composed from
-    the weft.toml ``store_dir`` (or the built-in ``.weft/legis`` default) under
-    the canonical filename.
+    the built-in ``.weft/legis`` default under the canonical filename.
 
     This is THE single resolution point — callers invoke the ``*_db_url()``
     function directly and never re-implement the env layering, so changing
@@ -163,6 +136,35 @@ def binding_db_url() -> str:
 
 def pull_db_url() -> str:
     return _resolve_db_url(_PULL_DB_ENV, _PULL_DB_NAME)
+
+
+def posture_db_url() -> str:
+    """The signed posture-floor ledger store (design §4).
+
+    Same resolution contract as the other four stores: ``LEGIS_POSTURE_DB``
+    override wins, else the built-in ``.weft/legis/legis-posture.db`` default.
+    """
+    return _resolve_db_url(_POSTURE_DB_ENV, _POSTURE_DB_NAME)
+
+
+def operator_session_path() -> Path:
+    """The ephemeral elevation-session metadata file (design §6).
+
+    Holds only session/window metadata + a backend-specific unlock reference —
+    never key plaintext, never a passphrase. Created by ``legis operator
+    enable``, deleted on TTL lapse or ``disable``. Gitignored at install.
+    """
+    return _store_dir() / "operator_session.json"
+
+
+def operator_age_path() -> Path:
+    """The age-encrypted operator-key blob for the age-file custody backend.
+
+    Project-rooted under ``.weft/legis/`` (the federation convention), NOT a
+    home-config path. Encrypted at rest (scrypt + AES-GCM); gitignored at
+    install. Only the age-file backend uses it.
+    """
+    return _store_dir() / "operator.age"
 
 
 def protected_policies() -> frozenset[str]:

@@ -57,6 +57,43 @@ def test_request_routing_under_server_ownership_is_rejected():
     assert "server-owned" in str(exc.value)
 
 
+def test_server_owned_rejection_names_supplied_cell_arg():
+    # LEG-3: the SERVER_OWNED message must name which request-side arg ("cell")
+    # was supplied/rejected — the "cell trap" — not a generic "server-owned".
+    with pytest.raises(WardlineRoutingError) as exc:
+        _resolve(server_cell="surface_only", request_cell="surface_override")
+    message = str(exc.value)
+    assert "server-owned" in message  # preserved literal (existing tests assert it)
+    # Pin the echo CLAUSE, not the bare token: "cell" also appears in the static
+    # prose "pins the cell", so `"cell" in message` would still pass if the
+    # supplied-args echo were stripped to a generic message. This phrase comes
+    # only from the supplied_request_args echo.
+    assert "arg(s) cell were rejected" in message
+
+
+def test_server_owned_rejection_names_severity_map_and_fail_on_args():
+    with pytest.raises(WardlineRoutingError) as exc:
+        _resolve(
+            server_cell="surface_only",
+            request_severity_map={"ERROR": "surface_override"},
+            request_fail_on="ERROR",
+        )
+    message = str(exc.value)
+    assert "server-owned" in message
+    assert "severity_map" in message
+    assert "fail_on" in message
+
+
+def test_no_optin_rejection_names_supplied_cell_arg():
+    # The not-server-owned-and-flag-off branch also names a supplied request cell.
+    with pytest.raises(WardlineRoutingError) as exc:
+        _resolve(request_cell="surface_override", allow_request_routing=False)
+    message = str(exc.value)
+    assert "server-owned" in message
+    assert "cell" in message
+    assert "LEGIS_WARDLINE_CELL" in message  # existing guidance retained
+
+
 def test_request_routing_without_optin_is_server_owned():
     with pytest.raises(WardlineRoutingError) as exc:
         _resolve(request_cell="surface_override", allow_request_routing=False)

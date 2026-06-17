@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Legis — git/CI governance &amp; attestations · Weft Federation</title>
+<meta name="description" content="Legis is the Weft Federation's governance surface — the one judge. Every governed git/CI action that breaks policy produces exactly one attributable, tamper-evident, identity-stable audit record instead of a silent pass, and grades who must answer server-side.">
+<!-- Preload brand + product faces before first paint (kills the substitute-font flash). -->
+<link rel="preload" href="fonts/SpaceGrotesk-Variable.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="fonts/JetBrainsMono-Variable.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="stylesheet" href="colors_and_type.css">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#top">Skip to content</a>
+
+<!-- ============================ HEADER ============================ -->
+<header class="hub-header">
+  <div class="brand thread-legis">
+    <svg class="mark" width="26" height="26" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <g stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 6 V25"/><path d="M9 25 H23"/><path d="M7 9 H25"/>
+        <path d="M7 9 L4 16 H10 L7 9Z"/><path d="M25 9 L22 16 H28 L25 9Z"/>
+      </g>
+    </svg>
+    <span class="wordmark">Legis</span>
+    <span class="path-hint">~/legis</span>
+  </div>
+  <nav class="hub-nav" aria-label="Primary">
+    <a href="#what">What</a>
+    <a href="#cells">The 2&times;2</a>
+    <a href="#federation">Federation</a>
+    <a href="#security">Security</a>
+    <a class="ext" href="https://github.com/foundryside-dev/legis" target="_blank" rel="noopener">GitHub</a>
+  </nav>
+</header>
+
+<main id="top">
+
+  <!-- ============================ HERO ============================ -->
+  <section class="hero">
+    <div class="eyebrow">
+      <span class="dot dot-ready" aria-hidden="true"></span>
+      <span class="t-label">Weft member · governance surface · the one judge</span>
+    </div>
+    <h1 class="hero-title">What changed,<br>and is this change governed?</h1>
+    <p class="t-body hero-lede">
+      Legis is the Weft Federation&rsquo;s <strong>governance surface</strong>. Every governed action at
+      the git/CI boundary that breaks a policy produces exactly one attributable,
+      tamper-evident, identity-stable audit record &mdash; instead of a silent pass &mdash; and Legis
+      grades <strong>who must answer</strong> server-side, so the agent never chooses how cheaply it
+      clears a gate.
+    </p>
+    <div class="axiom">
+      <div class="t-label axiom-label">The operating axiom</div>
+      <div class="axiom-text">
+        Humans <strong>on</strong> the loop, not <strong>in</strong> it. The agent operates and extends the
+        environment; the human supervises, approves, and governs from outside the
+        operating cycle. The recorded override is what makes that safe &mdash; an attributable
+        audit event, never a silent pass.
+      </div>
+    </div>
+    <div class="hero-stats">
+      <div class="stat">
+        <span class="stat-label"><span class="stat-dot t-legis"></span>Enforcement cells</span>
+        <span class="stat-value">4</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label"><span class="stat-dot t-accent"></span>LLM judge inline</span>
+        <span class="stat-value">2<span class="stat-unit">&thinsp;/&thinsp;4</span></span>
+      </div>
+      <div class="stat">
+        <span class="stat-label"><span class="stat-dot t-ready"></span>Audit keyed on</span>
+        <span class="stat-value stat-value-sm">SEI</span>
+      </div>
+      <div class="stat">
+        <span class="stat-label"><span class="stat-dot t-muted"></span>Runtime / brokers</span>
+        <span class="stat-value">0</span>
+      </div>
+    </div>
+    <p class="t-meta hero-foot">
+      Snapshot <strong>2026-06-11</strong> &mdash; shown at the <span class="t-code">1.0.0</span> release line
+      (Legis&rsquo;s own authoritative self-description). The live build state is in the
+      <a class="ext" href="https://github.com/foundryside-dev/legis/blob/main/CHANGELOG.md" target="_blank" rel="noopener">repo / CHANGELOG</a>.
+    </p>
+  </section>
+
+  <!-- ============================ WHAT LEGIS IS ============================ -->
+  <section id="what" class="what">
+    <h2 class="comp-title">What Legis is</h2>
+    <p class="t-body comp-lede">
+      Legis is the federation authority for change provenance &mdash; branch / commit / pull-request
+      / CI context &mdash; and for the governance and attestation state over that change. It answers:
+      <em>what changed, in which context, and what governance or attestation state exists for it?</em>
+    </p>
+
+    <div class="owns-grid">
+      <div class="owns-card thread-legis">
+        <div class="owns-title">Verdicts it owns</div>
+        <div class="owns-body">
+          <span class="t-code">CLEAR</span> / <span class="t-code">VIOLATION</span> /
+          <span class="t-code">UNKNOWN</span>, with an honest <span class="t-code">provenance_gap</span>
+          event &mdash; never a silent false-green.
+        </div>
+      </div>
+      <div class="owns-card thread-legis">
+        <div class="owns-title">The 2&times;2 cells</div>
+        <div class="owns-body">
+          chill / coached / structured / protected. The <em>cell</em> grades who answers
+          server-side &mdash; the agent cannot pick the cheapest gate.
+        </div>
+      </div>
+      <div class="owns-card thread-legis">
+        <div class="owns-title">Signed protected verdicts</div>
+        <div class="owns-body">
+          HMAC-signed, SEI-keyed verdicts in the protected cell, bound to the source bytes
+          and AST node the judge inspected.
+        </div>
+      </div>
+      <div class="owns-card thread-legis">
+        <div class="owns-title">The sign-off ledger</div>
+        <div class="owns-body">
+          An append-only, SEI-keyed sign-off and audit trail, so every override and sign-off
+          survives a rename or move.
+        </div>
+      </div>
+    </div>
+
+    <div class="not-block">
+      <div class="t-label not-label">What Legis is <em>not</em></div>
+      <ul class="not-list">
+        <li>a federation registry</li>
+        <li>a hidden suite runtime</li>
+        <li>a replacement for Loomweave&rsquo;s code-identity authority</li>
+        <li>a replacement for Filigree&rsquo;s workflow authority</li>
+        <li>a replacement for Wardline&rsquo;s policy-analysis authority</li>
+      </ul>
+      <p class="t-meta not-foot">
+        Legis is a <em>consumer of identity, not an authority</em>, and never re-adjudicates trust:
+        &ldquo;Wardline analyses, Legis governs &mdash; one judge, not two.&rdquo;
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================ THE 2×2 — CENTERPIECE ============================ -->
+  <section id="cells" class="cells">
+    <h2 class="comp-title">The governance 2&times;2</h2>
+    <p class="t-body comp-lede">
+      Legis&rsquo;s enforcement surface is a 2&times;2, and the base always stays weightless. Two
+      independent, agent-set axes: how much governance <strong>structure</strong> you want
+      (simple / complex), and whether an <strong>LLM judge</strong> sits inline (off / on). Every
+      cell is genuinely useful; a solo project that never switches Legis on pays nothing.
+    </p>
+
+    <!-- Filter (additive emphasis). All four cells are rendered statically below;
+         JS only dims the cells that don't match — there are no panels to switch,
+         so this is a toolbar of toggle buttons (aria-pressed), not a tablist.
+         Content-complete with JS off: with no script, all four cells show. -->
+    <div class="cell-filter" role="toolbar" aria-label="Highlight one cell of the 2×2">
+      <button class="cell-btn is-active" type="button" aria-pressed="true"  data-cell="all">All four</button>
+      <button class="cell-btn"           type="button" aria-pressed="false" data-cell="chill">Chill</button>
+      <button class="cell-btn"           type="button" aria-pressed="false" data-cell="coached">Coached</button>
+      <button class="cell-btn"           type="button" aria-pressed="false" data-cell="structured">Structured</button>
+      <button class="cell-btn"           type="button" aria-pressed="false" data-cell="protected">Protected</button>
+    </div>
+
+    <div class="cell-axes" aria-hidden="true">
+      <span class="axis-x">Judge OFF &nbsp;&rarr;&nbsp; Judge ON</span>
+      <span class="axis-y">Simple &nbsp;&darr;&nbsp; Complex</span>
+    </div>
+
+    <div class="cell-grid">
+
+      <article class="cell-card thread-legis" data-cell="chill">
+        <header class="cell-head">
+          <span class="cell-name">Chill</span>
+          <span class="cell-axis t-label">simple &middot; judge off</span>
+        </header>
+        <p class="cell-body">
+          Legis is invisible until you want it. No judge, no required attestations, no
+          configuration burden. When a policy fires, the agent chooses: refactor, or make a
+          <strong>recordable override</strong> &mdash; an attributable audit event the human reviews from
+          the loop&rsquo;s edge, asynchronously. The trail exists; the human is not blocked.
+        </p>
+        <footer class="cell-foot"><span class="tag tag-ok">surface + override</span> <span class="cell-cost">no LLM &middot; no crypto &middot; no ceremony</span></footer>
+      </article>
+
+      <article class="cell-card thread-legis" data-cell="coached">
+        <header class="cell-head">
+          <span class="cell-name">Coached</span>
+          <span class="cell-axis t-label">simple &middot; judge on</span>
+        </header>
+        <p class="cell-body">
+          The same flow, but an LLM judge evaluates the proposed override <em>before</em> it records
+          &mdash; the casual coder&rsquo;s interactive wall. Verdicts are <span class="t-code">ACCEPTED</span> or
+          <span class="t-code">BLOCKED</span>; a blocked agent must correct the code or sharpen its
+          rationale and re-submit. It cannot self-clear past the judge. Raises the cost of lazy
+          overrides without raising the cost of honest ones.
+        </p>
+        <footer class="cell-foot"><span class="tag tag-ok">surface + override</span> <span class="cell-cost">one config flag &middot; no HMAC keys</span></footer>
+      </article>
+
+      <article class="cell-card thread-legis" data-cell="structured">
+        <header class="cell-head">
+          <span class="cell-name">Structured</span>
+          <span class="cell-axis t-label">complex &middot; judge off</span>
+        </header>
+        <p class="cell-body">
+          Block + escalate, with no LLM in the loop: for high-stakes policies a designated
+          human operator must sign off before the gate clears. Clear procedural governance with
+          explicit human authority &mdash; for teams that want hard gates but no model in the
+          critical path. The human is in the loop <em>by exception</em>, not by default.
+        </p>
+        <footer class="cell-foot"><span class="tag tag-warn">block + escalate</span> <span class="cell-cost">human sign-off &middot; no model</span></footer>
+      </article>
+
+      <article class="cell-card thread-legis" data-cell="protected">
+        <header class="cell-head">
+          <span class="cell-name">Protected</span>
+          <span class="cell-axis t-label">complex &middot; judge on</span>
+        </header>
+        <p class="cell-body">
+          The full machinery, layered over the coached cell. A judge gate on every new
+          attestation returns <span class="t-code">ACCEPTED</span> / <span class="t-code">BLOCKED</span> /
+          <span class="t-code">OVERRIDDEN_BY_OPERATOR</span> &mdash; and an <span class="t-code">ACCEPTED</span> is
+          <em>advisory only</em>, downgraded to require operator sign-off unless a deterministic,
+          non-LLM validator confirms it. Verdicts are HMAC-signed and SEI-keyed; a decay sweep
+          re-runs old suppressions through the judge; an override-rate gate makes too many
+          overrides observable rather than silent.
+        </p>
+        <footer class="cell-foot"><span class="tag tag-warn">block + escalate</span> <span class="cell-cost">HMAC &middot; decay sweep &middot; override-rate gate</span></footer>
+      </article>
+
+    </div>
+
+    <div class="prim-block">
+      <div class="t-label prim-label">The one underlying primitive &mdash; graded enforcement</div>
+      <p class="prim-body">
+        Across all four cells, when a policy fires the <em>cell</em> decides who answers and what is
+        recorded. <strong>Surface + override</strong>: the agent may proceed but makes a recordable
+        override (with a judge inline in the coached / protected cells), and the human reviews
+        the trail asynchronously. <strong>Block + escalate</strong>: a hard gate &mdash; a designated human
+        operator must sign off before it clears. Every cell produces an append-only audit trail
+        keyed on SEI, so the record survives refactors.
+      </p>
+    </div>
+  </section>
+
+  <!-- ============================ FEDERATION ENGAGEMENT ============================ -->
+  <section id="federation" class="federation">
+    <h2 class="comp-title">How Legis engages the federation</h2>
+    <p class="t-body comp-lede">
+      Legis is one member of the Weft Federation. It governs change provenance whether its
+      siblings are present or not &mdash; a verdict still resolves, with
+      <span class="t-code">identity_stable: false</span> honestly flagged when a sibling capability
+      is absent. Each binding below is enrich-only and keys on SEI. The canonical roster, axiom,
+      and contract detail live in the hub.
+    </p>
+
+    <div class="facts">
+      <div class="fact">
+        <div class="t-label">The connective tissue</div>
+        <div class="fact-title">SEI &mdash; Stable Entity Identity</div>
+        <div class="fact-body">
+          One durable id per code entity, owned by Loomweave. Legis treats SEI as opaque &mdash;
+          never derived or reinterpreted &mdash; and keys every governance record on it. Legis
+          <strong>passes the &sect;8 SEI oracle as a consumer.</strong> <span class="tag tag-ok">LOCKED &middot; 2026-06-05</span>
+        </div>
+      </div>
+      <div class="fact">
+        <div class="t-label">The division of authority</div>
+        <div class="fact-title">One judge, not two</div>
+        <div class="fact-body">
+          Loomweave owns identity, Filigree owns workflow, Wardline owns trust analysis. Legis
+          adds the governed enforcement layer on top &mdash; <em>&ldquo;Wardline analyses, Legis
+          governs&rdquo;</em> &mdash; and never re-adjudicates a sibling&rsquo;s authority.
+        </div>
+      </div>
+    </div>
+
+    <div class="t-label section-label">The bindings Legis carries</div>
+    <ul class="bindings">
+      <li>
+        <span class="b-name thread-loomweave">Loomweave</span> <span class="b-arrow">&rarr;</span>
+        <span class="b-name thread-legis">Legis</span>
+        <span class="b-desc">consumes <span class="t-code">resolve_sei</span> / <span class="t-code">lineage</span> (pull-only); supplies the git-rename provider seam &mdash; identity authority stays in Loomweave</span>
+        <span class="tag tag-dim">contracts &sect;6</span>
+      </li>
+      <li>
+        <span class="b-name thread-legis">Legis</span> <span class="b-arrow">&rarr;</span>
+        <span class="b-name thread-filigree">Filigree</span>
+        <span class="b-desc">governed, SEI-keyed sign-off binding on issues; Filigree retains lifecycle authority</span>
+        <span class="tag tag-dim">contracts &sect;7</span>
+      </li>
+      <li>
+        <span class="b-name thread-wardline">Wardline</span> <span class="b-arrow">&rarr;</span>
+        <span class="b-name thread-legis">Legis</span>
+        <span class="b-desc">findings route through Legis enforcement into the configured 2&times;2 cell; trust vocabulary passes through verbatim</span>
+        <span class="tag tag-dim">contracts &sect;8</span>
+      </li>
+      <li>
+        <span class="b-name thread-charter">Charter</span> <span class="b-arrow">&rarr;</span>
+        <span class="b-name thread-legis">Legis</span>
+        <span class="b-desc">consumes <span class="t-code">preflight_facts.v1</span></span>
+        <span class="tag tag-dim">planned &middot; contracts &sect;9</span>
+      </li>
+    </ul>
+
+    <div class="t-label section-label combos-label">The combination matrix &mdash; what each pairing lights up</div>
+    <ul class="bindings combos">
+      <li>
+        <span class="b-name thread-wardline">Wardline</span> <span class="b-plus">+</span>
+        <span class="b-name thread-legis">Legis</span>
+        <span class="b-desc">agent-defined policy enforced at the CI/git boundary</span>
+        <span class="tag tag-ok">Live</span>
+      </li>
+      <li>
+        <span class="b-name thread-loomweave">Loomweave</span> <span class="b-plus">+</span>
+        <span class="b-name thread-legis">Legis</span>
+        <span class="b-desc">governance attestations keyed to stable code identity (SEI-keyed attestations); the git-rename provider is contract-locked, operative pending Loomweave committed-range driving</span>
+        <span class="tag tag-ok">Live</span> <span class="tag tag-dim">rename seam · contract-locked</span>
+      </li>
+      <li>
+        <span class="b-name thread-filigree">Filigree</span> <span class="b-plus">+</span>
+        <span class="b-name thread-legis">Legis</span>
+        <span class="b-desc">governed issue lifecycle &mdash; sign-offs, RTM, verification states</span>
+        <span class="tag tag-ok">Live</span>
+      </li>
+    </ul>
+    <p class="t-meta weave-foot">
+      SEI is the connective tissue of the whole matrix &mdash; one non-conformant binding orphans
+      every combination it participates in. The full 5&times;5 matrix and the two structural facts
+      are authoritative in the hub:
+      <a class="ext" href="https://github.com/foundryside-dev/weft/blob/main/federation-map.md" target="_blank" rel="noopener">federation-map.md</a>,
+      <a class="ext" href="https://github.com/foundryside-dev/weft/blob/main/contracts-index.md" target="_blank" rel="noopener">contracts-index.md</a>,
+      <a class="ext" href="https://github.com/foundryside-dev/weft/blob/main/sei-standard.md" target="_blank" rel="noopener">sei-standard.md</a>,
+      <a class="ext" href="https://github.com/foundryside-dev/weft/blob/main/doctrine.md" target="_blank" rel="noopener">doctrine.md</a>.
+    </p>
+  </section>
+
+  <!-- ============================ SECURITY & HONESTY ============================ -->
+  <section id="security" class="security">
+    <h2 class="comp-title">Security &amp; honesty</h2>
+    <p class="t-body comp-lede">
+      Legis is a governance-<em>honesty</em> tool, so it holds itself to the bar it enforces and
+      states its own residual limits plainly rather than leaving them in source comments. It is
+      a <em>&ldquo;forced me to do the right thing&rdquo;</em> discipline &mdash;
+      <strong>not a hardened security boundary.</strong>
+    </p>
+
+    <div class="lim-note">
+      <div class="t-label lim-note-label">What &ldquo;tamper-evident&rdquo; means here</div>
+      <p class="lim-note-body">
+        The HMAC signing is intra-suite <strong>tamper-evidence</strong> &mdash; it binds a governance
+        record to SEI-stable identity and detects after-the-fact edits by an actor who cannot
+        recompute the keyed signature. The recorded actor is <em>self-asserted</em>, not
+        third-party-authenticated, and verification today is same-process Python over v1
+        canonical JSON. It is <strong>not</strong> a third-party-verifiable, cross-party
+        authenticated cryptographic proof. &ldquo;Tamper-evident,&rdquo; never &ldquo;tamper-proof.&rdquo;
+      </p>
+    </div>
+
+    <ul class="lim-list">
+      <li>
+        <span class="lim-title">The coached cell is a model-robustness wall, not a cryptographic one.</span>
+        A blocked agent clears it by convincing the LLM judge &mdash; and a malicious prompt
+        injection that persuades the model will likewise clear it. Structural injection (forging
+        a verdict key) is closed and any transport/parse failure is fail-closed to
+        <span class="t-code">BLOCKED</span>, but for verdicts that must not rest on the model&rsquo;s
+        word, use the protected cell.
+      </li>
+      <li>
+        <span class="lim-title">Tamper-evidence assumes the signing key is out of reach, and is not absolute against raw DB-file writes.</span>
+        v3 signing binds each record&rsquo;s chain position, so in-place edits, reordering, and
+        renumbering are detected. A holder of raw write access to the governance <span class="t-code">.db</span>
+        can still delete-and-rechain, rewrite to a non-protected value (&ldquo;modify-to-unsigned&rdquo;),
+        or truncate the tail. The opt-in <span class="t-code">HeadAnchor</span> mitigates
+        truncation (with a documented anchor-replay caveat). Keep the store on storage only the
+        operator controls.
+      </li>
+      <li>
+        <span class="lim-title">Durability tier.</span>
+        The audit store runs <span class="t-code">synchronous=FULL</span>, but a power loss can
+        still drop the most recent un-checkpointed appends. The trail stays internally
+        consistent (a shortened-but-valid tail); it does not corrupt.
+      </li>
+      <li>
+        <span class="lim-title">SEI-binding integrity rests on TLS by design.</span>
+        The Weft request HMAC authenticates Legis&rsquo;s <em>requests</em> to Loomweave / Filigree,
+        not their <em>responses</em> &mdash; response integrity is TLS&rsquo;s job.
+        <span class="t-code">LEGIS_ALLOW_INSECURE_REMOTE_HTTP=1</span> permits plaintext to a
+        remote sibling and therefore voids that custody seal; it logs a warning and is for
+        dev / loopback use only.
+      </li>
+    </ul>
+
+    <div class="review-block">
+      <p class="t-body review-lede">
+        The full adversarial threat model is published &mdash; attack recipes and all. Both pre-1.0
+        adversarial reviews ship in the open, including reproduced attack recipes for every
+        residual above:
+      </p>
+      <div class="review-grid">
+        <a class="review-card thread-legis ext" href="https://github.com/foundryside-dev/legis/blob/main/docs/release-1.0-risk-audit.md" target="_blank" rel="noopener">
+          <span class="review-name">release-1.0-risk-audit.md</span>
+          <span class="review-what">The multi-lane pre-release risk audit.</span>
+        </a>
+        <a class="review-card thread-legis ext" href="https://github.com/foundryside-dev/legis/blob/main/docs/release-1.0-pre-ship-review.md" target="_blank" rel="noopener">
+          <span class="review-name">release-1.0-pre-ship-review.md</span>
+          <span class="review-what">The independent second pass that re-attacked the audit&rsquo;s own fixes &mdash; and caught a real fail-open the self-verified pass had missed.</span>
+        </a>
+      </div>
+      <p class="t-meta review-foot">
+        This is deliberate. The system is only as load-bearing as the effort put into it &mdash; its
+        worth is the effort the threat model forces and the residual tiers it names honestly,
+        not a claim to withstand an attacker who already holds raw-file-write, a fooled model,
+        or a broken transport.
+      </p>
+    </div>
+  </section>
+
+</main>
+
+<!-- ============================ FOOTER ============================ -->
+<footer class="hub-footer">
+  <svg class="mark" width="18" height="18" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+    <g stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+      <path d="M11 6 V18.8"/><path d="M11 23.2 V26"/>
+      <path d="M21 6 V8.8"/><path d="M21 13.2 V26"/>
+      <path d="M6 11 H8.8"/><path d="M13.2 11 H26"/>
+      <path d="M6 21 H18.8"/><path d="M23.2 21 H26"/>
+    </g>
+  </svg>
+  <span class="foot-note">Legis is part of the <a class="ext" href="https://github.com/foundryside-dev/weft" target="_blank" rel="noopener">Weft Federation</a> &mdash; the hub documents the canonical roster &amp; axiom.</span>
+  <nav class="foot-links" aria-label="Resources">
+    <a class="ext" href="https://github.com/foundryside-dev/legis" target="_blank" rel="noopener">Source</a>
+    <a class="ext" href="https://github.com/foundryside-dev/weft/blob/main/federation-map.md" target="_blank" rel="noopener">Federation map</a>
+    <a class="ext" href="https://github.com/foundryside-dev/weft/blob/main/sei-standard.md" target="_blank" rel="noopener">SEI</a>
+  </nav>
+  <a class="foot-org ext" href="https://foundryside.dev" target="_blank" rel="noopener" aria-label="part of Foundryside — foundryside.dev">
+    <svg class="mark" width="17" height="17" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <g stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M5 24 H27"/><path d="M11 24 V15"/><path d="M16 24 V10"/><path d="M21 24 V15"/>
+      </g>
+      <g fill="currentColor">
+        <circle cx="11" cy="15" r="2.1"/><circle cx="16" cy="10" r="2.3"/><circle cx="21" cy="15" r="2.1"/>
+      </g>
+    </svg>
+    <span>part of Foundryside · foundryside.dev</span>
+  </a>
+  <span class="foot-meta">MIT · 2026</span>
+</footer>
+
+<script src="main.js"></script>
+</body>
+</html>

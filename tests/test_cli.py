@@ -1,3 +1,5 @@
+import json
+
 from legis.cli import build_parser, main
 
 
@@ -169,9 +171,12 @@ def test_main_mcp_sets_store_and_policy_cell_env(monkeypatch):
         )
         return 0
 
-    monkeypatch.delenv("LEGIS_GOVERNANCE_DB", raising=False)
-    monkeypatch.delenv("LEGIS_CHECK_DB", raising=False)
-    monkeypatch.delenv("LEGIS_POLICY_CELLS", raising=False)
+    for var in ("LEGIS_GOVERNANCE_DB", "LEGIS_CHECK_DB", "LEGIS_POLICY_CELLS"):
+        # delenv(raising=False) on an absent var records nothing to restore,
+        # so the env writes main()'s mcp path makes below would leak into later
+        # tests; seed first so the monkeypatch teardown undoes them.
+        monkeypatch.setenv(var, "leak-guard")
+        monkeypatch.delenv(var)
     monkeypatch.setattr(mcp_module, "main", fake_mcp_main)
 
     rc = main(
@@ -401,6 +406,9 @@ def test_policy_boundary_check_outputs_json_and_fails(monkeypatch, capsys, tmp_p
         def to_dict(self):
             return {"rule_id": self.rule_id, "file_path": self.file_path}
 
+    # Root must hold >=1 analyzable .py file or the no-vacuous-pass guard fires
+    # before the (mocked) scanner is consulted.
+    (tmp_path / "real.py").write_text("x = 1\n", encoding="utf-8")
     monkeypatch.setattr(
         cli_module, "scan_policy_boundaries", lambda root, repo_root=None: [FakeFinding()]
     )
@@ -415,12 +423,60 @@ def test_policy_boundary_check_passes_when_no_findings(monkeypatch, capsys, tmp_
     import legis.cli as cli_module
     from legis.cli import main
 
+    # A genuine clean PASS: the root has analyzable source but the (mocked)
+    # scanner finds nothing. This must stay PASS, NOT collapse to NO_ROOT.
+    (tmp_path / "real.py").write_text("x = 1\n", encoding="utf-8")
     monkeypatch.setattr(cli_module, "scan_policy_boundaries", lambda root, repo_root=None: [])
 
     rc = main(["policy-boundary-check", "--root", str(tmp_path), "--repo-root", str(tmp_path)])
 
     assert rc == 0
     assert "policy-boundary-check: PASS" in capsys.readouterr().out
+
+
+def test_policy_boundary_check_no_root_when_root_nonexistent(capsys, tmp_path):
+    # Friction D: a governance gate must NEVER pass on a nonexistent root.
+    from legis.cli import main
+
+    rc = main(["policy-boundary-check", "--root", str(tmp_path / "nope"), "--repo-root", str(tmp_path)])
+
+    assert rc != 0
+    out = capsys.readouterr().out
+    assert "NO_ROOT" in out
+    assert "policy-boundary-check: PASS" not in out
+
+
+def test_policy_boundary_check_no_root_when_root_has_zero_source_files(capsys, tmp_path):
+    # Root exists but holds zero analyzable .py files -> NO_ROOT, never PASS.
+    from legis.cli import main
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "README.md").write_text("# docs only\n", encoding="utf-8")
+
+    rc = main(["policy-boundary-check", "--root", str(src), "--repo-root", str(tmp_path)])
+
+    assert rc != 0
+    out = capsys.readouterr().out
+    assert "NO_ROOT" in out
+    assert "policy-boundary-check: PASS" not in out
+
+
+def test_policy_boundary_check_no_root_json_format(capsys, tmp_path):
+    # The machine-readable surface carries the discriminated outcome too.
+    from legis.cli import main
+
+    rc = main([
+        "policy-boundary-check",
+        "--root", str(tmp_path / "nope"),
+        "--repo-root", str(tmp_path),
+        "--format", "json",
+    ])
+
+    assert rc != 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["outcome"] == "NO_ROOT"
+    assert payload["findings"] == []
 
 
 def test_policy_boundary_check_end_to_end_flags_weak_boundary(tmp_path):
@@ -463,6 +519,7 @@ def test_policy_boundary_check_text_format_with_findings(monkeypatch, capsys, tm
         def to_dict(self):
             return {}
 
+    (tmp_path / "real.py").write_text("x = 1\n", encoding="utf-8")
     monkeypatch.setattr(
         cli_module, "scan_policy_boundaries", lambda root, repo_root=None: [FakeFinding()]
     )
@@ -568,3 +625,50 @@ def test_check_override_rate_rejects_rechained_protected_tampering(tmp_path, mon
 
     assert rc == 1
     assert "verification failed" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# session-context (N-1: never exit silently)
+# ---------------------------------------------------------------------------
+
+
+def test_session_context_always_prints_banner(tmp_path, monkeypatch, capsys):
+    # N-1: exit 0 with NO output is indistinguishable from a broken command —
+    # even a non-project cwd must get a one-line posture banner.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LEGIS_POLICY_CELLS", raising=False)
+    rc = main(["session-context"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert out.startswith("legis: ")
+    assert out.count("\n") == 1  # one banner line, nothing else
+
+
+def test_session_context_prints_banner_then_drift_messages(tmp_path, monkeypatch, capsys):
+    from legis import install
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LEGIS_POLICY_CELLS", raising=False)
+    install.inject_instructions(tmp_path / "CLAUDE.md")
+    monkeypatch.setattr(install, "_instructions_text", lambda: "DRIFTED\n")
+    rc = main(["session-context"])
+    assert rc == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0].startswith("legis: ")
+    assert any("CLAUDE.md" in line for line in lines[1:])
+
+
+def test_session_context_prints_failure_line_when_refresh_raises(tmp_path, monkeypatch, capsys):
+    import legis.hooks as hooks_module
+
+    monkeypatch.chdir(tmp_path)
+
+    def boom(_root):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(hooks_module, "refresh_instructions", boom)
+    rc = main(["session-context"])
+    assert rc == 0  # the hook must never fail the session start...
+    out = capsys.readouterr().out
+    # ...but the failure must be visible, not silent.
+    assert "instruction freshness check failed" in out

@@ -1,8 +1,8 @@
 """The shared Weft-component transport-HMAC seam.
 
-These pin the single wire definition that ``identity/loomweave_client`` and
-``filigree/client`` both delegate to, and guard against the two channels
-silently re-diverging (the duplication this module was extracted to remove).
+These pin the live Loomweave wire definition. Filigree classic binds are
+transport-open after G11, so ``filigree/client`` no longer emits these headers
+and the Filigree-side formula helper has been deleted (no live caller).
 """
 
 from __future__ import annotations
@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from legis.filigree.client import sign_filigree_request
 from legis.identity.loomweave_client import sign_loomweave_request
 from legis.weft_signing import (
     sign_weft_request,
@@ -54,16 +53,17 @@ def test_sign_weft_request_matches_explicit_hmac_contract():
     }
 
 
-def test_both_channels_share_one_seam_differing_only_by_component():
-    # Anti-drift guard: for identical inputs the Loomweave and Filigree channels
-    # must produce the SAME signature — only the component namespace differs. If
-    # a future change to one channel's canonicalization slips in, this fails.
+def test_component_namespace_is_the_only_per_channel_difference():
+    # Conformance guard: the HMAC is computed over the SAME message regardless of
+    # channel; only the ``X-Weft-Component`` namespace prefix differs. (Filigree
+    # is transport-open post-G11 and emits nothing, but the formula contract — a
+    # future signed third channel must reuse the same message — still holds.)
     key, method, url = b"weft-key", "POST", "https://h/api/issue/I-1/x?q=1"
     body = {"entity_id": "loomweave:eid:abc", "content_hash": "h"}
     kwargs = dict(timestamp=1_700_000_000, nonce="cafef00d")
 
     loom = sign_loomweave_request(key, method, url, body, **kwargs)
-    fil = sign_filigree_request(key, method, url, body, **kwargs)
+    fil = sign_weft_request("filigree", key, method, url, body, **kwargs)
 
     assert loom["X-Weft-Component"].startswith("loomweave:")
     assert fil["X-Weft-Component"].startswith("filigree:")

@@ -6,7 +6,7 @@ from legis.wardline.policy import resolve_cell
 def _finding(sev: str):
     return active_defects({"findings": [
         {"rule_id": "R", "message": "m", "severity": sev, "kind": "defect",
-         "fingerprint": "fp", "qualname": "q", "properties": {}, "suppressed": "active"}
+         "fingerprint": "fp", "qualname": "q", "properties": {}, "suppression_state": "active"}
     ]})[0]
 
 

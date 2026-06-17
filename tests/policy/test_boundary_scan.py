@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 from legis.policy.boundary_scan import scan_policy_boundaries
@@ -20,7 +21,7 @@ def _write_boundary_subject(
     fingerprint_line = (
         "" if test_fingerprint is None else f'    test_fingerprint="{test_fingerprint}",\n'
     )
-    src.mkdir(parents=True)
+    src.mkdir(parents=True, exist_ok=True)
     (src / "subject.py").write_text(
         f'''
 from legis.policy.decorator import policy_boundary
@@ -88,6 +89,86 @@ def test_policy_boundary_exercises_subject():
 
     assert len(findings) == 1
     assert findings[0].rule_id == "POLICY_BOUNDARY_TEST_FINGERPRINT_MISMATCH"
+
+
+def test_scan_policy_boundaries_rejects_skip_disabled_evidence_test(tmp_path: Path) -> None:
+    # POLICY-1, end-to-end: a reviewer pins a real, running evidence test, then
+    # the test is disabled with @pytest.mark.skip after the fact. Decorators are
+    # semantic and now fingerprinted, so the clean pinned hash must drift before
+    # the evidence evaluator runs.
+    clean_test = '''
+def test_policy_boundary_exercises_subject():
+    assert guarded({"policy": "PY-WL-101"}) == "ok"
+'''
+    fp = _test_fingerprint(clean_test)
+    disabled_function = '''
+@pytest.mark.skip(reason="disabled after the human pinned it")
+def test_policy_boundary_exercises_subject():
+    assert guarded({"policy": "PY-WL-101"}) == "ok"
+'''
+    disabled_test = "import pytest\n\n" + disabled_function
+    src = tmp_path / "src" / "pkg"
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    _write_boundary_subject(
+        src,
+        test_ref="tests/test_subject.py::test_policy_boundary_exercises_subject",
+        test_fingerprint=fp,
+    )
+    (tests / "test_subject.py").write_text(disabled_test, encoding="utf-8")
+
+    findings = scan_policy_boundaries(src, repo_root=tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].rule_id == "POLICY_BOUNDARY_TEST_FINGERPRINT_MISMATCH"
+
+    _write_boundary_subject(
+        src,
+        test_ref="tests/test_subject.py::test_policy_boundary_exercises_subject",
+        test_fingerprint=_test_fingerprint(disabled_function),
+    )
+    findings = scan_policy_boundaries(src, repo_root=tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].rule_id == "POLICY_BOUNDARY_TEST_DISABLED"
+
+
+def test_scan_policy_boundaries_rejects_xfail_disabled_evidence_test(tmp_path: Path) -> None:
+    clean_test = '''
+def test_policy_boundary_exercises_subject():
+    assert guarded({"policy": "PY-WL-101"}) == "ok"
+'''
+    fp = _test_fingerprint(clean_test)
+    disabled_function = '''
+@pytest.mark.xfail
+def test_policy_boundary_exercises_subject():
+    assert guarded({"policy": "PY-WL-101"}) == "ok"
+'''
+    disabled_test = "import pytest\n\n" + disabled_function
+    src = tmp_path / "src" / "pkg"
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    _write_boundary_subject(
+        src,
+        test_ref="tests/test_subject.py::test_policy_boundary_exercises_subject",
+        test_fingerprint=fp,
+    )
+    (tests / "test_subject.py").write_text(disabled_test, encoding="utf-8")
+
+    findings = scan_policy_boundaries(src, repo_root=tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].rule_id == "POLICY_BOUNDARY_TEST_FINGERPRINT_MISMATCH"
+
+    _write_boundary_subject(
+        src,
+        test_ref="tests/test_subject.py::test_policy_boundary_exercises_subject",
+        test_fingerprint=_test_fingerprint(disabled_function),
+    )
+    findings = scan_policy_boundaries(src, repo_root=tmp_path)
+
+    assert len(findings) == 1
+    assert findings[0].rule_id == "POLICY_BOUNDARY_TEST_DISABLED"
 
 
 def test_scan_policy_boundaries_reports_test_that_does_not_exercise_subject(
@@ -478,3 +559,136 @@ def test_scan_and_runtime_gate_agree_on_a_shared_corpus(tmp_path: Path) -> None:
         assert runtime_ok == scanner_ok, (
             f"gates disagree on {name!r}: runtime={runtime_ok}, scanner={scanner_ok}"
         )
+
+
+def _write_sibling_boundary(src: Path) -> None:
+    """A detectable sibling: a @policy_boundary with no test_ref yields a
+    POLICY_BOUNDARY_TEST_REF_MISSING finding *iff* the file is actually scanned.
+    Used to prove the scan continued past a hostile file (G4)."""
+    _write_boundary_subject(src, test_ref=None, test_fingerprint="pinned")
+
+
+def test_parse_bomb_degrades_per_file_and_scan_continues(tmp_path: Path) -> None:
+    """Dogfood-4 A2 / federation rec #3 (fail-degraded, never fail-dead): a deep
+    left-leaning BinOp chain exhausts the *parser* stack (ast.parse raises
+    RecursionError). It must become a POLICY_BOUNDARY_FILE_TOO_COMPLEX finding,
+    not kill the run — and the sibling @policy_boundary file is still scanned
+    and reported (proves the scan continued past the bomb)."""
+    src = tmp_path / "src" / "pkg"
+    src.mkdir(parents=True)
+    # A deep BinOp chain blows ast.parse at the default recursion limit.
+    bomb = "BOMB = " + "+".join(["1"] * 20000) + "\n"
+    (src / "nesting_bomb.py").write_text(bomb, encoding="utf-8")
+    _write_sibling_boundary(src)
+
+    findings = scan_policy_boundaries(src, repo_root=tmp_path)
+
+    rule_ids = {f.rule_id for f in findings}
+    too_complex = [f for f in findings if f.rule_id == "POLICY_BOUNDARY_FILE_TOO_COMPLEX"]
+    assert len(too_complex) == 1, f"expected exactly one degrade finding, got {rule_ids}"
+    assert too_complex[0].file_path.endswith("nesting_bomb.py")
+    assert "skipped" in too_complex[0].reason
+    # Scan must have continued: the sibling boundary was actually scanned.
+    sibling = [f for f in findings if f.rule_id == "POLICY_BOUNDARY_TEST_REF_MISSING"]
+    assert len(sibling) == 1, f"sibling file was not scanned; got {rule_ids}"
+    assert sibling[0].file_path.endswith("subject.py")
+
+
+def test_visitor_walk_bomb_degrades_per_file_and_scan_continues(tmp_path: Path) -> None:
+    """Drives the *visitor-walk* degrade path (boundary_scan.py lines after the
+    parse guard), distinct from the parse-stack path above. A deep attribute
+    chain (a.b.b.b…) PARSES fine but blows the recursive NodeVisitor walk; the
+    file must degrade to POLICY_BOUNDARY_FILE_TOO_COMPLEX and the sibling
+    @policy_boundary is still scanned and reported."""
+    src = tmp_path / "src" / "pkg"
+    src.mkdir(parents=True)
+    # Sanity-check the shape: this source parses but blows the visitor walk.
+    walk_bomb = "BOMB = a" + ".b" * 5000 + "\n"
+    ast.parse(walk_bomb)  # parses fine at the default recursion limit
+    (src / "walk_bomb.py").write_text(walk_bomb, encoding="utf-8")
+    _write_sibling_boundary(src)
+
+    findings = scan_policy_boundaries(src, repo_root=tmp_path)
+
+    rule_ids = {f.rule_id for f in findings}
+    too_complex = [f for f in findings if f.rule_id == "POLICY_BOUNDARY_FILE_TOO_COMPLEX"]
+    assert len(too_complex) == 1, f"expected exactly one degrade finding, got {rule_ids}"
+    assert too_complex[0].file_path.endswith("walk_bomb.py")
+    assert "skipped" in too_complex[0].reason
+    # Scan must have continued past the walk-bomb: sibling boundary was scanned.
+    sibling = [f for f in findings if f.rule_id == "POLICY_BOUNDARY_TEST_REF_MISSING"]
+    assert len(sibling) == 1, f"sibling file was not scanned; got {rule_ids}"
+    assert sibling[0].file_path.endswith("subject.py")
+
+
+def test_memory_exhaustion_degrades_per_file_and_scan_continues(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """G2: a memory-exhausting specimen (MemoryError on read/parse/walk) must
+    degrade the same way a RecursionError does, not fail-dead the whole gate
+    (_coerce_literal already catches MemoryError; the per-file guard must too).
+    We inject MemoryError at ast.parse for the bomb file only and assert the
+    sibling is still scanned."""
+    src = tmp_path / "src" / "pkg"
+    src.mkdir(parents=True)
+    (src / "mem_bomb.py").write_text("X = 1\n", encoding="utf-8")
+    _write_sibling_boundary(src)
+
+    import legis.policy.boundary_scan as bscan
+
+    real_parse = bscan.ast.parse
+
+    def fake_parse(source, *args, **kwargs):
+        filename = kwargs.get("filename") or (args[0] if args else "")
+        if "mem_bomb.py" in str(filename):
+            raise MemoryError("simulated literal blowup")
+        return real_parse(source, *args, **kwargs)
+
+    monkeypatch.setattr(bscan.ast, "parse", fake_parse)
+
+    findings = scan_policy_boundaries(src, repo_root=tmp_path)
+
+    rule_ids = {f.rule_id for f in findings}
+    too_complex = [f for f in findings if f.rule_id == "POLICY_BOUNDARY_FILE_TOO_COMPLEX"]
+    assert len(too_complex) == 1, f"MemoryError should degrade, not fail-dead; got {rule_ids}"
+    assert too_complex[0].file_path.endswith("mem_bomb.py")
+    # Scan must have continued past the memory bomb.
+    sibling = [f for f in findings if f.rule_id == "POLICY_BOUNDARY_TEST_REF_MISSING"]
+    assert len(sibling) == 1, f"sibling file was not scanned; got {rule_ids}"
+
+
+# --- fix/legis-policy-boundary-no-vacuous-pass: count_source_files ---
+# A governance gate that PASSES on a zero-file scan is a vacuous green (the
+# weft-ef2e898642 silent-clean-on-zero-scope failure class). The surfaces
+# (MCP + CLI) need to distinguish "scanned N>=1 files, 0 findings -> PASS" from
+# "scanned 0 files / root missing -> NO_ROOT". count_source_files is the single
+# source of truth for "did we actually scan anything", counting exactly the set
+# scan_policy_boundaries would walk.
+
+
+def test_count_source_files_counts_python_files_recursively(tmp_path: Path) -> None:
+    from legis.policy.boundary_scan import count_source_files
+
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "a.py").write_text("x = 1\n", encoding="utf-8")
+    (pkg / "b.py").write_text("y = 2\n", encoding="utf-8")
+    (pkg / "notes.txt").write_text("not python\n", encoding="utf-8")
+
+    assert count_source_files(tmp_path / "src") == 2
+
+
+def test_count_source_files_zero_for_empty_dir(tmp_path: Path) -> None:
+    from legis.policy.boundary_scan import count_source_files
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    (empty / "README.md").write_text("# no python here\n", encoding="utf-8")
+
+    assert count_source_files(empty) == 0
+
+
+def test_count_source_files_zero_for_missing_dir(tmp_path: Path) -> None:
+    from legis.policy.boundary_scan import count_source_files
+
+    assert count_source_files(tmp_path / "does-not-exist") == 0

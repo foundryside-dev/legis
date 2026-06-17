@@ -24,6 +24,7 @@ class BoundaryFinding:
 
 
 _EVIDENCE_RULE_IDS = {
+    "disabled": "POLICY_BOUNDARY_TEST_DISABLED",
     "shadowed": "POLICY_BOUNDARY_TEST_SHADOWS_SUBJECT",
     "not_exercised": "POLICY_BOUNDARY_TEST_DOES_NOT_EXERCISE_SUBJECT",
     "policy_not_asserted": "POLICY_BOUNDARY_TEST_WEAK",
@@ -40,6 +41,17 @@ def scan_policy_boundaries(
 
     for file_path in sorted(scan_root.rglob("*.py")):
         display_path = _display_path(file_path, repo)
+        # Fail-degraded, never fail-dead (dogfood-4 A2 / federation rec #3): one
+        # hostile file (e.g. lacuna's nesting_bomb.py — a deep BinOp chain that
+        # exhausts the parser stack, or a deep attribute/expression tree that
+        # parses but exhausts the NodeVisitor walk) must not kill the whole run.
+        # Skip it, flag it as a finding so the gate still sees it, and keep
+        # scanning. Same posture as loomweave's LMWV-PY-TOO-COMPLEX. We guard the
+        # whole resource-exhaustion class (RecursionError on the C stack,
+        # MemoryError on a pathological literal) across read/parse/walk in one
+        # place — _coerce_literal at line ~225 already catches MemoryError, so a
+        # memory-bomb specimen must degrade here the same way rather than
+        # fail-dead the gate.
         try:
             source = file_path.read_text(encoding="utf-8")
             module = ast.parse(source, filename=str(file_path))
@@ -54,12 +66,45 @@ def scan_policy_boundaries(
                 )
             )
             continue
+        except (RecursionError, MemoryError):
+            findings.append(_too_complex_finding(display_path))
+            continue
 
-        visitor = _BoundaryVisitor(source, file_path, display_path, repo, repo_resolved)
-        visitor.visit(module)
+        try:
+            visitor = _BoundaryVisitor(source, file_path, display_path, repo, repo_resolved)
+            visitor.visit(module)
+        except (RecursionError, MemoryError):
+            findings.append(_too_complex_finding(display_path))
+            continue
         findings.extend(visitor.findings)
 
     return findings
+
+
+def count_source_files(root: str | Path) -> int:
+    """Count the analyzable Python files under *root*.
+
+    The single source of truth for "did the scan actually look at anything".
+    Counts exactly the set ``scan_policy_boundaries`` would walk (``*.py`` under
+    *root*), so a surface can distinguish "scanned N>=1 files, 0 findings ->
+    PASS" from "scanned 0 files / root missing -> NO_ROOT". A governance gate
+    must never report PASS for a zero-file scan (weft-ef2e898642
+    silent-clean-on-zero-scope). A missing root counts as zero.
+    """
+    scan_root = Path(root)
+    if not scan_root.exists():
+        return 0
+    return sum(1 for _ in scan_root.rglob("*.py"))
+
+
+def _too_complex_finding(display_path: str) -> BoundaryFinding:
+    return BoundaryFinding(
+        "POLICY_BOUNDARY_FILE_TOO_COMPLEX",
+        display_path,
+        1,
+        "",
+        "nesting too deep to analyze; file skipped, scan continued (per-file degrade)",
+    )
 
 
 class _BoundaryVisitor(ast.NodeVisitor):
@@ -151,10 +196,11 @@ class _BoundaryVisitor(ast.NodeVisitor):
                 return
 
             test_source, test_node = test_result
-            test_segment = ast.get_source_segment(test_source, test_node) or ""
+            test_segment = _source_segment_with_decorators(test_source, test_node)
             # Same canonicalization the runtime honesty gate uses — CRLF/dedent
-            # normalization and a decorator-insensitive AST hash — so the two
-            # paths cannot diverge for a decorated / class-method test_ref (Q-L5).
+            # normalization and a decorator-sensitive AST hash — so the two
+            # paths cannot diverge for a decorated / class-method test_ref (Q-L5),
+            # and decorators that change execution semantics are pinned.
             actual_fingerprint = fingerprint_source(test_segment)
             if actual_fingerprint != test_fingerprint:
                 self._add(
@@ -323,6 +369,26 @@ def _resolve_test_ref(
 
 def _test_ref_finding(rule_id: str, reason: str) -> BoundaryFinding:
     return BoundaryFinding(rule_id, "", 0, "", reason)
+
+
+def _source_segment_with_decorators(
+    source: str,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> str:
+    """Return source for *node* including decorator lines.
+
+    ``ast.get_source_segment`` for a FunctionDef starts at the ``def`` line even
+    when decorators are present. Runtime ``inspect.getsource`` includes
+    decorators, and decorators can change test execution semantics, so the
+    scanner must include them before hashing.
+    """
+    if node.end_lineno is None:
+        return ast.get_source_segment(source, node) or ""
+    start_lineno = node.lineno
+    if node.decorator_list:
+        start_lineno = min(decorator.lineno for decorator in node.decorator_list)
+    lines = source.splitlines(keepends=True)
+    return "".join(lines[start_lineno - 1 : node.end_lineno])
 
 
 def _find_test_node(

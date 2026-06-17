@@ -22,6 +22,8 @@ class FakeClient:
         boom=False,
         lineage_boom=False,
         resolve_boom=False,
+        resolve_sei=None,
+        resolve_sei_boom=False,
     ):
         self._capable = capable
         self._resolve = resolve or {"alive": False}
@@ -29,6 +31,8 @@ class FakeClient:
         self._boom = boom
         self._lineage_boom = lineage_boom
         self._resolve_boom = resolve_boom
+        self._resolve_sei = resolve_sei
+        self._resolve_sei_boom = resolve_sei_boom
 
     def capability(self):
         if self._boom:
@@ -40,8 +44,13 @@ class FakeClient:
             raise RuntimeError("resolve_locator down")
         return self._resolve
 
-    def resolve_sei(self, sei):  # not used by the resolver
-        raise AssertionError
+    def resolve_sei(self, sei):
+        if self._resolve_sei_boom:
+            raise RuntimeError("resolve_sei down")
+        # Default: echo the supplied SEI back as alive (the happy path).
+        if self._resolve_sei is None:
+            return {"alive": True, "content_hash": "blake3hash"}
+        return self._resolve_sei
 
     def lineage(self, sei):
         if self._lineage_boom:
@@ -198,6 +207,20 @@ def test_locator_with_no_alive_sei_degrades_but_records_alive_false():
     res = r.resolve("python:function:gone")
     assert res.entity_key.identity_stable is False
     assert res.alive is False        # capability present, but no stable identity → honest
+
+
+def test_non_bool_alive_does_not_promote_to_stable_identity():
+    # ID-SEI-2: a buggy/hostile Loomweave returning a non-bool truthy `alive`
+    # (the string "false", or 1) must NOT be read as alive and promoted to a
+    # stable SEI binding — `alive` is checked with `is True`, fail-closed.
+    for bad_alive in ("false", "true", 1, "yes"):
+        r = IdentityResolver(
+            FakeClient(resolve={"alive": bad_alive, "sei": "loomweave:eid:x",
+                                "content_hash": "h"})
+        )
+        res = r.resolve("python:function:m.f")
+        assert res.entity_key.identity_stable is False, bad_alive
+        assert res.alive is False, bad_alive
 
 
 def test_transport_error_degrades_never_raises():
@@ -358,3 +381,68 @@ def test_non_string_content_hash_is_dropped():
         res = r.resolve("python:function:m.f")
         assert res.entity_key.value == "loomweave:eid:deadbeef"
         assert res.content_hash is None
+
+
+# --- weft SEI-on-entry (L1): resolve_supplied_sei verifies an agent-supplied SEI
+# is alive and keys directly on it, or returns None ("do not record"). ---
+
+
+def test_supplied_sei_alive_is_keyed_directly():
+    r = IdentityResolver(
+        FakeClient(
+            resolve_sei={"alive": True, "content_hash": "h"},
+            lineage=[{"event": "born"}],
+        )
+    )
+    res = r.resolve_supplied_sei("loomweave:eid:deadbeef")
+    assert res is not None
+    assert res.entity_key.value == "loomweave:eid:deadbeef"  # the SEI, verbatim
+    assert res.entity_key.identity_stable is True
+    assert res.alive is True
+    assert res.content_hash == "h"
+    assert res.identity_resolution_status == "resolved"
+    assert res.lineage_snapshot_status == "verified"
+
+
+def test_supplied_sei_no_capability_returns_none():
+    # No SEI capability → cannot confirm alive → do-not-record (None), never a
+    # locator-keyed record masquerading as the asserted SEI.
+    r = IdentityResolver(FakeClient(capable=False))
+    assert r.resolve_supplied_sei("loomweave:eid:x") is None
+
+
+def test_supplied_sei_dead_returns_none():
+    r = IdentityResolver(FakeClient(resolve_sei={"alive": False}))
+    assert r.resolve_supplied_sei("loomweave:eid:gone") is None
+
+
+def test_supplied_sei_non_bool_alive_returns_none():
+    # ID-SEI-2 parity with resolve(): a non-bool truthy `alive` must not promote.
+    for bad_alive in ("false", "true", 1, "yes"):
+        r = IdentityResolver(FakeClient(resolve_sei={"alive": bad_alive}))
+        assert r.resolve_supplied_sei("loomweave:eid:x") is None, bad_alive
+
+
+def test_supplied_sei_transport_error_returns_none_never_raises():
+    r = IdentityResolver(FakeClient(resolve_sei_boom=True))
+    assert r.resolve_supplied_sei("loomweave:eid:x") is None
+
+
+def test_supplied_sei_lineage_failure_still_resolves_unavailable():
+    r = IdentityResolver(
+        FakeClient(resolve_sei={"alive": True, "content_hash": "h"}, lineage_boom=True)
+    )
+    res = r.resolve_supplied_sei("loomweave:eid:deadbeef")
+    assert res is not None
+    assert res.alive is True
+    assert res.lineage_snapshot is None
+    assert res.lineage_snapshot_status == "unavailable"
+
+
+def test_supplied_sei_non_string_content_hash_dropped():
+    r = IdentityResolver(
+        FakeClient(resolve_sei={"alive": True, "content_hash": 123}, lineage=[])
+    )
+    res = r.resolve_supplied_sei("loomweave:eid:deadbeef")
+    assert res is not None
+    assert res.content_hash is None

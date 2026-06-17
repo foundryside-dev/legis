@@ -79,20 +79,16 @@ bind time, and fail closed otherwise. (c) is explicitly rejected.**
   attach-then-record ordering (no compensating delete) stays an accepted
   trade-off rather than a gap.
 
-## Related: transport authentication canonicalization (Q-M4)
+## Related: Filigree transport posture (G11)
 
-The HTTP channel that carries the binding (`filigree/client.py`) authenticates
-each request with a Weft-component HMAC, mirroring the Loomweave channel. The
-binding `signature` is an *app-level* attestation about WHAT is bound; the Weft
-HMAC proves WHO is calling. The two are independent.
+The HTTP channel that carries the binding (`filigree/client.py`) is
+transport-open because Filigree's classic entity-association route deliberately
+does not verify `X-Weft-*` headers. Legis therefore sends no transport HMAC on
+Filigree binds. The binding `signature` remains an *app-level* attestation about
+WHAT is bound and is stored in the JSON body; Legis's local `BindingLedger`
+remains the verifier.
 
-**Canonicalization contract.** `sign_filigree_request` takes the body hash over
-`_json_body_bytes` — JSON with **sorted keys** and **compact `(",", ":")`
-separators** — and the wire transport (`_urllib_fetch`) sends those *exact*
-bytes, not a re-`json.dumps` of the body. A Filigree verifier that checks the
-`X-Weft` body hash against the received request bytes MUST canonicalize
-identically before hashing. Any spacing or key-ordering drift on either side
-silently breaks every signed POST (e.g. `attach`). Keeping sign-side and
-wire-side bytes byte-identical in `client.py` is what makes the contract
-self-enforcing rather than a latent divergence. Absent key ⇒ unsigned
-(backward compatible with deployments that have not provisioned the key).
+The wire body still uses `_json_body_bytes` — JSON with **sorted keys** and
+**compact `(",", ":")` separators** — so body-level fixtures and app-level
+binding signatures stay stable across Python dict insertion order and spacing
+changes.

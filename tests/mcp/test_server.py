@@ -82,7 +82,7 @@ def _active_scan():
                 "fingerprint": "fp1",
                 "qualname": "m.f",
                 "properties": {"actual_return": "UNKNOWN_RAW"},
-                "suppressed": "active",
+                "suppression_state": "active",
             }
         ]
     }
@@ -168,8 +168,10 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
 
     assert set(by_name) == {
         "policy_explain",
+        "policy_list",
         "override_submit",
         "signoff_status_get",
+        "signoff_bind_issue",
         "policy_evaluate",
         "scan_route",
         "git_branch_list",
@@ -180,7 +182,23 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
         "check_list",
         "override_rate_get",
         "filigree_closure_gate_get",
+        "identity_gap_list",
+        "lineage_integrity_get",
+        "check_report",
+        "override_list",
+        "doctor_get",
+        "policy_boundary_check",
+        "posture_get",
     }
+    # posture_get is the dedicated read-only posture surface (Phase 8); the
+    # change gate (posture set) stays operator/CLI only — no posture_set tool.
+    assert "posture_set" not in by_name
+    # Named decision (legis-e5c57dedd1): PR recording stays OFF the agent
+    # surface — the forge, not the agent, is the source of truth for PR state;
+    # the legis PR store is a CI/forge-integration mirror (HTTP writer token).
+    # check_report IS exposed because the agent that ran the check is the
+    # natural source of that claim.
+    assert "pull_request_record" not in by_name
     assert "signoff_sign" not in by_name
     assert "protected_operator_override" not in by_name
     assert "operator_override" not in by_name
@@ -293,7 +311,171 @@ def test_policy_explain_returns_service_explanation_payload(tmp_path):
         "enabled": True,
         "available_moves": ["override_submit", "signoff_status_get"],
         "required_inputs": [],
+        "matched_rule": "human.*",
+        "policy_known": True,
     }
+
+
+def test_policy_explain_reports_null_matched_rule_for_unconfigured_policy(tmp_path):
+    # LEG-1(c): an unconfigured policy name is routed by default_cell and reports
+    # matched_rule:null — distinguishing "real-but-disabled" from "hallucinated".
+    # N-9: policy_known:false makes that distinction an explicit boolean.
+    runtime, _store = _runtime(tmp_path)
+    runtime.cell_registry = PolicyCellRegistry(
+        default_cell="chill",
+        rules=(PolicyCellRule(pattern="human.*", cell="structured"),),
+    )
+
+    result = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "policy_explain",
+                    "arguments": {"policy": "no.such.policy", "entity": "src/x.py:f"},
+                },
+            }
+        ),
+        runtime,
+    )[0]["result"]
+
+    assert result["structuredContent"]["cell"] == "chill"
+    assert result["structuredContent"]["matched_rule"] is None
+    assert result["structuredContent"]["policy_known"] is False
+
+
+def _policy_list(runtime):
+    return _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "policy_list", "arguments": {}},
+            }
+        ),
+        runtime,
+    )[0]["result"]
+
+
+def test_policy_list_reports_routing_table_and_cells(tmp_path):
+    # LEG-1(b): default_cell + rules + per-cell metadata in tier order.
+    runtime, _store = _runtime(tmp_path)
+    runtime.cell_registry = PolicyCellRegistry(
+        default_cell="structured",
+        rules=(
+            PolicyCellRule(pattern="secure.source", cell="protected"),
+            PolicyCellRule(pattern="review.*", cell="coached"),
+        ),
+    )
+
+    payload = _policy_list(runtime)["structuredContent"]
+
+    assert payload["default_cell"] == "structured"
+    assert payload["rules"] == [
+        {"pattern": "secure.source", "cell": "protected"},
+        {"pattern": "review.*", "cell": "coached"},
+    ]
+    assert [c["cell"] for c in payload["cells"]] == [
+        "chill",
+        "coached",
+        "structured",
+        "protected",
+    ]
+
+
+def test_policy_list_cells_cover_every_valid_cell(tmp_path):
+    # legis-a50c000052: the cells block must list EVERY governance cell, so a
+    # cell added to VALID_CELLS cannot be silently omitted from policy_list
+    # (re-opening the discoverability gap). Guards against re-hardcoding a
+    # membership tuple that drifts from VALID_CELLS.
+    from legis.policy.cells import VALID_CELLS
+
+    runtime, _store = _runtime(tmp_path)
+    payload = _policy_list(runtime)["structuredContent"]
+
+    assert {c["cell"] for c in payload["cells"]} == set(VALID_CELLS)
+
+
+def test_policy_list_keyless_runtime_reports_complex_tier_disabled(tmp_path):
+    # Cardinal governance/false-green guard: without LEGIS_HMAC_KEY the complex
+    # tier (structured/protected) is NOT wired, so policy_list must report
+    # enabled:false for those cells — never enabled:true to look complete.
+    runtime, _store = _runtime(tmp_path)  # no signoff_gate / protected_gate
+    assert runtime.signoff_gate is None
+    assert runtime.protected_gate is None
+
+    payload = _policy_list(runtime)["structuredContent"]
+    by_cell = {c["cell"]: c for c in payload["cells"]}
+
+    assert by_cell["structured"]["enabled"] is False
+    assert by_cell["protected"]["enabled"] is False
+
+
+def test_policy_list_cells_do_not_carry_policy_known(tmp_path):
+    # N-9 guard: policy_known belongs to policy_explain (a policy referent
+    # exists). The per-cell rows in policy_list must not carry a misleading
+    # policy_known:false.
+    runtime, _store = _runtime(tmp_path)
+    payload = _policy_list(runtime)["structuredContent"]
+
+    for cell_row in payload["cells"]:
+        assert "policy_known" not in cell_row
+
+
+def test_policy_list_complex_tier_enabled_when_gates_wired(tmp_path):
+    runtime, store = _runtime(tmp_path)
+    runtime.signoff_gate = SignoffGate(
+        store, FixedClock("2026-06-02T12:00:00+00:00")
+    )
+    runtime.protected_gate = ProtectedGate(
+        store,
+        FixedClock("2026-06-02T12:00:00+00:00"),
+        _ScriptedJudge(JudgeOpinion(Verdict.ACCEPTED, "judge@protected", "ok")),
+        b"secret",
+    )
+
+    payload = _policy_list(runtime)["structuredContent"]
+    by_cell = {c["cell"]: c for c in payload["cells"]}
+
+    assert by_cell["structured"]["enabled"] is True
+    assert by_cell["protected"]["enabled"] is True
+
+
+def test_policy_list_and_policy_explain_never_disagree(tmp_path):
+    # Locks the cardinal invariant: per-cell fields in policy_list match what
+    # policy_explain reports for a policy routed to that cell (same source).
+    runtime, _store = _runtime(tmp_path)
+    runtime.cell_registry = PolicyCellRegistry(
+        default_cell="chill",
+        rules=(PolicyCellRule(pattern="review.*", cell="coached"),),
+    )
+
+    list_by_cell = {
+        c["cell"]: c for c in _policy_list(runtime)["structuredContent"]["cells"]
+    }
+
+    explain = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "policy_explain",
+                    "arguments": {"policy": "review.rationale", "entity": "src/x.py:f"},
+                },
+            }
+        ),
+        runtime,
+    )[0]["result"]["structuredContent"]
+
+    assert explain["cell"] == "coached"
+    coached = list_by_cell["coached"]
+    for field in ("enabled", "judge_inline", "self_clearable", "human_in_loop"):
+        assert coached[field] == explain[field]
 
 
 def test_override_submit_chill_records_launch_agent_and_returns_accepted_self(tmp_path):
@@ -328,6 +510,113 @@ def test_override_submit_chill_records_launch_agent_and_returns_accepted_self(tm
         "note": "self-cleared; human reviews asynchronously",
     }
     assert store.read_all()[0].payload["agent_id"] == "agent-launch"
+
+
+def test_override_submit_entity_sei_binds_on_the_sei(tmp_path):
+    # weft SEI-on-entry (L1): an agent supplies a SEI it already holds; legis
+    # verifies it alive via resolve_sei and keys the record directly on it.
+    from legis.identity.resolver import IdentityResolver
+
+    runtime, store = _runtime(tmp_path, agent_id="agent-launch")
+    runtime.cell_registry = PolicyCellRegistry(default_cell="chill")
+    runtime.identity = IdentityResolver(_FakeLoomweave(alive=True))
+
+    responses = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_submit",
+                    "arguments": {
+                        "policy": "ordinary.policy",
+                        "entity": "src/x.py:f",
+                        "entity_sei": "loomweave:eid:supplied",
+                        "rationale": "generated file; lint is not applicable",
+                    },
+                },
+            }
+        ),
+        runtime,
+    )
+
+    result = responses[0]["result"]
+    assert "isError" not in result
+    assert result["structuredContent"]["outcome"] == "ACCEPTED_SELF"
+    recorded = store.read_all()[0].payload
+    assert recorded["entity_key"] == {
+        "value": "loomweave:eid:supplied",
+        "identity_stable": True,
+    }
+    assert recorded["identity_stable"] is True
+
+
+def test_override_submit_unresolvable_entity_sei_records_nothing_with_weft_reason(tmp_path):
+    # A non-resolving entity_sei returns UNRESOLVED_INPUT (weft-reason
+    # unresolved_input {cause, fix}) and creates NOTHING — never an
+    # unbound-but-looks-bound record.
+    from legis.identity.resolver import IdentityResolver
+
+    runtime, store = _runtime(tmp_path, agent_id="agent-launch")
+    runtime.cell_registry = PolicyCellRegistry(default_cell="chill")
+    runtime.identity = IdentityResolver(_FakeLoomweave(alive=False))  # SEI not alive
+
+    responses = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_submit",
+                    "arguments": {
+                        "policy": "ordinary.policy",
+                        "entity": "src/x.py:f",
+                        "entity_sei": "loomweave:eid:dead",
+                        "rationale": "anything",
+                    },
+                },
+            }
+        ),
+        runtime,
+    )
+
+    result = responses[0]["result"]
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "UNRESOLVED_INPUT"
+    assert sc["weft_reason"]["kind"] == "unresolved_input"
+    assert sc["weft_reason"]["cause"] and sc["weft_reason"]["fix"]
+    assert store.read_all() == []  # NOTHING recorded
+
+
+def test_n3_acceptance_chill_is_reachable_keyless_via_build_runtime(tmp_path, monkeypatch):
+    # N3 (weft-df8d2ef454) acceptance branch 1: a fresh stdio launch CAN reach a
+    # configured non-secret governance surface. Pins the claim our errors/docs
+    # assert as fact — chill/coached are reachable WITHOUT LEGIS_HMAC_KEY — end to
+    # end through the real launch path (build_runtime + the lazy keyless _engine),
+    # not via an injected engine. A future change making _engine need a key would
+    # fail HERE instead of silently falsifying the "reachable keyless" promise.
+    from legis.mcp import build_runtime, call_tool
+
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    monkeypatch.delenv("LEGIS_POLICY_CELLS", raising=False)
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))  # no policy/cells.toml here
+    monkeypatch.setenv("LEGIS_DEV_DEFAULT_CELLS", "1")  # operator dev posture -> chill
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
+    runtime = build_runtime("agent-1")
+    assert runtime.protected_gate is None  # genuinely keyless launch
+
+    result = call_tool(
+        runtime,
+        "override_submit",
+        {"policy": "ordinary.policy", "entity": "src/x.py:f", "rationale": "n/a"},
+    )
+
+    assert result.get("isError") is not True
+    assert result["structuredContent"]["outcome"] == "ACCEPTED_SELF"
+    assert result["structuredContent"]["cell"] == "chill"
 
 
 def test_override_submit_idempotency_key_prevents_duplicate_records(tmp_path):
@@ -859,6 +1148,11 @@ def test_scan_route_requires_exactly_one_cell_spec_and_routes_findings(tmp_path,
     )[0]["result"]["structuredContent"]
     assert routed == {
         "outcome": "ROUTED",
+        # opp #6: scan-level posture echoed at the root (keyless + unsigned here).
+        "artifact_status": "unverified",
+        # STRIKE D (PDR-0023): the unverified posture names WHY — key-absent
+        # (verification DISABLED), distinguishable from a verification failure.
+        "artifact_status_reason": "key_absent",
         "routed": [
             {
                 "mode": "surface_override",
@@ -868,6 +1162,32 @@ def test_scan_route_requires_exactly_one_cell_spec_and_routes_findings(tmp_path,
             }
         ],
     }
+
+
+def test_scan_route_echoes_top_level_artifact_status_posture(tmp_path, monkeypatch):
+    # opp #6 / vacuous-green (same class as wardline W2): a keyless dev-grade
+    # pass must be distinguishable from a CI-signed pass at the TOP LEVEL of the
+    # response — not only buried in each routed record's provenance (and absent
+    # entirely when nothing routes). An agent relaying "governance passed" needs
+    # the posture echoed at the response root.
+    monkeypatch.setenv("LEGIS_WARDLINE_CELL", "surface_only")
+    runtime, _store = _runtime(tmp_path)
+
+    structured = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "scan_route", "arguments": {"scan": _active_scan()}},
+            }
+        ),
+        runtime,
+    )[0]["result"]["structuredContent"]
+
+    assert structured["outcome"] == "ROUTED"
+    # keyless + unsigned => dev-grade "unverified" posture, echoed at the root
+    assert structured["artifact_status"] == "unverified"
 
 
 def test_scan_route_rejects_empty_severity_map(tmp_path, monkeypatch):
@@ -918,6 +1238,42 @@ def test_scan_route_rejects_request_routing_when_server_owned(tmp_path, monkeypa
     assert result["isError"] is True
     assert result["structuredContent"]["error_code"] == "INVALID_CELL_SPEC"
     assert "server-owned" in result["structuredContent"]["message"]
+    # N3 (weft-df8d2ef454) / C-10(c): the recovery hint names the concrete
+    # enablement key, not a generic "use a valid cell configuration".
+    assert "LEGIS_WARDLINE_CELL" in result["structuredContent"]["next_action"]
+    assert store.read_all() == []
+
+
+def test_scan_route_server_owned_error_names_supplied_cell(tmp_path, monkeypatch):
+    # LEG-3(c): the SERVER_OWNED rejection must name the supplied request-side
+    # "cell" (the cell trap), not just say "server-owned".
+    monkeypatch.setenv("LEGIS_WARDLINE_CELL", "surface_only")
+    runtime, store = _runtime(tmp_path)
+
+    result = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "scan_route",
+                    "arguments": {"scan": _active_scan(), "cell": "surface_override"},
+                },
+            }
+        ),
+        runtime,
+    )[0]["result"]
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_CELL_SPEC"
+    message = result["structuredContent"]["message"]
+    assert "server-owned" in message
+    # Pin the echo CLAUSE, not the bare token: "cell" also appears in the static
+    # prose "pins the cell", so `"cell" in message` would still pass on a generic
+    # message with the supplied-args echo stripped. This phrase comes only from
+    # the supplied_request_args echo.
+    assert "arg(s) cell were rejected" in message
     assert store.read_all() == []
 
 
@@ -944,6 +1300,9 @@ def test_scan_route_defaults_to_server_owned_routing(tmp_path, monkeypatch):
     assert result["isError"] is True
     assert result["structuredContent"]["error_code"] == "INVALID_CELL_SPEC"
     assert "server-owned" in result["structuredContent"]["message"]
+    # N3 (weft-df8d2ef454) / C-10(c): the recovery hint names the concrete
+    # enablement key, not a generic "use a valid cell configuration".
+    assert "LEGIS_WARDLINE_CELL" in result["structuredContent"]["next_action"]
     assert store.read_all() == []
 
 
@@ -1041,10 +1400,10 @@ def _dirty_scan():
     }
 
 
-def test_scan_route_dirty_tree_is_amber_skip_not_red(tmp_path, monkeypatch):
+def test_scan_route_dirty_tree_is_error_skip_not_success(tmp_path, monkeypatch):
     # P1: a dirty dev artifact in the CI posture (key configured) is a typed
-    # amber SKIPPED_DIRTY_TREE outcome, NOT the generic INVALID_ARGUMENT red,
-    # and nothing is governed.
+    # dirty-tree error, not a successful scan_route result, because nothing is
+    # governed.
     monkeypatch.setenv("LEGIS_WARDLINE_ARTIFACT_KEY", "wardline-key")
     monkeypatch.setenv("LEGIS_WARDLINE_CELL", "surface_only")
     monkeypatch.delenv("LEGIS_WARDLINE_ALLOW_DIRTY", raising=False)
@@ -1062,10 +1421,11 @@ def test_scan_route_dirty_tree_is_amber_skip_not_red(tmp_path, monkeypatch):
         runtime,
     )[0]["result"]
 
-    assert result.get("isError") is not True
+    assert result["isError"] is True
     structured = result["structuredContent"]
-    assert structured["outcome"] == "SKIPPED_DIRTY_TREE"
-    assert structured["routed"] == []
+    assert structured["error_code"] == "WARDLINE_DIRTY_TREE"
+    assert "SKIPPED_DIRTY_TREE" in structured["message"]
+    assert "LEGIS_WARDLINE_ALLOW_DIRTY" in structured["next_action"]
     assert store.read_all() == []
 
 
@@ -1097,9 +1457,9 @@ def test_scan_route_dirty_tree_governs_under_devmode_optin(tmp_path, monkeypatch
 
 
 def test_scan_route_malformed_finding_is_invalid_argument_red(tmp_path, monkeypatch):
-    # The other half of the dirty-vs-malformed contract (cf. the amber test
+    # The other half of the dirty-vs-malformed contract (cf. the dirty-tree test
     # above): a malformed finding — here an unknown severity — is a generic red
-    # INVALID_ARGUMENT, NOT the amber SKIPPED_DIRTY_TREE. WardlinePayloadError is
+    # INVALID_ARGUMENT, NOT WARDLINE_DIRTY_TREE. WardlinePayloadError is
     # deliberately not a WardlineDirtyTreeError, so the boundary keeps "broken or
     # tampered scan" distinct from "commit first". Nothing is governed.
     monkeypatch.setenv("LEGIS_WARDLINE_CELL", "surface_only")
@@ -1146,7 +1506,7 @@ def test_scan_route_fail_on_threshold_routes_each_finding(tmp_path, monkeypatch)
                 "fingerprint": "fp-error",
                 "qualname": "m.error",
                 "properties": {},
-                "suppressed": "active",
+                "suppression_state": "active",
             },
             {
                 "rule_id": "PY-WL-W",
@@ -1156,7 +1516,7 @@ def test_scan_route_fail_on_threshold_routes_each_finding(tmp_path, monkeypatch)
                 "fingerprint": "fp-warn",
                 "qualname": "m.warn",
                 "properties": {},
-                "suppressed": "active",
+                "suppression_state": "active",
             },
         ]
     }
@@ -1545,6 +1905,63 @@ def test_tool_registries_are_in_sync():
     assert defined == set(_TOOL_HANDLERS) == set(_AGENT_TOOLS)
 
 
+def test_every_emitted_error_code_yields_a_nonempty_next_action():
+    # LEG-2(b): _tool_error must emit a non-empty next_action string for every
+    # error_code legis actually emits — locks the recovery hints against drift.
+    # The code set is the runtime source of truth (_recovery_for + the default
+    # fall-through codes from _service_error); update this list when codes change.
+    from legis.mcp import _tool_error
+
+    emitted_codes = (
+        # codes in _recovery_for's explicit map
+        "INVALID_ARGUMENT",
+        "INVALID_CELL_SPEC",
+        "CELL_NOT_ENABLED",
+        "NO_SUCH_REQUEST",
+        "NOT_FOUND",
+        "UNKNOWN_TOOL",
+        "AUDIT_INTEGRITY_FAILURE",
+        "GIT_ERROR",
+        "SIGNOFF_NOT_CLEARED",
+        "BINDING_UNAVAILABLE",
+        "FILIGREE_UNAVAILABLE",
+        # codes that hit the default next_action (still must be non-empty)
+        "SERVICE_ERROR",
+        "INTERNAL_ERROR",
+    )
+    for code in emitted_codes:
+        next_action = _tool_error(code, "msg")["structuredContent"]["next_action"]
+        assert isinstance(next_action, str) and next_action, code
+
+
+def test_c8_no_agent_reachable_enablement_or_signing_surface():
+    # C-8 capability confinement (red-team guard for N3/N4): the MCP surface must
+    # never expose a tool that enables a cell, provisions/sets a key, or otherwise
+    # lets an agent self-grant signing/governance authority. Enablement is an
+    # operator-only, out-of-band action (env + relaunch / CLI doctor). This pins
+    # that no such tool was introduced.
+    from legis.mcp import _TOOL_HANDLERS, tool_definitions
+
+    forbidden = ("enable", "provision", "grant", "hmac", "sign_key", "set_key")
+    for name in _TOOL_HANDLERS:
+        low = name.lower()
+        assert not any(tok in low for tok in forbidden), f"C-8: suspicious tool {name!r}"
+
+    # scan_route must not have grown a dirty-govern / key / cell-override knob:
+    # the dirty-snapshot opt-in (LEGIS_WARDLINE_ALLOW_DIRTY) and the artifact key
+    # stay env-only operator switches, never call arguments (N4 guard).
+    scan_route = next(t for t in tool_definitions() if t["name"] == "scan_route")
+    description = scan_route["description"]
+    assert "default keyless posture is governed" in description
+    assert "artifact_status=dirty" in description
+    assert "SKIPPED_DIRTY_TREE" in description
+    assert "WARDLINE_DIRTY_TREE" not in description
+    props = set(scan_route["inputSchema"]["properties"])
+    assert props == {"scan", "cell", "severity_map", "fail_on"}
+    for forbidden_arg in ("allow_dirty", "artifact_key", "hmac_key", "agent_id"):
+        assert forbidden_arg not in props
+
+
 def test_git_rename_feed_get_is_listed():
     from legis.mcp import tool_definitions
 
@@ -1571,6 +1988,73 @@ def test_filigree_closure_gate_get_is_listed():
     assert "filigree_closure_gate_get" in names
 
 
+def test_tool_error_text_content_carries_next_action():
+    # LEG-2: text-only MCP clients never see structuredContent, so the recovery
+    # hint must ride in the text content too. The "{code}: {message}" first
+    # line stays a stable prefix (clients may parse it); the remediation is
+    # appended after it.
+    from legis.mcp import _tool_error
+
+    result = _tool_error("CELL_NOT_ENABLED", "binding ledger not enabled")
+
+    text = result["content"][0]["text"]
+    assert text.startswith("CELL_NOT_ENABLED: binding ledger not enabled")
+    assert f"\nnext_action: {result['structuredContent']['next_action']}" in text
+
+
+def test_binding_ledger_not_enabled_message_names_operator_key(monkeypatch):
+    # LEG-2: the MESSAGE itself names the enabling knob (scan_route quality
+    # bar) — phrased as an operator action, never an agent one (C-8).
+    from legis.mcp import build_runtime, call_tool
+
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-1")
+
+    result = call_tool(runtime, "filigree_closure_gate_get", {"issue_id": "ISSUE-7"})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "CELL_NOT_ENABLED"
+    message = result["structuredContent"]["message"]
+    assert "LEGIS_HMAC_KEY" in message
+    assert "operator" in message
+    # The text content surfaces both the message and the recovery hint.
+    assert "LEGIS_HMAC_KEY" in result["content"][0]["text"]
+    assert "next_action:" in result["content"][0]["text"]
+
+
+def test_signoff_status_get_not_enabled_message_names_operator_key(tmp_path):
+    runtime, _store = _runtime(tmp_path)  # no signoff gate wired
+
+    result = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "signoff_status_get", "arguments": {"seq": 1}},
+            }
+        ),
+        runtime,
+    )[0]["result"]
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "CELL_NOT_ENABLED"
+    message = result["structuredContent"]["message"]
+    assert "LEGIS_HMAC_KEY" in message
+    assert "operator" in message
+
+
+def test_policy_explain_description_documents_policy_known():
+    # N-9: agents must learn the policy_known semantics from tools/list alone.
+    from legis.mcp import tool_definitions
+
+    description = next(
+        t for t in tool_definitions() if t["name"] == "policy_explain"
+    )["description"]
+    assert "policy_known" in description
+    assert "default_cell" in description
+
+
 def test_filigree_closure_gate_get_not_enabled_without_ledger(monkeypatch):
     from legis.mcp import build_runtime, call_tool
 
@@ -1582,11 +2066,13 @@ def test_filigree_closure_gate_get_not_enabled_without_ledger(monkeypatch):
     # NotEnabledError is mapped to an error envelope, not raised.
     assert result["isError"] is True
     assert result["structuredContent"]["error_code"] == "CELL_NOT_ENABLED"
-    # Le1 (weft-f506e5f845): the recovery hint must name the concrete
-    # enablement path, not a vague "ask the operator". Every governance cell
-    # is wired behind LEGIS_HMAC_KEY in build_runtime.
+    # Le1 (weft-f506e5f845) + N3 (weft-df8d2ef454): the recovery hint names the
+    # concrete enablement path for BOTH axes — the simple tier (policy-cell
+    # definitions, keyless) and the complex tier (the operator-held key).
     next_action = result["structuredContent"]["next_action"]
-    assert "LEGIS_HMAC_KEY" in next_action
+    assert "LEGIS_HMAC_KEY" in next_action  # complex tier (Le1, preserved)
+    # simple tier: chill/coached are reachable keyless via the policy-cell config
+    assert "LEGIS_POLICY_CELLS" in next_action or "policy/cells.toml" in next_action
 
 
 def test_filigree_closure_gate_get_surfaces_integrity_failure(monkeypatch, tmp_path):
@@ -1727,3 +2213,994 @@ def test_service_error_does_not_log_expected_typed_errors(caplog):
 
     assert result["structuredContent"]["error_code"] == "NOT_FOUND"
     assert not caplog.records
+
+
+# --- legis-428f05c9ca: signoff_bind_issue + binding read over pure MCP ---
+
+class _FakeFiligree:
+    def __init__(self):
+        self.attached = []
+
+    def attach(self, issue_id, entity_id, content_hash, *, actor,
+               signoff_seq=None, signature=None):
+        self.attached.append(
+            (issue_id, entity_id, content_hash, actor, signoff_seq, signature)
+        )
+        return {"issue_id": issue_id, "loomweave_entity_id": entity_id,
+                "content_hash_at_attach": content_hash, "attached_at": "t",
+                "attached_by": actor}
+
+    def associations_for_entity(self, entity_id):
+        return []
+
+
+def _bind_runtime(tmp_path, *, with_ledger=True):
+    from legis.governance.binding_ledger import BindingLedger
+
+    runtime, store = _runtime(tmp_path)
+    clock = FixedClock("2026-06-02T12:00:00+00:00")
+    runtime.signoff_gate = SignoffGate(store, clock)
+    runtime.filigree = _FakeFiligree()
+    if with_ledger:
+        runtime.binding_ledger = BindingLedger(
+            AuditStore(f"sqlite:///{tmp_path / 'bind.db'}"), clock, key=b"ledger-key"
+        )
+    runtime.binding_key = b"bind-key"
+    return runtime, store
+
+
+def _cleared_sei_request(gate, *, content_hash="blake3"):
+    req = gate.request(
+        policy="prod-deploy",
+        entity_key=EntityKey.from_sei("loomweave:eid:abc"),
+        rationale="needs a human",
+        agent_id="agent-1",
+        extensions={"loomweave": {"content_hash": content_hash, "alive": True,
+                                  "lineage_snapshot": None}},
+    )
+    gate.sign_off(request_seq=req.seq, operator_id="op-1")
+    return req
+
+
+def test_signoff_bind_issue_is_listed():
+    from legis.mcp import tool_definitions
+
+    names = {t["name"] for t in tool_definitions()}
+    assert "signoff_bind_issue" in names
+    # The sign itself stays operator-only, off the agent surface (locked decision).
+    assert "signoff_sign" not in names
+
+
+def test_signoff_bind_issue_completes_the_pure_mcp_closure_flow(tmp_path):
+    # The legis-428f05c9ca acceptance: REQUEST (override_submit, covered
+    # elsewhere) -> poll -> BIND -> closure gate green, all over MCP tools only.
+    from legis.mcp import call_tool
+
+    runtime, _store = _bind_runtime(tmp_path)
+    req = _cleared_sei_request(runtime.signoff_gate)
+
+    bound = call_tool(
+        runtime, "signoff_bind_issue", {"seq": req.seq, "issue_id": "ISSUE-1"}
+    )
+    assert not bound.get("isError")
+    payload = bound["structuredContent"]
+    assert payload["binding_seq"] == 1
+    assert payload["signoff_seq"] == req.seq
+    # The SEI and content_hash come from the recorded, CLEARED sign-off — never
+    # from the caller (same governed sourcing as the HTTP bind-issue route).
+    issue_id, entity_id, chash, actor, seq, signature = runtime.filigree.attached[0]
+    assert (issue_id, entity_id, chash, actor, seq) == (
+        "ISSUE-1", "loomweave:eid:abc", "blake3", "legis", req.seq
+    )
+    assert signature is not None  # binding_key wired -> signed attestation
+
+    # The binding read rides in signoff_status_get's cleared payload.
+    status = call_tool(runtime, "signoff_status_get", {"seq": req.seq})
+    status_payload = status["structuredContent"]
+    assert status_payload["cleared"] is True
+    assert status_payload["binding"]["issue_id"] == "ISSUE-1"
+    assert status_payload["binding"]["entity_key"]["value"] == "loomweave:eid:abc"
+    assert status_payload["binding"]["content_hash"] == "blake3"
+
+    # And the Filigree closure gate goes green — the flow is completable.
+    gate = call_tool(runtime, "filigree_closure_gate_get", {"issue_id": "ISSUE-1"})
+    assert gate["structuredContent"]["allowed"] is True
+
+
+def test_signoff_status_get_cleared_payload_reports_unbound_as_null(tmp_path):
+    # Ledger wired but nothing bound yet: binding is an explicit null, so an
+    # agent can tell "not bound yet" from "no ledger on this deployment"
+    # (key omitted entirely — pinned by the exact-equality assertion in
+    # test_override_submit_structured_escalates_and_status_poll_reflects_signoff).
+    from legis.mcp import call_tool
+
+    runtime, _store = _bind_runtime(tmp_path)
+    req = _cleared_sei_request(runtime.signoff_gate)
+
+    status = call_tool(runtime, "signoff_status_get", {"seq": req.seq})
+    payload = status["structuredContent"]
+    assert payload["cleared"] is True
+    assert payload["binding"] is None
+
+
+def test_signoff_bind_issue_rejects_uncleared_request_with_poll_guidance(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _bind_runtime(tmp_path)
+    req = runtime.signoff_gate.request(
+        policy="prod-deploy",
+        entity_key=EntityKey.from_sei("loomweave:eid:abc"),
+        rationale="needs a human",
+        agent_id="agent-1",
+    )
+
+    result = call_tool(
+        runtime, "signoff_bind_issue", {"seq": req.seq, "issue_id": "ISSUE-1"}
+    )
+
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "SIGNOFF_NOT_CLEARED"
+    assert sc["recoverable"] is True
+    assert "signoff_status_get" in sc["next_action"]
+    assert runtime.filigree.attached == []
+
+
+def test_signoff_bind_issue_unknown_seq_is_no_such_request(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _bind_runtime(tmp_path)
+
+    result = call_tool(runtime, "signoff_bind_issue", {"seq": 99, "issue_id": "I-1"})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "NO_SUCH_REQUEST"
+    assert runtime.filigree.attached == []
+
+
+def test_signoff_bind_issue_locator_keyed_signoff_is_binding_unavailable(tmp_path):
+    # ADR-0003: a locator-keyed (non-SEI) sign-off fails closed rather than
+    # recording a rename-fragile binding. Typed amber, not INTERNAL_ERROR.
+    from legis.mcp import call_tool
+
+    runtime, _store = _bind_runtime(tmp_path)
+    req = runtime.signoff_gate.request(
+        policy="prod-deploy",
+        entity_key=EntityKey.from_locator("python:function:m.f"),
+        rationale="needs a human",
+        agent_id="agent-1",
+    )
+    runtime.signoff_gate.sign_off(request_seq=req.seq, operator_id="op-1")
+
+    result = call_tool(
+        runtime, "signoff_bind_issue", {"seq": req.seq, "issue_id": "ISSUE-1"}
+    )
+
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "BINDING_UNAVAILABLE"
+    assert runtime.filigree.attached == []
+
+
+def test_signoff_bind_issue_uses_sei_backfill_for_locator_keyed_request(tmp_path):
+    # The recovery half of ADR-0003: a SEI_BACKFILL event resolves the locator
+    # to a stable identity and the bind succeeds with the backfilled SEI.
+    from legis.mcp import call_tool
+
+    runtime, store = _bind_runtime(tmp_path)
+    req = runtime.signoff_gate.request(
+        policy="prod-deploy",
+        entity_key=EntityKey.from_locator("python:function:m.f"),
+        rationale="needs a human",
+        agent_id="agent-1",
+    )
+    runtime.signoff_gate.sign_off(request_seq=req.seq, operator_id="op-1")
+    store.append(
+        {
+            "event": "SEI_BACKFILL",
+            "original_seq": req.seq,
+            "entity_key": EntityKey.from_sei("loomweave:eid:abc").to_dict(),
+            "identity_stable": True,
+            "agent_id": "legis-sei-backfill",
+            "recorded_at": "2026-06-04T12:00:00+00:00",
+            "extensions": {
+                "loomweave": {
+                    "alive": True,
+                    "content_hash": "hash-abc",
+                    "lineage_snapshot": {"length": 1, "hash": "lineage"},
+                    "identity_resolution_status": "resolved",
+                    "lineage_snapshot_status": "verified",
+                },
+                "backfill": {
+                    "source": "pre_sei_locator",
+                    "original_seq": req.seq,
+                    "original_entity_key": EntityKey.from_locator(
+                        "python:function:m.f"
+                    ).to_dict(),
+                },
+            },
+        }
+    )
+
+    result = call_tool(
+        runtime, "signoff_bind_issue", {"seq": req.seq, "issue_id": "ISSUE-1"}
+    )
+
+    assert not result.get("isError")
+    issue_id, entity_id, chash, _actor, _seq, _sig = runtime.filigree.attached[0]
+    assert (issue_id, entity_id, chash) == ("ISSUE-1", "loomweave:eid:abc", "hash-abc")
+
+
+def test_signoff_bind_issue_without_filigree_names_operator_knob(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _bind_runtime(tmp_path)
+    runtime.filigree = None
+
+    result = call_tool(runtime, "signoff_bind_issue", {"seq": 1, "issue_id": "I-1"})
+
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "CELL_NOT_ENABLED"
+    # LEG-2: the message names the operator knob, phrased as an operator action.
+    assert "FILIGREE_API_URL" in sc["message"]
+    assert "operator" in sc["message"]
+
+
+def test_signoff_bind_issue_without_signoff_gate_names_operator_key(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # no signoff gate wired
+    runtime.filigree = _FakeFiligree()
+
+    result = call_tool(runtime, "signoff_bind_issue", {"seq": 1, "issue_id": "I-1"})
+
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "CELL_NOT_ENABLED"
+    assert "LEGIS_HMAC_KEY" in sc["message"]
+
+
+def test_signoff_bind_issue_fails_closed_on_tampered_signed_signoff(tmp_path):
+    # Same fail-closed property the HTTP route has: a tampered signed sign-off
+    # trail is an AUDIT_INTEGRITY_FAILURE and nothing is attached to Filigree.
+    from legis.mcp import call_tool
+
+    runtime, _store = _bind_runtime(tmp_path)
+    db = tmp_path / "gov.db"
+    gate = SignoffGate(
+        AuditStore(f"sqlite:///{db}"),
+        FixedClock("2026-06-02T12:00:00+00:00"),
+        signer=True,
+        key=KEY,
+    )
+    runtime.signoff_gate = gate
+    runtime.trail_verifier = TrailVerifier(KEY, frozenset())
+    req = _cleared_sei_request(gate)
+    _tamper_first_record_and_rechain(
+        db,
+        lambda p: p["extensions"]["loomweave"].update({"content_hash": "forged"}),
+    )
+
+    result = call_tool(
+        runtime, "signoff_bind_issue", {"seq": req.seq, "issue_id": "ISSUE-1"}
+    )
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "AUDIT_INTEGRITY_FAILURE"
+    assert runtime.filigree.attached == []
+
+
+def test_signoff_bind_issue_filigree_transport_failure_is_typed(tmp_path):
+    # A Filigree that is down/unreachable is an expected operational state for
+    # an agent — a typed, recoverable error, not INTERNAL_ERROR.
+    from legis.filigree.client import FiligreeError
+    from legis.mcp import call_tool
+
+    class _DownFiligree:
+        def attach(self, *a, **kw):
+            raise FiligreeError("POST http://filigree/attach failed: refused")
+
+        def associations_for_entity(self, entity_id):
+            return []
+
+    runtime, _store = _bind_runtime(tmp_path)
+    runtime.filigree = _DownFiligree()
+    req = _cleared_sei_request(runtime.signoff_gate)
+
+    result = call_tool(
+        runtime, "signoff_bind_issue", {"seq": req.seq, "issue_id": "ISSUE-1"}
+    )
+
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "FILIGREE_UNAVAILABLE"
+    assert sc["recoverable"] is True
+
+
+def test_build_runtime_wires_filigree_and_binding_key_from_env(tmp_path, monkeypatch):
+    from legis.filigree.client import HttpFiligreeClient
+    from legis.mcp import build_runtime
+
+    monkeypatch.setenv("LEGIS_HMAC_KEY", "secret")
+    monkeypatch.setenv("FILIGREE_API_URL", "http://localhost:8971")
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov-env.db'}")
+    monkeypatch.setenv("LEGIS_BINDING_DB", f"sqlite:///{tmp_path / 'bind-env.db'}")
+
+    runtime = build_runtime("agent-launch")
+
+    assert isinstance(runtime.filigree, HttpFiligreeClient)
+    assert runtime.binding_key == b"secret"
+
+
+def test_build_runtime_leaves_filigree_unwired_without_env(tmp_path, monkeypatch):
+    from legis.mcp import build_runtime
+
+    monkeypatch.delenv("FILIGREE_API_URL", raising=False)
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+
+    runtime = build_runtime("agent-launch")
+
+    assert runtime.filigree is None
+    assert runtime.binding_key is None
+
+
+# --- legis-62c7c58ae4: SEI lineage-honesty reads over MCP ---
+
+class _FakeLoomweave:
+    """Duck-typed LoomweaveIdentity read client (mirrors tests/api FakeClient)."""
+
+    def __init__(self, lineage=None, alive=True):
+        self._lineage = lineage or []
+        self._alive = alive
+
+    def capability(self):
+        return True
+
+    def resolve_locator(self, locator):
+        return {"sei": "loomweave:eid:abc123", "current_locator": locator,
+                "content_hash": "h", "alive": True}
+
+    def resolve_sei(self, sei):
+        if self._alive:
+            return {"sei": sei, "alive": True}
+        return {"sei": sei, "alive": False, "lineage": [{"event": "orphaned"}]}
+
+    def lineage(self, sei):
+        return self._lineage
+
+
+def _sei_record(sei="loomweave:eid:abc123", *, loomweave_ext=None):
+    payload = {
+        "policy": "no-eval",
+        "entity_key": {"value": sei, "identity_stable": True},
+        "agent_id": "agent-1",
+        "rationale": "reviewed",
+    }
+    if loomweave_ext is not None:
+        payload["extensions"] = {"loomweave": loomweave_ext}
+    return payload
+
+
+def test_lineage_honesty_read_tools_are_listed():
+    from legis.mcp import tool_definitions
+
+    names = {t["name"] for t in tool_definitions()}
+    assert "identity_gap_list" in names
+    assert "lineage_integrity_get" in names
+
+
+def test_identity_gap_list_unwired_loomweave_is_unavailable_not_empty_green(tmp_path):
+    # GOV-2: a bare [] when Loomweave is unwired would read as an all-clear on
+    # exactly the condition the tool exists to catch. status must say so.
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # no identity resolver wired
+
+    result = call_tool(runtime, "identity_gap_list", {})
+
+    assert not result.get("isError")
+    assert result["structuredContent"] == {
+        "status": "unavailable",
+        "gaps": [],
+        "unavailable": [{"reason": "loomweave client not configured"}],
+    }
+
+
+def test_lineage_integrity_get_unwired_loomweave_is_unavailable_not_verified(tmp_path):
+    # GOV-1 twin of the above for the lineage read.
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+
+    result = call_tool(runtime, "lineage_integrity_get", {})
+
+    assert not result.get("isError")
+    assert result["structuredContent"] == {
+        "status": "unavailable",
+        "divergences": [],
+        "unavailable": [{"reason": "loomweave client not configured"}],
+    }
+
+
+def test_identity_gap_list_surfaces_orphaned_attestation(tmp_path):
+    from legis.identity.resolver import IdentityResolver
+    from legis.mcp import call_tool
+
+    runtime, store = _runtime(tmp_path)
+    runtime.identity = IdentityResolver(_FakeLoomweave(alive=False))
+    store.append(_sei_record())
+
+    result = call_tool(runtime, "identity_gap_list", {})
+
+    payload = result["structuredContent"]
+    assert payload["status"] == "checked"
+    assert payload["gaps"] == [
+        {"sei": "loomweave:eid:abc123", "reason": "orphaned",
+         "lineage": [{"event": "orphaned"}]}
+    ]
+
+
+def test_lineage_integrity_get_three_way_status_precedence(tmp_path):
+    # GOV-1: diverged > unverified > verified — a divergence is never masked by
+    # an unavailable sibling, and unavailable is never reported verified.
+    from legis.identity.resolver import IdentityResolver
+    from legis.mcp import call_tool
+
+    lineage = [{"event": "born"}]
+    runtime, store = _runtime(tmp_path)
+    runtime.identity = IdentityResolver(_FakeLoomweave(lineage=lineage))
+
+    # verified: snapshot is a prefix of the current lineage
+    store.append(_sei_record(loomweave_ext={
+        "lineage_snapshot": {"length": 1, "hash": content_hash(lineage)},
+    }))
+    verified = call_tool(runtime, "lineage_integrity_get", {})["structuredContent"]
+    assert verified == {"status": "verified", "divergences": [], "unavailable": []}
+
+    # unverified: a second SEI recorded with no snapshot
+    store.append(_sei_record("loomweave:eid:nosnap", loomweave_ext={
+        "lineage_snapshot": None, "lineage_snapshot_status": "unavailable",
+    }))
+    unverified = call_tool(runtime, "lineage_integrity_get", {})["structuredContent"]
+    assert unverified["status"] == "unverified"
+    assert unverified["divergences"] == []
+    assert unverified["unavailable"] == [
+        {"sei": "loomweave:eid:nosnap", "reason": "unavailable"}
+    ]
+
+    # diverged beats unverified: a third SEI whose recorded prefix no longer holds
+    store.append(_sei_record("loomweave:eid:diverged", loomweave_ext={
+        "lineage_snapshot": {"length": 1, "hash": "not-the-recorded-prefix"},
+    }))
+    diverged = call_tool(runtime, "lineage_integrity_get", {})["structuredContent"]
+    assert diverged["status"] == "diverged"
+    assert diverged["divergences"] == [
+        {"sei": "loomweave:eid:diverged", "recorded_length": 1, "current_length": 1}
+    ]
+    assert diverged["unavailable"] == [
+        {"sei": "loomweave:eid:nosnap", "reason": "unavailable"}
+    ]
+
+
+def test_identity_gap_list_reads_trail_on_fresh_runtime(tmp_path, monkeypatch):
+    # The keyless trail is read through the lazily-initialised engine store, so
+    # the result is not call-order-dependent (same bug class as the
+    # pull_request_get fresh-runtime fix): a fresh runtime must see records an
+    # earlier session persisted, not report a hollow zero-gap green.
+    from legis.identity.resolver import IdentityResolver
+    from legis.mcp import McpRuntime, call_tool
+
+    db = f"sqlite:///{tmp_path / 'gov.db'}"
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", db)
+    AuditStore(db).append(_sei_record())
+    runtime = McpRuntime(
+        agent_id="agent-1",
+        initialized=True,
+        identity=IdentityResolver(_FakeLoomweave(alive=False)),
+    )
+
+    result = call_tool(runtime, "identity_gap_list", {})
+
+    payload = result["structuredContent"]
+    assert payload["status"] == "checked"
+    assert [g["sei"] for g in payload["gaps"]] == ["loomweave:eid:abc123"]
+
+
+def test_lineage_honesty_reads_fail_closed_on_tampered_protected_trail(tmp_path):
+    # Same fail-closed property as the HTTP routes (tampered trail -> 500): the
+    # reads consume the VERIFIED trail, never a tampered one.
+    from legis.identity.resolver import IdentityResolver
+    from legis.mcp import call_tool
+
+    db = tmp_path / "gov.db"
+    store = AuditStore(f"sqlite:///{db}")
+    gate = ProtectedGate(
+        store,
+        FixedClock("2026-06-02T12:00:00+00:00"),
+        judge=_ScriptedJudge(JudgeOpinion(Verdict.ACCEPTED, "judge@1", "ok")),
+        key=KEY,
+    )
+    gate.submit(
+        policy="no-eval",
+        entity_key=EntityKey.from_locator("src/x.py:f"),
+        rationale="original",
+        agent_id="agent-launch",
+        file_fingerprint="fp",
+        ast_path="ap",
+    )
+    _tamper_first_record_and_rechain(db, lambda p: p.update({"rationale": "FORGED"}))
+
+    runtime, _unused = _runtime(tmp_path)
+    runtime.engine = None
+    runtime.protected_gate = gate
+    runtime.trail_verifier = TrailVerifier(KEY, frozenset({"no-eval"}))
+    runtime.identity = IdentityResolver(_FakeLoomweave())
+
+    for tool in ("identity_gap_list", "lineage_integrity_get"):
+        result = call_tool(runtime, tool, {})
+        assert result["isError"] is True, tool
+        assert result["structuredContent"]["error_code"] == "AUDIT_INTEGRITY_FAILURE"
+
+
+# --- legis-e5c57dedd1: check_report write + pull_request_record named decision ---
+
+def test_check_report_records_launch_bound_agent_and_reads_back(tmp_path):
+    from legis.mcp import call_tool
+
+    checks = CheckSurface(f"sqlite:///{tmp_path / 'checks.db'}")
+    runtime, _store = _runtime(tmp_path, agent_id="agent-ci", check_surface=checks)
+
+    result = call_tool(runtime, "check_report", {
+        "check_name": "pytest",
+        "run_id": "run-1",
+        "commit_sha": "c" * 40,
+        "outcome": "fail",
+        "branch": "rc5",
+        "pr": 7,
+    })
+
+    assert not result.get("isError")
+    payload = result["structuredContent"]
+    assert payload["check_name"] == "pytest"
+    assert payload["outcome"] == "fail"
+    # Attribution is the launch-bound agent_id (stronger than the HTTP writer
+    # token), never a call argument.
+    assert payload["recorded_by"] == "agent-ci"
+    # Q-M2 honesty: a recorded check is a writer-supplied claim, not a
+    # forge-attested fact — the recorder sees that posture in the result.
+    assert payload["provenance"] == "unauthenticated"
+
+    listed = call_tool(runtime, "check_list", {"target_type": "pr", "target": "7"})
+    assert [c["run_id"] for c in listed["structuredContent"]["checks"]] == ["run-1"]
+    by_commit = call_tool(
+        runtime, "check_list", {"target_type": "commit", "target": "c" * 40}
+    )
+    assert [c["run_id"] for c in by_commit["structuredContent"]["checks"]] == ["run-1"]
+
+
+def test_check_report_rejects_unknown_outcome_without_recording(tmp_path):
+    from legis.mcp import call_tool
+
+    checks = CheckSurface(f"sqlite:///{tmp_path / 'checks.db'}")
+    runtime, _store = _runtime(tmp_path, check_surface=checks)
+
+    result = call_tool(runtime, "check_report", {
+        "check_name": "pytest", "run_id": "run-1",
+        "commit_sha": "c" * 40, "outcome": "green",
+    })
+
+    assert result["isError"] is True
+    sc = result["structuredContent"]
+    assert sc["error_code"] == "INVALID_ARGUMENT"
+    # The message names the valid vocabulary (LEG-2 quality bar).
+    for valid in ("pass", "fail", "skipped", "timeout"):
+        assert valid in sc["message"]
+    assert checks.for_commit("c" * 40) == []
+
+
+def test_check_report_rejects_caller_supplied_identity(tmp_path):
+    # The launch-binding is the attribution; identity-shaped arguments are
+    # rejected as unexpected keys, same as every other tool on the surface.
+    from legis.mcp import call_tool
+
+    checks = CheckSurface(f"sqlite:///{tmp_path / 'checks.db'}")
+    runtime, _store = _runtime(tmp_path, check_surface=checks)
+
+    for forged in ({"agent_id": "someone-else"}, {"recorded_by": "someone-else"}):
+        result = call_tool(runtime, "check_report", {
+            "check_name": "pytest", "run_id": "run-1",
+            "commit_sha": "c" * 40, "outcome": "pass", **forged,
+        })
+        assert result["isError"] is True, forged
+        assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+    assert checks.for_commit("c" * 40) == []
+
+
+def test_check_report_records_on_fresh_runtime(tmp_path, monkeypatch):
+    # The check surface lazily initialises from LEGIS_CHECK_DB on a fresh
+    # runtime (build_runtime leaves it None) — recording must not depend on
+    # some other tool having initialised the surface first.
+    from legis.mcp import McpRuntime, call_tool
+
+    db = f"sqlite:///{tmp_path / 'checks.db'}"
+    monkeypatch.setenv("LEGIS_CHECK_DB", db)
+    runtime = McpRuntime(agent_id="agent-fresh", initialized=True)
+
+    result = call_tool(runtime, "check_report", {
+        "check_name": "ruff", "run_id": "run-9",
+        "commit_sha": "d" * 40, "outcome": "pass",
+    })
+
+    assert not result.get("isError")
+    recorded = CheckSurface(db).for_commit("d" * 40)
+    assert [r.run_id for r in recorded] == ["run-9"]
+    assert recorded[0].recorded_by == "agent-fresh"
+
+
+# --- legis-72d4e85d05: override-trail read (override_list) ---
+# --- legis-8587a1f2c0: report-only doctor_get ---
+# --- legis-716d4934e7: policy_boundary_check in the authoring loop ---
+
+
+def test_gap_analysis_read_tools_are_listed():
+    from legis.mcp import tool_definitions
+
+    names = {t["name"] for t in tool_definitions()}
+    assert {"override_list", "doctor_get", "policy_boundary_check"} <= names
+
+
+def test_override_list_returns_verified_trail_with_seq(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.engine.submit_override(
+        policy="p.a",
+        entity_key=EntityKey.from_locator("src/a.py:f"),
+        rationale="r1",
+        agent_id="agent-launch",
+    )
+    runtime.engine.submit_override(
+        policy="p.b",
+        entity_key=EntityKey.from_locator("src/b.py:g"),
+        rationale="r2",
+        agent_id="other-agent",
+    )
+
+    result = call_tool(runtime, "override_list", {})
+
+    assert not result.get("isError")
+    overrides = result["structuredContent"]["overrides"]
+    assert [o["policy"] for o in overrides] == ["p.a", "p.b"]
+    # seq is the poll/idempotency handle other tools speak (signoff_status_get,
+    # override_submit responses) — the read must carry it.
+    assert [o["seq"] for o in overrides] == [1, 2]
+    assert overrides[0]["agent_id"] == "agent-launch"
+    assert overrides[0]["entity_key"]["value"] == "src/a.py:f"
+
+
+def test_override_list_filters_by_policy_entity_and_agent(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+    for policy, entity, agent in (
+        ("p.a", "src/a.py:f", "agent-launch"),
+        ("p.b", "src/b.py:g", "agent-launch"),
+        ("p.a", "src/b.py:g", "other-agent"),
+    ):
+        runtime.engine.submit_override(
+            policy=policy,
+            entity_key=EntityKey.from_locator(entity),
+            rationale="r",
+            agent_id=agent,
+        )
+
+    by_policy = call_tool(runtime, "override_list", {"policy": "p.a"})
+    assert [o["seq"] for o in by_policy["structuredContent"]["overrides"]] == [1, 3]
+
+    by_entity = call_tool(runtime, "override_list", {"entity": "src/b.py:g"})
+    assert [o["seq"] for o in by_entity["structuredContent"]["overrides"]] == [2, 3]
+
+    # The filter is "submitted_by", never "agent_id" — no tool schema accepts
+    # an agent_id argument (launch-binding invariant); this filters the
+    # RECORDED agent_id, it does not assert caller identity.
+    by_agent = call_tool(runtime, "override_list", {"submitted_by": "other-agent"})
+    assert [o["seq"] for o in by_agent["structuredContent"]["overrides"]] == [3]
+
+    combined = call_tool(
+        runtime, "override_list", {"policy": "p.a", "submitted_by": "agent-launch"}
+    )
+    assert [o["seq"] for o in combined["structuredContent"]["overrides"]] == [1]
+
+
+def test_override_list_reads_trail_on_fresh_runtime(tmp_path, monkeypatch):
+    # Same bug class as the pull_request_get fresh-runtime fix: a fresh
+    # build_runtime-shaped runtime (engine=None) must lazily open the
+    # governance store, not report an empty trail that an agent would read as
+    # "never overridden before".
+    from legis.mcp import McpRuntime, call_tool
+
+    db = f"sqlite:///{tmp_path / 'gov.db'}"
+    engine = EnforcementEngine(AuditStore(db), FixedClock("2026-06-02T12:00:00+00:00"))
+    engine.submit_override(
+        policy="p.a",
+        entity_key=EntityKey.from_locator("src/a.py:f"),
+        rationale="r",
+        agent_id="agent-earlier",
+    )
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", db)
+    runtime = McpRuntime(agent_id="agent-fresh", initialized=True)
+
+    result = call_tool(runtime, "override_list", {})
+
+    overrides = result["structuredContent"]["overrides"]
+    assert [o["policy"] for o in overrides] == ["p.a"]
+    assert overrides[0]["agent_id"] == "agent-earlier"
+
+
+def test_override_list_fails_closed_on_rechained_protected_tamper(tmp_path):
+    # Same verified-records-only honesty as GET /overrides: a tampered
+    # protected trail is AUDIT_INTEGRITY_FAILURE, never silently read.
+    from legis.mcp import call_tool
+
+    db = tmp_path / "gov.db"
+    store = AuditStore(f"sqlite:///{db}")
+    gate = ProtectedGate(
+        store,
+        FixedClock("2026-06-02T12:00:00+00:00"),
+        judge=_ScriptedJudge(JudgeOpinion(Verdict.ACCEPTED, "judge@1", "ok")),
+        key=KEY,
+    )
+    gate.submit(
+        policy="no-eval",
+        entity_key=EntityKey.from_locator("src/x.py:f"),
+        rationale="original",
+        agent_id="agent-launch",
+        file_fingerprint="fp",
+        ast_path="ap",
+    )
+    _tamper_first_record_and_rechain(db, lambda p: p.update({"rationale": "FORGED"}))
+    assert store.verify_integrity() is True
+
+    runtime, _unused = _runtime(tmp_path)
+    runtime.engine = None
+    runtime.protected_gate = gate
+    runtime.trail_verifier = TrailVerifier(KEY, frozenset({"no-eval"}))
+
+    result = call_tool(runtime, "override_list", {})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "AUDIT_INTEGRITY_FAILURE"
+
+
+def test_doctor_get_returns_the_same_json_payload_the_cli_emits(tmp_path):
+    from legis.doctor import collect_checks, render_json
+    from legis.mcp import McpRuntime, call_tool
+
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "doctor_get", {})
+
+    assert not result.get("isError")
+    payload = result["structuredContent"]
+    assert payload == json.loads(render_json(collect_checks(tmp_path, repair=False)))
+    # A bare directory is missing every install artifact — the read must say so.
+    assert payload["ok"] is False
+    assert payload["next_actions"]
+
+
+def test_doctor_get_is_report_only_and_never_repairs(tmp_path):
+    # C-8: repairs stay operator/CLI (`legis doctor --fix`); the MCP read must
+    # not write anything and must not expose a repair knob.
+    from legis.mcp import McpRuntime, call_tool, tool_definitions
+
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "doctor_get", {})
+
+    assert list(tmp_path.iterdir()) == []  # nothing created or repaired
+    assert not any(c["fixed"] for c in result["structuredContent"]["checks"])
+
+    tool = next(t for t in tool_definitions() if t["name"] == "doctor_get")
+    assert tool["inputSchema"]["properties"] == {}
+    assert "report-only" in tool["description"].lower()
+    for forbidden_arg in ("fix", "repair", "root"):
+        assert forbidden_arg not in tool["inputSchema"]["properties"]
+
+
+def test_policy_boundary_check_pass_on_clean_tree(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "clean.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "policy_boundary_check", {})
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "PASS"
+    assert payload["findings"] == []
+    # The result now echoes what was scanned so a wrong-but-existing default root
+    # is visible rather than silently trusted.
+    assert payload["scanned_root"] == str(src)
+    assert payload["repo_root"] == str(tmp_path)
+
+
+def test_policy_boundary_check_reports_findings(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "guarded.py").write_text(
+        '@policy_boundary(suppresses=("no-eval",))\n'
+        "def f():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "policy_boundary_check", {})
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "FINDINGS"
+    assert payload["findings"][0]["rule_id"] == "POLICY_BOUNDARY_TEST_REF_MISSING"
+    assert payload["findings"][0]["qualname"] == "f"
+    assert payload["findings"][0]["file_path"] == "src/guarded.py"
+
+
+def test_policy_boundary_check_resolves_relative_roots_against_repo_root(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    lib = tmp_path / "pkg" / "lib"
+    lib.mkdir(parents=True)
+    (lib / "x.py").write_text(
+        '@policy_boundary(suppresses=("no-eval",))\n'
+        "def g():\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(
+        runtime, "policy_boundary_check", {"root": "lib", "repo_root": "pkg"}
+    )
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "FINDINGS"
+    assert payload["findings"][0]["file_path"] == "lib/x.py"
+
+
+# --- fix/legis-policy-boundary-no-vacuous-pass: never PASS on a zero-file scan ---
+# Friction D (cf. weft-ef2e898642 silent-clean-on-zero-scope): a governance gate
+# that returns PASS/findings=[] when the resolved scan root is nonexistent or
+# holds zero analyzable source files is a vacuous green. The surface must return
+# a DISTINCT discriminated outcome (NO_ROOT), never PASS.
+
+
+def test_policy_boundary_check_no_root_when_default_src_missing(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    # repo_root resolves to tmp_path (no src/ layout) -> default <repo_root>/src
+    # does not exist. Must NOT read as a clean PASS.
+    (tmp_path / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "policy_boundary_check", {})
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "NO_ROOT"
+    assert payload["findings"] == []
+    assert "scanned_root" in payload
+
+
+def test_policy_boundary_check_no_root_when_root_has_zero_source_files(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    # The root EXISTS but contains zero analyzable .py files. Scanning it yields
+    # zero findings, which must NOT collapse to PASS.
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "README.md").write_text("# docs only, no python\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(runtime, "policy_boundary_check", {})
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "NO_ROOT"
+    assert payload["findings"] == []
+
+
+def test_policy_boundary_check_no_root_when_explicit_root_nonexistent(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    result = call_tool(
+        runtime, "policy_boundary_check", {"root": str(tmp_path / "nope")}
+    )
+
+    payload = result["structuredContent"]
+    assert payload["outcome"] == "NO_ROOT"
+    assert payload["findings"] == []
+    assert str(tmp_path / "nope") in payload["scanned_root"]
+
+
+def test_policy_boundary_check_outcome_schema_includes_no_root():
+    from legis.mcp import tool_definitions
+
+    tool = next(t for t in tool_definitions() if t["name"] == "policy_boundary_check")
+    enum = tool["outputSchema"]["properties"]["outcome"]["enum"]
+    assert set(enum) == {"PASS", "FINDINGS", "NO_ROOT"}
+
+
+# --- legis-1611d1673f: pull_request_get number schema/handler type agreement ---
+# --- legis-40a0ff7799: check_list.target_type enum discoverability ---
+
+
+def test_pull_request_get_number_schema_is_integer_like_seq():
+    # Schema/impl agreement: the handler runs _require_int, so the advertised
+    # schema must say integer (minimum 1) — exactly like signoff_status_get.seq.
+    from legis.mcp import tool_definitions
+
+    by_name = {t["name"]: t for t in tool_definitions()}
+    number = by_name["pull_request_get"]["inputSchema"]["properties"]["number"]
+    seq = by_name["signoff_status_get"]["inputSchema"]["properties"]["seq"]
+    assert number == seq == {"type": "integer", "minimum": 1}
+
+
+def test_pull_request_get_accepts_schema_faithful_integer(tmp_path):
+    # A schema-faithful client sends an int; the legacy "7" string coercion is
+    # covered by test_read_tools_return_git_pull_checks_and_override_rate.
+    from legis.mcp import call_tool
+
+    pulls = PullSurface(f"sqlite:///{tmp_path / 'pulls.db'}")
+    pulls.record(
+        PullRequest(
+            number=7,
+            title="Feature",
+            base="main",
+            head="feature",
+            state=PullRequestState.OPEN,
+        )
+    )
+    runtime, _store = _runtime(
+        tmp_path, check_surface=CheckSurface(f"sqlite:///{tmp_path / 'checks.db'}")
+    )
+    runtime.pull_surface = pulls
+
+    result = call_tool(runtime, "pull_request_get", {"number": 7})
+
+    assert not result.get("isError")
+    assert result["structuredContent"]["number"] == 7
+
+
+def test_check_list_target_type_schema_declares_enum_matching_handler(tmp_path):
+    # The valid values must be discoverable from tools/list, not by triggering
+    # INVALID_ARGUMENT — and the schema enum must agree with what the handler
+    # actually accepts (single-sourced constant).
+    from legis.mcp import _CHECK_TARGET_TYPES, call_tool, tool_definitions
+
+    tool = next(t for t in tool_definitions() if t["name"] == "check_list")
+    prop = tool["inputSchema"]["properties"]["target_type"]
+    assert prop["enum"] == list(_CHECK_TARGET_TYPES) == ["commit", "branch", "pr"]
+    # target_type=pr needs an integer-coercible target — said in the schema, not
+    # discovered by failing.
+    assert "integer" in prop.get("description", "")
+
+    # Handler agreement: every advertised value is accepted...
+    runtime, _store = _runtime(
+        tmp_path, check_surface=CheckSurface(f"sqlite:///{tmp_path / 'checks.db'}")
+    )
+    for target_type, target in (("commit", "abc"), ("branch", "main"), ("pr", "7")):
+        result = call_tool(
+            runtime, "check_list", {"target_type": target_type, "target": target}
+        )
+        assert not result.get("isError"), target_type
+    # ...and the rejection message names the same set.
+    rejected = call_tool(
+        runtime, "check_list", {"target_type": "tag", "target": "v1"}
+    )
+    assert rejected["isError"] is True
+    for value in _CHECK_TARGET_TYPES:
+        assert value in rejected["structuredContent"]["message"]

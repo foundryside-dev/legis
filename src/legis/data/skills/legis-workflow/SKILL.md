@@ -115,12 +115,13 @@ All tools return a `structuredContent` JSON payload. Names are exact.
 ### Governance / policy
 | Tool | Purpose |
 |---|---|
-| `policy_explain` | Explain which governance cell controls a policy/entity pair, whether that cell is enabled here, and which move the agent may make next. |
+| `policy_explain` | Explain which governance cell controls a policy/entity pair, whether that cell is enabled here, and which move the agent may make next. Reports `matched_rule` — the routing pattern that matched, or `null` when the policy fell through to `default_cell` (distinguishes a configured-but-disabled policy from an unconfigured name). |
+| `policy_list` | List the policy-to-cell routing table (`default_cell` + the configured pattern `rules`) and every governance cell's **real** enabled state on this server. The complex tier (structured/protected) reports `enabled: false` without `LEGIS_HMAC_KEY`. No arguments. |
 | `policy_evaluate` | Evaluate a policy against a target **without recording an override**. Returns outcome, detail, and any `provenance_gap`. |
 | `override_submit` | Submit an override as the launch-bound agent. Routes to the governing cell and returns a discriminated outcome envelope (`ACCEPTED_SELF` / `ACCEPTED_BY_JUDGE` / `BLOCKED` / `ESCALATED_PENDING` / `NEED_INPUTS`). |
 | `signoff_status_get` | Poll whether a **structured** sign-off request (by `seq`) has been cleared. |
 | `override_rate_get` | Read the fixed operator force-past override-rate gate (status / rate / sample_size). Measures operator force-pasts; **not** movable by agent retries. |
-| `scan_route` | Route Wardline scan findings through one cell, a `severity_map`, or a cell + `fail_on` threshold. Returns `ROUTED` or `SKIPPED_DIRTY_TREE` (typed amber skip). |
+| `scan_route` | Route Wardline scan findings through one cell, a `severity_map`, or a cell + `fail_on` threshold. Returns `ROUTED` on success; dirty unsigned artifacts surface as `SKIPPED_DIRTY_TREE` with `isError: true` unless the dev dirty opt-in is enabled. MCP preserves `WARDLINE_DIRTY_TREE` as the structured `error_code`. |
 
 ### Git
 | Tool | Purpose |
@@ -159,8 +160,8 @@ Branch on `error_code`, not message text.
 | `error_code` | Recoverable | `next_action` |
 |---|---|---|
 | `INVALID_ARGUMENT` | yes | Correct the tool arguments and retry. |
-| `INVALID_CELL_SPEC` | yes | Use server-owned routing or a valid cell configuration. |
-| `CELL_NOT_ENABLED` | yes | Ask the operator to enable the required governance cell. |
+| `INVALID_CELL_SPEC` | yes | scan_route routing is server-owned and unconfigured by default. The operator sets `LEGIS_WARDLINE_CELL` (e.g. `=surface_only`) or `LEGIS_WARDLINE_CELL_BY_SEVERITY` out-of-band, then relaunches. (Request-side routing requires the `LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING` opt-in — discouraged.) The error message names which kind of cell spec was rejected. |
+| `CELL_NOT_ENABLED` | yes | Two enablement tiers, by cell — both operator-enabled, out-of-band. Simple tier (chill/coached) is reachable WITHOUT a key: the operator maps the policy to a cell via `policy/cells.toml` or `LEGIS_POLICY_CELLS` (`LEGIS_DEV_DEFAULT_CELLS=1` selects the chill dev default), then relaunches. Complex tier (structured/protected and the binding ledger) additionally needs `LEGIS_HMAC_KEY` set by the operator out-of-band, then a relaunch. The error message names which cell is unenabled. |
 | `NO_SUCH_REQUEST` | yes | Poll a known sign-off sequence returned by `override_submit`. |
 | `NOT_FOUND` | yes | Refresh the target identifier and retry. |
 | `UNKNOWN_TOOL` | yes | Call `tools/list` and use one of the advertised tool names. |
@@ -181,8 +182,9 @@ Two routing-specific notes for `scan_route`:
   routing is only honoured under the explicit `LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING=1`
   escape hatch.
 - An unsigned dirty-tree dev artifact arriving where signed provenance is required
-  is **not** an error — it returns `outcome: SKIPPED_DIRTY_TREE` (a typed amber skip;
-  nothing is governed). Commit for a signed artifact, or set
+  is a typed recoverable failure, not a success: MCP returns `isError: true` with
+  structured `error_code: WARDLINE_DIRTY_TREE` and message/reason
+  `SKIPPED_DIRTY_TREE`; nothing is governed. Commit for a signed artifact, or set
   `LEGIS_WARDLINE_ALLOW_DIRTY=1` to govern it unsigned in dev.
 
 ## Workflow patterns
@@ -238,8 +240,9 @@ If the ledger is not enabled you get `CELL_NOT_ENABLED` — ask the operator to 
 ### Route Wardline findings through governance
 ```
 scan_route {scan}                       # routing is server-owned; pass only the scan
-# → ROUTED (governed into the configured cell) or SKIPPED_DIRTY_TREE (commit, or
-#   set LEGIS_WARDLINE_ALLOW_DIRTY=1 in dev)
+# → ROUTED (governed into the configured cell), or SKIPPED_DIRTY_TREE with
+#   isError:true (MCP error_code WARDLINE_DIRTY_TREE; commit, or set
+#   LEGIS_WARDLINE_ALLOW_DIRTY=1 in dev)
 ```
 
 ### Gate boundary evidence in CI

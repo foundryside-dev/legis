@@ -42,7 +42,7 @@ def _scan(n: int) -> dict:
                 "fingerprint": f"fp{i}",
                 "qualname": f"m.f{i}",
                 "properties": {"actual_return": "UNKNOWN_RAW"},
-                "suppressed": "active",
+                "suppression_state": "active",
             }
             for i in range(n)
         ]

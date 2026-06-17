@@ -162,6 +162,15 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--gitignore", action="store_true", help="Add legis config rules to .gitignore only")
     install.add_argument("--mcp", action="store_true", help="Register the legis MCP server in .mcp.json only")
     install.add_argument(
+        "--posture", action="store_true",
+        help="Mint the operator key + write the posture-ledger GENESIS only",
+    )
+    install.add_argument(
+        "--insecure-key-in-env", action="store_true",
+        help="Custody the operator key via the plaintext LEGIS_OPERATOR_KEY env "
+             "var (CI/headless escape hatch; emits a warning — never use in prod)",
+    )
+    install.add_argument(
         "--agent-id", default=None,
         help="Agent id stamped in the .mcp.json legis entry "
              "(default: claude-code, or preserve an existing entry's id)",
@@ -169,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser(
         "session-context",
-        help="SessionStart hook: refresh drifted legis instructions/skills in the cwd",
+        help="SessionStart hook: print a posture banner and refresh drifted legis instructions/skills in the cwd",
     )
 
     doctor = subparsers.add_parser(
@@ -177,11 +186,75 @@ def build_parser() -> argparse.ArgumentParser:
         help="View and repair legis install/config health",
     )
     doctor.add_argument("--root", default=".", help="Project root to inspect (default: cwd)")
-    doctor.add_argument("--repair", action="store_true", help="Apply safe repairs, then re-check")
+    doctor.add_argument("--fix", "--repair", action="store_true", help="Apply safe repairs, then re-check")
     doctor.add_argument(
         "--format", choices=("text", "json"), default="text",
         help="Output format: human text (default) or machine-readable json",
     )
+
+    posture = subparsers.add_parser(
+        "posture",
+        help="Read the signed posture floor (show) or move it (set, needs an open operator session)",
+    )
+    posture_sub = posture.add_subparsers(dest="posture_command")
+    posture_sub.add_parser("show", help="Print the current posture floor")
+    pset = posture_sub.add_parser(
+        "set",
+        help="Move the floor to <cell>; requires an open operator session (legis operator enable)",
+    )
+    pset.add_argument("cell", help="Target floor cell (e.g. chill, coached, structured, protected)")
+    pset.add_argument(
+        "--rationale", default="operator posture change",
+        help="Rationale stamped on the signed TRANSITION record",
+    )
+    pset.add_argument(
+        "--agent-id", default="legis-operator-cli",
+        help="Agent id stamped on the TRANSITION record",
+    )
+    prekey = posture_sub.add_parser(
+        "rekey",
+        help=(
+            "Lost-key recovery: mint a new operator key epoch, reset the floor "
+            "to chill, and chain a loud KEY_RESET (doctor stays non-zero until "
+            "you re-raise the floor with a signed `posture set` under the new key)"
+        ),
+    )
+    prekey.add_argument(
+        "--backend", default=None,
+        help="Custody backend for the new key (keychain, age-file, env). "
+        "Defaults to the auto-selected backend.",
+    )
+    prekey.add_argument(
+        "--agent-id", default="legis-operator-cli",
+        help="Agent id stamped on the KEY_RESET record",
+    )
+
+    operator = subparsers.add_parser(
+        "operator",
+        help="Open (enable) or close (disable) the operator elevation session that authorizes posture set",
+    )
+    operator_sub = operator.add_subparsers(dest="operator_command")
+    op_enable = operator_sub.add_parser(
+        "enable",
+        help=(
+            "Open an elevation session (sudo for governance signing). "
+            "CI/headless bootstrap: set LEGIS_OPERATOR_KEY, run "
+            "`legis operator enable --insecure-key-in-env`, then `legis posture set <cell>`."
+        ),
+    )
+    op_enable.add_argument(
+        "--ttl", default="5m",
+        help="Session window, e.g. 300, 5m, 1h (default: 5m)",
+    )
+    op_enable.add_argument(
+        "--operator-id", default=None,
+        help="Operator identity recorded on the session (default: $USER or 'operator')",
+    )
+    op_enable.add_argument(
+        "--insecure-key-in-env", action="store_true",
+        help="Use the plaintext LEGIS_OPERATOR_KEY env backend (CI/headless escape hatch; emits a warning)",
+    )
+    operator_sub.add_parser("disable", help="End the current operator elevation session")
 
     return parser
 
@@ -264,23 +337,282 @@ def _check_override_rate(db_url: str) -> int:
 def _run_doctor(args) -> int:
     from legis.doctor import run_doctor
 
-    return run_doctor(Path(args.root), repair=args.repair, fmt=args.format)
+    return run_doctor(Path(args.root), repair=args.fix, fmt=args.format)
+
+
+def _parse_ttl(spec: str) -> int:
+    """Parse a TTL like ``300``, ``5m``, ``1h`` into seconds.
+
+    A bare integer is seconds; ``s``/``m``/``h`` suffixes scale. Fail-closed:
+    an unparseable value raises ``ValueError`` so the caller refuses rather than
+    opening a silently-wrong (e.g. zero-length) window.
+    """
+    s = spec.strip().lower()
+    if not s:
+        raise ValueError("empty TTL")
+    units = {"s": 1, "m": 60, "h": 3600}
+    if s[-1] in units:
+        value, scale = s[:-1], units[s[-1]]
+    else:
+        value, scale = s, 1
+    n = int(value)
+    if n <= 0:
+        raise ValueError(f"TTL must be positive, got {spec!r}")
+    return n * scale
+
+
+def _build_operator_signer(backend_id: str):
+    """Construct the custody signer for an open session's backend (Phase 7).
+
+    Mirrors the install-time custody routing: ``env`` -> :class:`EnvSigner`
+    (plaintext escape hatch, behind its own opt-in), ``age-file`` ->
+    :class:`AgeFileSigner` over the at-rest blob with a per-sign passphrase
+    re-prompt, ``keychain`` -> not shipped (raises LOUD). Fail-closed: any
+    custody gap raises rather than returning a wrong-key signer.
+    """
+    from legis.posture import AgeFileSigner, EnvSigner
+
+    if backend_id == "env":
+        return EnvSigner(insecure_env=True)
+    if backend_id == "age-file":
+        import os
+
+        from legis.config import operator_age_path
+
+        blob_path = operator_age_path()
+        if not blob_path.exists():
+            raise RuntimeError(
+                f"age-file custody blob {blob_path} is missing; re-run `legis install --posture`"
+            )
+        blob = blob_path.read_bytes()
+        passphrase = os.environ.get("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE")
+        if not passphrase:
+            raise RuntimeError(
+                "age-file custody needs the passphrase in "
+                "LEGIS_OPERATOR_KEY_AGE_PASSPHRASE to sign the posture change"
+            )
+        return AgeFileSigner(blob=blob, passphrase_cb=lambda: passphrase)
+    raise RuntimeError(
+        f"no shipped custody adapter for backend {backend_id!r}; cannot sign the posture change"
+    )
+
+
+def _run_posture(args) -> int:
+    from legis.clock import SystemClock
+    from legis.config import posture_db_url
+    from legis.posture import PostureLedger, load_session, set_floor
+    from legis.posture.ledger import PostureSetResult
+
+    command = getattr(args, "posture_command", None)
+
+    if command == "show":
+        # Read path: open the ledger handle without running DDL (initialize=False)
+        # so a `show` never mutates local state on launch (Phase-4 reconciliation).
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        floor = ledger.read_floor()
+        if floor is None:
+            print("posture floor: structured (no ledger)")
+        else:
+            print(f"posture floor: {floor}")
+        return 0
+
+    if command == "set":
+        # Per D3 a posture change REQUIRES an open elevation session; there is no
+        # direct-sign path. Resolve the session's backend, build its signer, and
+        # run the change gate, which is fail-closed end to end.
+        session = load_session()
+        if session is None:
+            print(
+                "posture set: refused — no open operator session. Run "
+                "`legis operator enable` first.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            signer = _build_operator_signer(session.backend_id)
+        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+            print(f"posture set: refused — {exc}", file=sys.stderr)
+            return 1
+
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        result: PostureSetResult = set_floor(
+            args.cell,
+            ledger=ledger,
+            signer=signer,
+            agent_id=args.agent_id,
+            rationale=args.rationale,
+        )
+        if not result.accepted:
+            detail = f" ({result.detail})" if result.detail else ""
+            print(
+                f"posture set: refused — {result.reason}{detail}",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"posture floor set to {result.floor} (session {result.session_id})")
+        return 0
+
+    if command == "rekey":
+        # Lost-key recovery (Phase 11 / design §8): mint a fresh key epoch, reset
+        # the floor to chill, and chain a loud KEY_RESET. Needs NO open session
+        # and NO old key — a lost key cannot sign, so the indelible, doctor-flagged
+        # record IS the accountability. The new key bytes reach ONLY custody via
+        # the install key-sink; the ledger stores the fingerprint alone.
+        from legis.install import _default_key_sink, choose_install_backend
+
+        backend = args.backend
+        if backend is None:
+            backend = choose_install_backend(insecure_env=False)
+        ledger = PostureLedger(posture_db_url(), initialize=True)
+        try:
+            new_fp = ledger.rekey(
+                agent_id=args.agent_id,
+                recorded_at=SystemClock().now_iso(),
+                key_sink=_default_key_sink,
+                backend=backend,
+            )
+        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+            print(f"posture rekey: refused — {exc}", file=sys.stderr)
+            return 1
+        print(
+            f"posture rekey: new key epoch {new_fp[:12]}… minted (backend={backend}); "
+            f"floor reset to chill. Re-raise it with a signed `legis posture set` "
+            f"under the new key — `legis doctor` stays non-zero until you do."
+        )
+        return 0
+
+    # `legis posture` with no subcommand.
+    print("usage: legis posture {show,set,rekey}", file=sys.stderr)
+    return 2
+
+
+def _run_operator(args) -> int:
+    from legis.clock import SystemClock
+    from legis.config import posture_db_url
+    from legis.posture import (
+        PostureLedger,
+        end_session,
+        open_session,
+    )
+
+    command = getattr(args, "operator_command", None)
+
+    if command == "disable":
+        end_session()
+        print("operator session ended")
+        return 0
+
+    if command == "enable":
+        import os
+
+        try:
+            ttl = _parse_ttl(args.ttl)
+        except ValueError as exc:
+            print(f"operator enable: refused — invalid --ttl: {exc}", file=sys.stderr)
+            return 1
+
+        insecure_env = getattr(args, "insecure_key_in_env", False)
+        operator_id = (
+            args.operator_id
+            or os.environ.get("USER")
+            or "operator"
+        )
+
+        # Resolve + verify custody up front so `enable` cannot open a window the
+        # operator can never sign through. Building the signer is the unlock:
+        # env reads LEGIS_OPERATOR_KEY (and emits the plaintext warning),
+        # age-file re-prompts per sign (unlock_ref stays None, D5), keychain is
+        # the only backend carrying a non-null unlock_ref (its item id).
+        from legis.install import choose_install_backend
+
+        backend_id = choose_install_backend(insecure_env=insecure_env)
+        try:
+            signer = _build_operator_signer(backend_id)
+        except Exception as exc:  # noqa: BLE001 — fail-closed: no session on custody gap
+            print(f"operator enable: refused — {exc}", file=sys.stderr)
+            return 1
+
+        # The keychain item id is the only non-null unlock_ref (D5); env/age-file
+        # carry None (re-prompt / resident plaintext is the unlock).
+        unlock_ref = getattr(signer, "_item_id", None)
+
+        clock = SystemClock()
+        session = open_session(
+            ttl=ttl,
+            operator_id=operator_id,
+            backend_id=backend_id,
+            unlock_ref=unlock_ref,
+        )
+        # The env path STILL opens a session (D3): every TRANSITION it later
+        # produces carries this session_id, so there is no auth path that
+        # bypasses session accountability.
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        ledger.session_opened(
+            operator_id=operator_id,
+            enabled_at=clock.now_iso(),
+            ttl=ttl,
+            keychain_auth_ref=unlock_ref,
+            session_id=session.session_id,
+        )
+        if insecure_env:
+            print(
+                "WARNING: --insecure-key-in-env uses the plaintext LEGIS_OPERATOR_KEY "
+                "backend, readable by this process; use keychain/age-file in production."
+            )
+        print(
+            f"operator session opened for {operator_id} "
+            f"(backend={backend_id}, window={ttl}s, session={session.session_id})"
+        )
+        return 0
+
+    print("usage: legis operator {enable,disable}", file=sys.stderr)
+    return 2
 
 
 def _run_install(args) -> int:
     from legis.install import (
+        OperatorKeyCustodyError,
+        choose_install_backend,
         ensure_gitignore,
         inject_instructions,
         install_claude_code_hooks,
         install_codex_skills,
+        install_posture,
         install_skills,
         register_mcp_json,
     )
 
     project_root = Path.cwd()
     install_all = not any(
-        [args.claude_md, args.agents_md, args.skills, args.codex_skills, args.hooks, args.gitignore, args.mcp]
+        [
+            args.claude_md,
+            args.agents_md,
+            args.skills,
+            args.codex_skills,
+            args.hooks,
+            args.gitignore,
+            args.mcp,
+            args.posture,
+        ]
     )
+
+    def _do_posture() -> tuple[bool, str]:
+        insecure_env = getattr(args, "insecure_key_in_env", False)
+        backend = choose_install_backend(insecure_env=insecure_env)
+        try:
+            fp = install_posture(project_root, backend=backend)
+        except OperatorKeyCustodyError as exc:
+            # Fail-closed but non-fatal to the broader install: NO genesis was
+            # written (the sink runs before the append), so the ledger never
+            # carries a fingerprint the operator cannot sign against. Tell the
+            # operator how to complete custody and re-run --posture.
+            return True, (
+                f"deferred: {exc} "
+                f"(re-run `legis install --posture` once custody is configured)"
+            )
+        if fp is None:
+            return False, "posture ledger could not be read back after genesis"
+        return True, f"posture ledger ready (backend={backend}, key={fp[:12]}…)"
 
     steps: list[tuple[bool, str, object]] = [
         (install_all or args.claude_md, "CLAUDE.md", lambda: inject_instructions(project_root / "CLAUDE.md")),
@@ -290,6 +622,7 @@ def _run_install(args) -> int:
         (install_all or args.hooks, "Claude Code hook", lambda: install_claude_code_hooks(project_root)),
         (install_all or args.gitignore, ".gitignore", lambda: ensure_gitignore(project_root)),
         (install_all or args.mcp, ".mcp.json", lambda: register_mcp_json(project_root, args.agent_id)),
+        (install_all or args.posture, "posture ledger", _do_posture),
     ]
 
     failures = 0
@@ -358,9 +691,8 @@ def main(argv: list[str] | None = None, *, run=uvicorn.run) -> int:
     if args.command == "session-context":
         from legis.hooks import generate_session_context
 
-        context = generate_session_context()
-        if context:
-            print(context)
+        # Always non-empty (N-1): a posture banner, then any refresh messages.
+        print(generate_session_context())
         return 0
 
     if args.command in {"check-override-rate", "governance-gate"}:
@@ -402,7 +734,51 @@ def main(argv: list[str] | None = None, *, run=uvicorn.run) -> int:
         return mcp_main(args.agent_id)
 
     if args.command == "policy-boundary-check":
-        findings = scan_policy_boundaries(args.root, repo_root=args.repo_root)
+        from pathlib import Path
+
+        from legis.policy.boundary_scan import count_source_files
+
+        # repo_root defaults to "." (the real working directory); a relative
+        # --root resolves against it so a misrouted repo_root cannot silently
+        # scan the wrong tree.
+        repo_root = Path(args.repo_root)
+        root = Path(args.root)
+        if not root.is_absolute():
+            root = repo_root / root
+        # Gate honesty (cf. weft-ef2e898642 silent-clean-on-zero-scope): a scan
+        # that looked at NOTHING — missing root, or a root with zero analyzable
+        # .py files — must NOT report a clean PASS. Surface NO_ROOT and a nonzero
+        # exit so CI cannot mistake a vacuous green for a real one.
+        if count_source_files(root) == 0:
+            if not root.exists():
+                detail = (
+                    f"scan root {root} does not exist; nothing was scanned. "
+                    "Pass --root pointing at the project's Python source."
+                )
+            else:
+                detail = (
+                    f"scan root {root} contains no analyzable Python files; "
+                    "nothing was scanned. Pass --root pointing at the project's "
+                    "Python source — a zero-file scan is never a clean PASS."
+                )
+            if args.format == "json":
+                print(
+                    json.dumps(
+                        {
+                            "outcome": "NO_ROOT",
+                            "findings": [],
+                            "scanned_root": str(root),
+                            "repo_root": str(repo_root),
+                            "detail": detail,
+                        },
+                        sort_keys=True,
+                    )
+                )
+            else:
+                print(f"policy-boundary-check: NO_ROOT: {detail}")
+            return 2
+
+        findings = scan_policy_boundaries(root, repo_root=args.repo_root)
         if args.format == "json":
             print(json.dumps([f.to_dict() for f in findings], sort_keys=True))
         elif findings:
@@ -414,6 +790,12 @@ def main(argv: list[str] | None = None, *, run=uvicorn.run) -> int:
 
     if args.command == "doctor":
         return _run_doctor(args)
+
+    if args.command == "posture":
+        return _run_posture(args)
+
+    if args.command == "operator":
+        return _run_operator(args)
 
     parser.print_help(sys.stderr)
     return 2

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import ipaddress
+import logging
 import os
 import time
 import urllib.error
@@ -38,6 +39,8 @@ from legis.weft_signing import (
 
 Fetch = Callable[[str, str, "dict | None", Mapping[str, str]], dict]
 
+logger = logging.getLogger(__name__)
+
 
 class LoomweaveError(RuntimeError):
     """A Loomweave identity call failed at the transport or decode layer."""
@@ -55,8 +58,11 @@ class LoomweaveIdentity(Protocol):
     def lineage(self, sei: str) -> list[dict[str, Any]]: ...
 
 
-# The Weft-component transport-HMAC scheme is shared with the Filigree channel;
-# both delegate to ``weft_signing`` so the wire format has a single definition
+# The Weft-component transport-HMAC scheme is used by the LIVE Loomweave
+# channel only — it delegates to ``weft_signing`` so the wire format has a
+# single definition. The Filigree channel is transport-open since G11 (it no
+# longer signs requests; its governance attestation rides the JSON body and is
+# verified by the local BindingLedger), so it does NOT share this scheme.
 # (the module-level ``_json_body_bytes`` / ``_path_and_query`` aliases keep the
 # internal transport and existing call sites stable).
 _json_body_bytes = weft_body_bytes
@@ -135,8 +141,21 @@ def _validate_base_url(base_url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise LoomweaveError("Loomweave base URL must be an http(s) URL with a host")
     allow_insecure_remote = os.environ.get("LEGIS_ALLOW_INSECURE_REMOTE_HTTP") == "1"
-    if parsed.scheme == "http" and not _is_loopback(parsed.hostname) and not allow_insecure_remote:
-        raise LoomweaveError("Loomweave base URL must use HTTPS unless it is loopback")
+    if parsed.scheme == "http" and not _is_loopback(parsed.hostname):
+        if not allow_insecure_remote:
+            raise LoomweaveError("Loomweave base URL must use HTTPS unless it is loopback")
+        # ID-SEI-1: the flag is permitting a PLAINTEXT connection to a remote
+        # Loomweave. TLS is the ONLY integrity control on SEI *responses* (the
+        # request HMAC authenticates requests, not responses), so this voids the
+        # SEI/binding custody seal — an on-path attacker can forge a stable
+        # identity binding with no TLS break. Dev/loopback only; never production.
+        logger.warning(
+            "LEGIS_ALLOW_INSECURE_REMOTE_HTTP=1 is permitting a plaintext HTTP "
+            "connection to non-loopback Loomweave host %r; this voids the SEI "
+            "binding TLS custody seal (responses are forgeable). Dev/loopback use "
+            "only.",
+            parsed.hostname,
+        )
     return base_url.rstrip("/")
 
 
@@ -156,10 +175,13 @@ class HttpLoomweaveIdentity:
         self._clock = clock or (lambda: int(time.time()))
         self._nonce_factory = nonce_factory or (lambda: uuid.uuid4().hex)
 
-    def _request(self, method: str, path: str, body: dict | None, *, signed: bool = True) -> dict:
+    def _request(self, method: str, path: str, body: dict | None) -> dict:
+        # Every SEI route signs when a key is provisioned and goes bare when not
+        # (loopback/trusted). There is deliberately no per-call "unsigned" knob:
+        # an opt-out is exactly what left the capability probe spoofable (ID-3).
         url = f"{self._base}{path}"
         headers: dict[str, str] = {}
-        if signed and self._hmac_key is not None:
+        if self._hmac_key is not None:
             headers = sign_loomweave_request(
                 self._hmac_key,
                 method,
@@ -171,8 +193,16 @@ class HttpLoomweaveIdentity:
         return self._fetch(method, url, body, headers)
 
     def capability(self) -> bool:
+        # ID-3: sign the probe when keyed, exactly like every other SEI route
+        # (``_request`` already no-ops signing when no key is provisioned, so
+        # loopback/trusted deployments are unchanged). The capability probe is
+        # the trust-establishing handshake — whether legis treats the provider
+        # as SEI-capable at all — so it must not be the lone unsigned exception
+        # an auth-enforcing Loomweave cannot authenticate. Wire confidentiality
+        # against an on-path response rewrite remains TLS's job, which
+        # ``_validate_base_url`` enforces for any non-loopback (keyed) host.
         body = _require_dict(
-            self._request("GET", "/api/v1/_capabilities", None, signed=False),
+            self._request("GET", "/api/v1/_capabilities", None),
             "Loomweave capability",
         )
         sei = body.get("sei") if isinstance(body, dict) else None

@@ -44,6 +44,18 @@ def test_agent_can_register_a_new_boundary_type_zero_config():
     assert g.evaluate("no-todo", {"text": "clean"}).result is PolicyResult.CLEAR
 
 
+def test_grammar_has_no_exemption_rescue_mechanism():
+    # POLICY-2: an exemption-rescue path turns a proven VIOLATION into CLEAR — an
+    # agent-writable bypass surface. It was removed entirely (no registry param, no
+    # rescue branch), so the trap cannot be re-wired by accident. This pins the
+    # removal: any future re-introduction of an exemptions seam must trip this test
+    # and consciously own the human-governed-source requirement.
+    g = default_grammar()
+    assert not hasattr(g, "_exemptions")
+    with pytest.raises(TypeError):
+        PolicyGrammar(exemptions=object())  # type: ignore[call-arg]
+
+
 def test_builtins_cannot_be_shadowed():
     g = default_grammar()
     name = next(iter(g.registered()))
@@ -85,26 +97,3 @@ def test_a_boundary_returning_garbage_fails_closed_to_unknown():
 
     g.register(Garbage())
     assert g.evaluate("garbage", {}).result is PolicyResult.UNKNOWN
-
-
-def test_exemption_turns_violation_into_clear():
-    from legis.policy.exemptions import Exemption, ExemptionRegistry
-    from legis.policy.grammar import AllowlistBoundary, PolicyGrammar, PolicyResult
-    reg = ExemptionRegistry([Exemption("import-allowlist", "requests", "ticket-123")])
-    g = PolicyGrammar(exemptions=reg)
-    g.register(AllowlistBoundary("import-allowlist", frozenset({"json"})))
-    ev = g.evaluate("import-allowlist", {"value": "requests"})
-    assert ev.result is PolicyResult.CLEAR
-    assert ev.provenance_gap is False
-    assert "ticket-123" in ev.detail
-    assert g.evaluate("import-allowlist", {"value": "pickle"}).result is PolicyResult.VIOLATION
-
-
-def test_exemption_never_rescues_unknown():
-    from legis.policy.exemptions import Exemption, ExemptionRegistry
-    from legis.policy.grammar import PolicyGrammar, PolicyResult
-    reg = ExemptionRegistry([Exemption("unregistered", "x", "r")])
-    g = PolicyGrammar(exemptions=reg)
-    ev = g.evaluate("unregistered", {"value": "x"})  # no boundary → UNKNOWN
-    assert ev.result is PolicyResult.UNKNOWN
-    assert ev.provenance_gap is True

@@ -1,0 +1,43 @@
+{
+  "contract": "weft/wardline-dirty-scan-artifact",
+  "version": 1,
+  "description": "Shared Weft conformance vector for the unsigned Wardline->legis dirty dev-artifact path. Wardline emits this shape when scan --format legis --allow-dirty is used on a dirty working tree; Legis consumes the same dirty key to distinguish keyless dev, CI skip, and explicit dev-mode governance. The artifact is intentionally unsigned because signing dirty working-tree content would assert false tree provenance.",
+  "dirty_key": "dirty",
+  "signature_key": "artifact_signature",
+  "signing": {
+    "key_utf8": "test-shared-secret-key",
+    "policy": "dirty dev artifacts are never signed; a configured consumer key without dev-mode must return SKIPPED_DIRTY_TREE"
+  },
+  "valid": [
+    {
+      "name": "dirty_unsigned_dev_artifact",
+      "description": "Unsigned dirty-tree dev artifact: dirty must be strict boolean true, artifact_signature must be absent, and findings remains present even when empty.",
+      "artifact": {
+        "scanner_identity": "wardline@CONFORMANCE",
+        "rule_set_version": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "fingerprint_scheme": "wlfp2",
+        "findings": [],
+        "scan_scope": {
+          "schema": "wardline-legis-scan-scope-1",
+          "scan_root": ".",
+          "is_git_root": true,
+          "source_roots": [
+            "."
+          ],
+          "resolved_source_roots": [
+            "."
+          ],
+          "scanned_paths": [
+            "svc.py"
+          ]
+        },
+        "commit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+        "tree_sha": "dddddddddddddddddddddddddddddddddddddddd",
+        "dirty": true
+      },
+      "expected_keyless_artifact_status": "dirty",
+      "expected_ci_allow_dirty_artifact_status": "dirty",
+      "expected_ci_reject_reason": "SKIPPED_DIRTY_TREE"
+    }
+  ]
+}

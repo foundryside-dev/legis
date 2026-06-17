@@ -92,84 +92,43 @@ def test_client_rejects_unsafe_base_urls():
             HttpFiligreeClient(url)
 
 
-# --- Q-M4: Weft-component HMAC on the Filigree transport ---
+# --- G11: the Filigree transport is open (unsigned) ---
 
-def test_sign_filigree_request_is_deterministic_and_namespaced():
-    from legis.filigree.client import sign_filigree_request
-
-    headers = sign_filigree_request(
-        b"weft-key", "POST", "https://filigree/api/issue/ISSUE-1/entity-associations",
-        {"entity_id": "loomweave:eid:abc", "content_hash": "h", "actor": "legis"},
-        timestamp=1_700_000_000, nonce="cafef00d",
-    )
-    assert headers["X-Weft-Component"].startswith("filigree:")
-    assert headers["X-Weft-Timestamp"] == "1700000000"
-    assert headers["X-Weft-Nonce"] == "cafef00d"
-    # Stable for the same inputs; sensitive to the body.
-    again = sign_filigree_request(
-        b"weft-key", "POST", "https://filigree/api/issue/ISSUE-1/entity-associations",
-        {"entity_id": "loomweave:eid:abc", "content_hash": "h", "actor": "legis"},
-        timestamp=1_700_000_000, nonce="cafef00d",
-    )
-    assert again == headers
-    tampered = sign_filigree_request(
-        b"weft-key", "POST", "https://filigree/api/issue/ISSUE-1/entity-associations",
-        {"entity_id": "loomweave:eid:abc", "content_hash": "TAMPERED", "actor": "legis"},
-        timestamp=1_700_000_000, nonce="cafef00d",
-    )
-    assert tampered["X-Weft-Component"] != headers["X-Weft-Component"]
-
-
-def test_filigree_hmac_key_from_env(monkeypatch):
-    from legis.filigree.client import filigree_hmac_key_from_env
-
-    monkeypatch.delenv("LEGIS_FILIGREE_HMAC_KEY", raising=False)
-    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
-    assert filigree_hmac_key_from_env() is None
-    monkeypatch.setenv("LEGIS_HMAC_KEY", "shared")
-    assert filigree_hmac_key_from_env() == b"shared"
-    monkeypatch.setenv("LEGIS_FILIGREE_HMAC_KEY", "channel")
-    assert filigree_hmac_key_from_env() == b"channel"  # channel-specific wins
-
-
-def test_real_transport_signs_when_key_present(monkeypatch):
-    # The default (non-injected) transport path attaches Weft-component HMAC
-    # headers when a key is configured, and none when it is not.
+def test_real_transport_does_not_emit_dead_hmac_headers(monkeypatch):
+    # G11: Filigree's classic entity-association route is transport-open, so the
+    # default transport must not emit X-Weft-* headers even if old key knobs are
+    # present. The app-level binding_signature still travels in the JSON body.
     import legis.filigree.client as client_mod
 
     captured = {}
 
     def capture(method, url, body, headers=None):
         captured["headers"] = headers or {}
+        captured["body"] = body or {}
         return {"ok": True}
 
     monkeypatch.setattr(client_mod, "_urllib_fetch", capture)
+    monkeypatch.setenv("LEGIS_FILIGREE_HMAC_KEY", "legacy-channel")
+    monkeypatch.setenv("LEGIS_HMAC_KEY", "shared")
 
-    signed = HttpFiligreeClient("https://filigree.example", hmac_key=b"weft-key")
-    signed.attach("ISSUE-1", "loomweave:eid:abc", "h", actor="legis")
-    assert captured["headers"].get("X-Weft-Component", "").startswith("filigree:")
-
-    captured.clear()
-    # With no key configured (neither injected nor in env), the transport is
-    # unsigned — backward compatible.
-    monkeypatch.delenv("LEGIS_FILIGREE_HMAC_KEY", raising=False)
-    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
-    unsigned = HttpFiligreeClient("https://filigree.example")
-    unsigned.attach("ISSUE-1", "loomweave:eid:abc", "h", actor="legis")
+    client = HttpFiligreeClient("https://filigree.example")
+    client.attach(
+        "ISSUE-1",
+        "loomweave:eid:abc",
+        "h",
+        actor="legis",
+        signoff_seq=7,
+        signature="hmac-sha256:v2:abc",
+    )
     assert "X-Weft-Component" not in captured["headers"]
+    assert captured["body"]["signature"] == "hmac-sha256:v2:abc"
+    assert captured["body"]["signoff_seq"] == 7
 
 
-def test_signed_wire_body_is_byte_identical_to_signed_bytes(monkeypatch):
-    # Q-M4 regression: the bytes put on the wire MUST equal the bytes the
-    # X-Weft signature commits to. If _urllib_fetch re-serialised the body with
-    # default json.dumps (spaces / source key order), a Filigree verifier
-    # checking the body hash against the actual request bytes would reject every
-    # signed POST. Drive the real transport end to end and verify the captured
-    # request body verifies against the captured signature.
-    import hashlib
-    import hmac
-    import urllib.request
-
+def test_wire_body_is_stable_compact_json_but_unsigned(monkeypatch):
+    # G11 keeps the transport unsigned, but still sends stable compact JSON so
+    # body-level binding_signature fixtures do not drift with dict insertion
+    # order or json.dumps spacing.
     import legis.filigree.client as client_mod
 
     captured = {}
@@ -186,67 +145,88 @@ def test_signed_wire_body_is_byte_identical_to_signed_bytes(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    def fake_urlopen(req, timeout=None):
+    def fake_open_no_redirect(req):
         captured["data"] = req.data
         captured["headers"] = dict(req.header_items())
         return _FakeResp()
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(client_mod, "_open_no_redirect", fake_open_no_redirect)
 
-    key = b"weft-key"
-    c = HttpFiligreeClient("https://filigree.example", hmac_key=key)
+    c = HttpFiligreeClient("https://filigree.example")
     c.attach("ISSUE-1", "loomweave:eid:abc", "h", actor="legis")
 
-    # The wire body is exactly the canonical signed bytes.
     assert captured["data"] == client_mod._json_body_bytes(
         {"entity_id": "loomweave:eid:abc", "content_hash": "h", "actor": "legis"}
     )
-
-    # And that body verifies against the transmitted signature.
     headers = {k.lower(): v for k, v in captured["headers"].items()}
-    component = headers["x-weft-component"]
-    assert component.startswith("filigree:")
-    signature = component.split(":", 1)[1]
-    body_hash = hashlib.sha256(captured["data"]).hexdigest()
-    message = (
-        f"POST\n/api/issue/ISSUE-1/entity-associations\n"
-        f"{body_hash}\n{headers['x-weft-timestamp']}\n{headers['x-weft-nonce']}"
-    ).encode("utf-8")
-    expected = hmac.new(key, message, hashlib.sha256).hexdigest()
-    assert signature == expected
+    assert "x-weft-component" not in headers
+    assert "x-weft-timestamp" not in headers
+    assert "x-weft-nonce" not in headers
 
 
 # --- roadmap 13: transport / error-path branches (the surface a security
 # reviewer cares about, and the unsigned-transport seam tied to Q-M4) ---
 
 def test_json_body_bytes_none_is_empty():
-    # A None body signs and sends zero bytes (the body-hash is over b"").
+    # A None body sends zero bytes (the stable-compact-JSON helper maps None->b"").
     assert client_mod._json_body_bytes(None) == b""
-
-
-def test_path_and_query_includes_query_string():
-    # The signed message commits to path AND query; a verifier that dropped the
-    # query would compute a different signature, so the query must be carried.
-    assert (
-        client_mod._path_and_query("https://filigree/api/entity-associations?entity_id=x")
-        == "/api/entity-associations?entity_id=x"
-    )
-    # No query -> bare path; empty path -> "/".
-    assert client_mod._path_and_query("https://filigree/api/x") == "/api/x"
-    assert client_mod._path_and_query("https://filigree") == "/"
 
 
 def test_urllib_fetch_wraps_transport_error(monkeypatch):
     # A urllib URLError (DNS failure, connection refused, timeout) surfaces as a
     # typed FiligreeError, never an unhandled urllib exception.
-    import urllib.request
+    import urllib.error
 
     def boom(req, timeout=None):
         raise urllib.error.URLError("connection refused")
 
-    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    monkeypatch.setattr(client_mod, "_open_no_redirect", boom)
     with pytest.raises(FiligreeError, match="connection refused"):
         client_mod._urllib_fetch("GET", "https://filigree.example/api/x", None)
+
+
+def test_urllib_fetch_rejects_redirects_before_hmac_headers_can_leak():
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    captured = {}
+
+    class _RedirectHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/start":
+                self.send_response(302)
+                self.send_header("Location", "/leak")
+                self.end_headers()
+                return
+            if self.path == "/leak":
+                captured["headers"] = dict(self.headers)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+                return
+            self.send_error(404)
+
+        def log_message(self, _format, *args):  # noqa: A002
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _RedirectHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/start"
+        headers = {
+            "X-Weft-Component": "filigree:secret",
+            "X-Weft-Timestamp": "1700000000",
+            "X-Weft-Nonce": "nonce",
+        }
+        with pytest.raises(FiligreeError, match="redirect not allowed"):
+            client_mod._urllib_fetch("GET", url, None, headers)
+        assert "headers" not in captured
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def test_decode_rejects_non_json_content_type():
@@ -275,3 +255,22 @@ def test_decode_rejects_oversized_response():
 
     with pytest.raises(FiligreeError, match="response too large"):
         client_mod._decode_json_response(_BigResp(), "GET /api/x")
+
+
+def test_insecure_remote_http_warns_when_flag_bypasses_https(monkeypatch, caplog):
+    import logging
+
+    # ID-SEI-1: plaintext to a remote Filigree leaves responses forgeable (no TLS);
+    # the flag must warn loudly rather than bypass silently.
+    monkeypatch.setenv("LEGIS_ALLOW_INSECURE_REMOTE_HTTP", "1")
+    with caplog.at_level(logging.WARNING):
+        HttpFiligreeClient("http://remote.example:9000")
+    assert any(
+        "LEGIS_ALLOW_INSECURE_REMOTE_HTTP" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_remote_http_without_flag_still_raises(monkeypatch):
+    monkeypatch.delenv("LEGIS_ALLOW_INSECURE_REMOTE_HTTP", raising=False)
+    with pytest.raises(FiligreeError):
+        HttpFiligreeClient("http://remote.example")

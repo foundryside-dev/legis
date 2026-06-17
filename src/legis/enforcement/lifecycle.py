@@ -96,7 +96,10 @@ class GateResult:
 
 
 # Denominator = kept-suppression decisions; BLOCKED is not a kept suppression.
-_FINAL = {Verdict.ACCEPTED.value, Verdict.OVERRIDDEN_BY_OPERATOR.value}
+# A kept suppression is exactly an accepting verdict, so derive this from the
+# single source of truth on Verdict rather than re-listing the members (projected
+# to ``.value`` because override records store the serialized string).
+_FINAL = {verdict.value for verdict in Verdict.accepting()}
 
 
 def evaluate_override_rate(

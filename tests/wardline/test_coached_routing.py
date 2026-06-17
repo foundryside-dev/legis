@@ -19,7 +19,7 @@ def _scan():
         {"rule_id": "PY-WL-101", "message": "untrusted reaches trusted",
          "severity": "ERROR", "kind": "defect", "fingerprint": "fp1",
          "qualname": "m.f", "properties": {"actual_return": "UNKNOWN_RAW"},
-         "suppressed": "active"}]}
+         "suppression_state": "active"}]}
 
 
 def test_coached_wardline_path_records_a_judge_verdict(tmp_path):

@@ -27,9 +27,13 @@ class ScriptedJudge:
 
 def _gate(tmp_path):
     store = AuditStore(f"sqlite:///{tmp_path / 'gov.db'}")
+    # JUDGE-3: the protected cell is fail-closed — a judge ACCEPTED only clears
+    # when a deterministic validator confirms it. These tests exercise the
+    # accepted-record mechanics (loomweave block, fixed-field binding), so wire a
+    # confirming validator to reach the cleared state.
     g = ProtectedGate(store, FixedClock("2026-06-02T12:00:00+00:00"),
                       judge=ScriptedJudge(JudgeOpinion(Verdict.ACCEPTED, "judge@1", "ok")),
-                      key=KEY)
+                      key=KEY, validator=lambda record: True)
     return g, store
 
 
@@ -50,9 +54,10 @@ def test_loomweave_block_does_not_break_the_signature(tmp_path):
     g.submit(policy="no-eval", entity_key=EntityKey.from_sei("loomweave:eid:abc"),
              rationale="r", agent_id="a", file_fingerprint="fp", ast_path="ap",
              extensions=LOOMWEAVE)
-    payload = store.read_all()[0].payload
+    rec = store.read_all()[0]
+    payload = rec.payload
     sig = payload["extensions"]["judge_metadata_signature"]
-    assert verify(signing_fields(payload), sig, KEY) is True
+    assert verify(signing_fields(payload, seq=rec.seq), sig, KEY) is True
 
 
 def test_mutating_loomweave_block_invalidates_the_signature(tmp_path):
@@ -67,7 +72,9 @@ def test_mutating_loomweave_block_invalidates_the_signature(tmp_path):
     payload["extensions"]["loomweave"]["content_hash"] = "TAMPERED"
     payload["extensions"]["loomweave"]["lineage_snapshot"] = {"length": 99, "hash": "x"}
     sig = payload["extensions"]["judge_metadata_signature"]
-    assert verify(signing_fields(payload), sig, KEY) is False
+    # Reconstruct v3-correctly (seq from the column) so this is False purely
+    # because the loomweave content was mutated, not a version/field mismatch.
+    assert verify(signing_fields(payload, seq=record.seq), sig, KEY) is False
     # The protected-tier load-time verifier likewise rejects the mutated record.
     with pytest.raises(TamperError):
         TrailVerifier(KEY, frozenset({"no-eval"})).verify([record])

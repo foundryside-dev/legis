@@ -1,31 +1,34 @@
 """Filigree entity-association client — legis binds governance to issues.
 
-Same transport posture as ``identity/loomweave_client.py``: stdlib ``urllib`` with
-an injectable ``fetch`` so tests run offline; no new dependency. legis binds the
-opaque SEI as ``entity_id`` (Filigree never parses it) and hands the entity's
-content hash for Filigree to store verbatim; drift comparison stays legis's job.
+Stdlib ``urllib`` with an injectable ``fetch`` so tests run offline; no new
+dependency. legis binds the opaque SEI as ``entity_id`` (Filigree never parses
+it) and hands the entity's content hash for Filigree to store verbatim; drift
+comparison stays legis's job.
+
+The Filigree classic entity-association route is intentionally transport-open:
+Legis sends the app-level ``binding_signature`` in the JSON body when a governed
+sign-off exists, but this client does not emit ``X-Weft-*`` transport HMAC
+headers. That avoids a dead handshake where Legis appears to authenticate a
+route Filigree has deliberately documented as non-verifying.
 """
 
 from __future__ import annotations
 
 import json
+import http.client
 import ipaddress
+import logging
 import os
-import secrets
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Protocol, runtime_checkable
 
-from legis.weft_signing import (
-    sign_weft_request,
-    weft_body_bytes,
-    weft_hmac_key_from_env,
-    weft_path_and_query,
-)
+from legis.weft_signing import weft_body_bytes
 
 Fetch = Callable[[str, str, "dict | None"], dict]
+
+logger = logging.getLogger(__name__)
 
 
 class FiligreeError(RuntimeError):
@@ -35,44 +38,11 @@ class FiligreeError(RuntimeError):
 MAX_RESPONSE_BYTES = 1_000_000
 
 
-# The Weft-component transport-HMAC scheme is shared with the Loomweave channel;
-# both delegate to ``weft_signing`` so the wire format (canonicalization +
-# ``X-Weft-*`` headers) has a single definition and cannot silently diverge. The
-# module-level ``_json_body_bytes`` / ``_path_and_query`` aliases keep the
-# internal transport and existing call sites stable.
+# The ``_json_body_bytes`` alias keeps the internal transport call site stable.
+# Filigree's classic entity-association route is transport-open (G11): this
+# client does not sign requests, so the X-Weft-* HMAC formula lives solely in
+# ``weft_signing`` for the LIVE Loomweave channel.
 _json_body_bytes = weft_body_bytes
-_path_and_query = weft_path_and_query
-
-
-def sign_filigree_request(
-    key: bytes,
-    method: str,
-    url: str,
-    body: dict | None,
-    *,
-    timestamp: int,
-    nonce: str,
-) -> dict[str, str]:
-    """Weft-component HMAC headers for a legis->Filigree request (Q-M4).
-
-    Delegates to the shared ``weft_signing`` seam (same scheme as the Loomweave
-    channel). The attach ``signature`` is an app-level attestation about WHAT is
-    bound; this proves WHO is calling. ``timestamp`` and ``nonce`` are injected
-    (not generated here) so the signature is deterministically testable. See
-    ``weft_signing`` for the canonicalization contract and ADR-0003.
-    """
-    return sign_weft_request(
-        "filigree", key, method, url, body, timestamp=timestamp, nonce=nonce
-    )
-
-
-def filigree_hmac_key_from_env() -> bytes | None:
-    """Resolve the Filigree HMAC key without making it mandatory.
-
-    Absent key -> unsigned (backward compatible with deployments that have not
-    provisioned the channel key yet), mirroring ``loomweave_hmac_key_from_env``.
-    """
-    return weft_hmac_key_from_env("LEGIS_FILIGREE_HMAC_KEY")
 
 
 @runtime_checkable
@@ -86,12 +56,9 @@ class FiligreeClient(Protocol):
 def _urllib_fetch(
     method: str, url: str, body: dict | None, headers: dict[str, str] | None = None
 ) -> dict:
-    # Send the SAME canonical bytes that sign_filigree_request hashes
-    # (_json_body_bytes: sorted keys, compact separators). The Weft signature
-    # commits to that body hash, so a verifier checking the hash against the
-    # actual request bytes only matches if the wire body is byte-identical to
-    # the signed body (Q-M4). Default json.dumps spacing/ordering would diverge
-    # and every signed POST would fail verification. Mirrors loomweave_client.
+    # Send stable compact JSON bytes. Even though the Filigree transport is not
+    # signed, keeping a canonical body avoids needless fixture drift and preserves
+    # compatibility with the app-level binding_signature payload.
     data = _json_body_bytes(body) if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     if data is not None:
@@ -99,11 +66,25 @@ def _urllib_fetch(
     for name, value in (headers or {}).items():
         req.add_header(name, value)
     try:
-        with urllib.request.urlopen(req, timeout=10.0) as resp:  # noqa: S310 (trusted Filigree URL)
+        with _open_no_redirect(req) as resp:  # noqa: S310 (trusted Filigree URL)
             decoded = _decode_json_response(resp, f"{method} {url}")
-    except (urllib.error.URLError, ValueError) as exc:
+    except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            raise FiligreeError(f"{method} {url} redirect not allowed: {exc.code}") from exc
+        raise FiligreeError(f"{method} {url} failed: {exc}") from exc
+    except (urllib.error.URLError, ValueError, OSError, http.client.HTTPException) as exc:
         raise FiligreeError(f"{method} {url} failed: {exc}") from exc
     return _require_dict(decoded, f"{method} {url}")
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        return None
+
+
+def _open_no_redirect(req: urllib.request.Request) -> Any:
+    opener = urllib.request.build_opener(_NoRedirectHandler())
+    return opener.open(req, timeout=10.0)
 
 
 def _decode_json_response(resp: Any, context: str) -> Any:
@@ -137,8 +118,19 @@ def _validate_base_url(base_url: str) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise FiligreeError("Filigree base URL must be an http(s) URL with a host")
     allow_insecure_remote = os.environ.get("LEGIS_ALLOW_INSECURE_REMOTE_HTTP") == "1"
-    if parsed.scheme == "http" and not _is_loopback(parsed.hostname) and not allow_insecure_remote:
-        raise FiligreeError("Filigree base URL must use HTTPS unless it is loopback")
+    if parsed.scheme == "http" and not _is_loopback(parsed.hostname):
+        if not allow_insecure_remote:
+            raise FiligreeError("Filigree base URL must use HTTPS unless it is loopback")
+        # ID-SEI-1: plaintext to a remote Filigree. TLS is the only integrity
+        # control on responses (the request HMAC authenticates requests, not
+        # responses), so an on-path attacker can tamper with what legis reads
+        # back. Dev/loopback only; never production.
+        logger.warning(
+            "LEGIS_ALLOW_INSECURE_REMOTE_HTTP=1 is permitting a plaintext HTTP "
+            "connection to non-loopback Filigree host %r; responses are forgeable "
+            "without TLS. Dev/loopback use only.",
+            parsed.hostname,
+        )
     return base_url.rstrip("/")
 
 
@@ -148,32 +140,14 @@ class HttpFiligreeClient:
         base_url: str,
         *,
         fetch: Fetch | None = None,
-        hmac_key: bytes | None = None,
     ) -> None:
         self._base = _validate_base_url(base_url)
-        # An injected fetch (tests) is used verbatim and never signs, so resolve
-        # the key only when the real signing transport is in play — otherwise an
-        # ambient LEGIS_*_HMAC_KEY would be read but never used. Absent key ->
-        # unsigned, backward compatible.
-        if fetch is not None:
-            self._hmac_key = hmac_key
-            self._fetch = fetch
-        else:
-            self._hmac_key = hmac_key if hmac_key is not None else filigree_hmac_key_from_env()
-            self._fetch = self._signing_fetch
+        # Filigree's classic entity-association route is transport-open (G11):
+        # there is no request-signing key, so none is accepted.
+        self._fetch = fetch if fetch is not None else self._transport_fetch
 
-    def _signing_fetch(self, method: str, url: str, body: dict | None) -> dict:
-        headers: dict[str, str] = {}
-        if self._hmac_key is not None:
-            headers = sign_filigree_request(
-                self._hmac_key,
-                method,
-                url,
-                body,
-                timestamp=int(time.time()),
-                nonce=secrets.token_hex(16),
-            )
-        return _urllib_fetch(method, url, body, headers)
+    def _transport_fetch(self, method: str, url: str, body: dict | None) -> dict:
+        return _urllib_fetch(method, url, body, {})
 
     def attach(self, issue_id: str, entity_id: str, content_hash: str,
                *, actor: str, signoff_seq: int | None = None,

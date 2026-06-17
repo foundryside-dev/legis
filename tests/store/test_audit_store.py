@@ -3,7 +3,12 @@ import sqlite3
 
 import pytest
 
-from legis.store.audit_store import AuditStore, _apply_sqlite_pragmas
+from legis.store.audit_store import (
+    GENESIS,
+    AuditStore,
+    _apply_sqlite_pragmas,
+    _chain,
+)
 
 
 def db_path(tmp_path):
@@ -147,6 +152,20 @@ def test_pragma_wal_actually_applied_on_file(tmp_path):
     assert mode.lower() == "wal"
 
 
+def test_pragma_synchronous_is_full_for_durability(tmp_path):
+    # AUD-3: an audit-integrity store must not lose committed appends on a
+    # power-cut. Under WAL, synchronous=NORMAL only fsyncs the WAL at a
+    # checkpoint, so committed-but-unsynced records vanish on power loss,
+    # leaving a consistent, contiguous, valid-looking SHORTENED trail. FULL (2)
+    # fsyncs every commit, so a committed governance record is durable. (0=OFF,
+    # 1=NORMAL, 2=FULL, 3=EXTRA.) Read on a connection that went through the
+    # listener — synchronous is per-connection, not a persistent file property.
+    s = make_store(tmp_path)
+    with s._engine.connect() as conn:
+        level = conn.exec_driver_sql("PRAGMA synchronous").scalar()
+    assert level == 2  # FULL
+
+
 def test_pragma_busy_timeout_set_on_listener_connection(tmp_path):
     # busy_timeout is per-connection (not persistent), so it must be read on a
     # connection that went through the listener — i.e. one from the store engine.
@@ -222,6 +241,41 @@ def test_apply_pragmas_warns_with_exc_info_on_pragma_exception(caplog):
     assert rec.levelno >= logging.WARNING
     assert rec.exc_info is not None
     assert conn.cursor_obj.closed is True
+
+
+def test_verify_integrity_detects_interior_delete_with_gap(tmp_path, caplog):
+    # AUD-1: an attacker with file-write access deletes an interior record and
+    # re-chains the survivors. The plain SHA chain is recomputable without the
+    # HMAC key, so every surviving *link* stays internally consistent — the
+    # old chain walk passed. But the seq column now skips the deleted row, and
+    # that gap is the structural tell a contiguity check catches.
+    s = make_store(tmp_path)
+    s.append({"k": "a"})
+    s.append({"k": "b"})
+    s.append({"k": "c"})
+    conn = raw_conn(tmp_path)
+    try:
+        conn.execute("DROP TRIGGER audit_log_no_update")
+        conn.execute("DROP TRIGGER audit_log_no_delete")
+        conn.execute("DELETE FROM audit_log WHERE seq = 2")
+        # Re-chain the survivors (seq 1, 3) so the link walk stays consistent.
+        rows = conn.execute(
+            "SELECT seq, content_hash FROM audit_log ORDER BY seq ASC"
+        ).fetchall()
+        prev = GENESIS
+        for seq, c in rows:
+            ch = _chain(prev, c)
+            conn.execute(
+                "UPDATE audit_log SET prev_hash=?, chain_hash=? WHERE seq=?",
+                (prev, ch, seq),
+            )
+            prev = ch
+        conn.commit()
+    finally:
+        conn.close()
+    with caplog.at_level(logging.ERROR, logger="legis.store.audit_store"):
+        assert s.verify_integrity() is False
+    assert "seq=3" in caplog.text
 
 
 def test_verify_integrity_handles_non_finite_float_as_integrity_failure(tmp_path):

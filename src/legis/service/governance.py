@@ -26,8 +26,12 @@ from legis.identity.resolver import IdentityResolver
 from legis.policy.grammar import PolicyEvaluation, PolicyGrammar, PolicyResult
 from legis.service.errors import (
     AuditIntegrityError,
+    BindingUnavailableError,
+    NoSuchRequestError,
+    NotClearedError,
     NotEnabledError,
     ProtectedKeyRequiredError,
+    UnresolvedInputError,
 )
 from legis.service.source_binding import (
     require_verified_source_binding,
@@ -62,6 +66,71 @@ def resolve_for_record(
             "lineage_snapshot_status": res.lineage_snapshot_status,
         }
     return res.entity_key, ext
+
+
+def resolve_for_entry(
+    identity: IdentityResolver | None,
+    *,
+    entity: str,
+    entity_sei: str | None,
+) -> tuple[EntityKey, dict]:
+    """The SEI-on-entry resolve boundary for the authoring surfaces (weft doctrine).
+
+    Two mutually exclusive inputs select the resolution path:
+
+    * ``entity_sei`` (L1, inline bind) — the agent already holds a stable SEI and
+      binds it at the point of entry. legis verifies it is alive through the
+      Loomweave ``resolve_sei`` transport and keys directly on it. A non-resolving
+      SEI raises :class:`UnresolvedInputError` (weft-reason ``unresolved_input``)
+      and the caller records NOTHING — never a locator-keyed record masquerading
+      as a stable bind.
+    * ``entity`` alone (L2, locator/symbol) — the pre-existing path: legis resolves
+      the locator to an SEI when it can and degrades to a locator key otherwise
+      (:func:`resolve_for_record`). Unchanged for every existing caller.
+
+    Keeping both axes here means the engine/gate layer below stays
+    transport-agnostic and only ever sees a resolved :class:`EntityKey`.
+    """
+    if entity_sei is None:
+        return resolve_for_record(identity, entity)
+    if identity is None:
+        # No resolve transport wired: an SEI the agent asserts cannot be confirmed
+        # alive, and recording it unverified would be exactly the unbound-but-looks-
+        # bound record the doctrine forbids. Fail closed with the operator fix.
+        raise UnresolvedInputError(
+            cause=(
+                f"entity_sei {entity_sei!r} was supplied but Loomweave identity is "
+                "not wired, so legis cannot confirm the SEI is alive"
+            ),
+            fix=(
+                "Ask the operator to set LOOMWEAVE_API_URL out-of-band and relaunch, "
+                "or submit the entity as a locator/symbol (entity) instead and let "
+                "legis resolve it."
+            ),
+        )
+    resolution = identity.resolve_supplied_sei(entity_sei)
+    if resolution is None:
+        raise UnresolvedInputError(
+            cause=(
+                f"entity_sei {entity_sei!r} did not resolve to a live, stable "
+                "identity in Loomweave"
+            ),
+            fix=(
+                "Confirm the SEI exists and is alive (the entity may have been "
+                "deleted, or Loomweave is degraded), or submit the entity as a "
+                "locator/symbol (entity) for legis to resolve."
+            ),
+        )
+    ext: dict = {}
+    if resolution.alive is not None:
+        ext["loomweave"] = {
+            "alive": resolution.alive,
+            "content_hash": resolution.content_hash,
+            "lineage_snapshot": resolution.lineage_snapshot,
+            "identity_resolution_status": resolution.identity_resolution_status,
+            "lineage_snapshot_status": resolution.lineage_snapshot_status,
+        }
+    return resolution.entity_key, ext
 
 
 def verified_records(
@@ -198,6 +267,7 @@ def submit_override(
     rationale: str,
     agent_id: str,
     extra_extensions: dict[str, Any] | None = None,
+    entity_sei: str | None = None,
 ) -> EnforcementResult:
     """Resolve-then-key, then submit the override to the simple-tier engine.
 
@@ -210,7 +280,7 @@ def submit_override(
     transposed at the call site; this is the seam the MCP adapter (WP-M3) calls
     directly, alongside the existing ``POST /overrides`` handler.
     """
-    entity_key, ext = resolve_for_record(identity, entity)
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     return engine.submit_override(
         policy=policy,
         entity_key=entity_key,
@@ -232,11 +302,23 @@ def submit_protected_override(
     ast_path: str,
     source_root: str | Path | None = None,
     extra_extensions: dict[str, Any] | None = None,
+    entity_sei: str | None = None,
 ) -> ProtectedResult:
-    """Submit a protected-cell override using transport-bound agent identity."""
+    """Submit a protected-cell override using transport-bound agent identity.
+
+    ``entity_sei`` (when supplied) is the weft L1 identity bind: the record keys
+    on that verified SEI. ``entity`` remains the source-path/symbol used for the
+    current-source fingerprint binding — an opaque SEI has no local bytes, so the
+    source binding records an honest ``unverified`` status (the pre-existing
+    non-path-entity behaviour), while identity is still rename-stable.
+    """
     if protected_gate is None:
-        raise NotEnabledError("protected cell not enabled")
-    entity_key, ext = resolve_for_record(identity, entity)
+        # LEG-2: the message names the operator knob (C-8: operator action).
+        raise NotEnabledError(
+            "protected cell not enabled: ask the operator to set "
+            "LEGIS_HMAC_KEY (out-of-band) and relaunch"
+        )
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     source_binding = verify_current_source_binding(
         entity=entity,
         file_fingerprint=file_fingerprint,
@@ -265,11 +347,16 @@ def submit_operator_override(
     file_fingerprint: str,
     ast_path: str,
     source_root: str | Path | None = None,
+    entity_sei: str | None = None,
 ) -> ProtectedResult:
     """Submit a protected-cell operator override with current-source binding."""
     if protected_gate is None:
-        raise NotEnabledError("protected cell not enabled")
-    entity_key, ext = resolve_for_record(identity, entity)
+        # LEG-2: the message names the operator knob (C-8: operator action).
+        raise NotEnabledError(
+            "protected cell not enabled: ask the operator to set "
+            "LEGIS_HMAC_KEY (out-of-band) and relaunch"
+        )
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     source_binding = verify_current_source_binding(
         entity=entity,
         file_fingerprint=file_fingerprint,
@@ -296,11 +383,16 @@ def request_signoff(
     rationale: str,
     agent_id: str,
     extra_extensions: dict[str, Any] | None = None,
+    entity_sei: str | None = None,
 ) -> SignoffResult:
     """Open a structured sign-off request for a launch-bound agent."""
     if signoff_gate is None:
-        raise NotEnabledError("structured cell not enabled")
-    entity_key, ext = resolve_for_record(identity, entity)
+        # LEG-2: the message names the operator knob (C-8: operator action).
+        raise NotEnabledError(
+            "structured cell not enabled: ask the operator to set "
+            "LEGIS_HMAC_KEY (out-of-band) and relaunch"
+        )
+    entity_key, ext = resolve_for_entry(identity, entity=entity, entity_sei=entity_sei)
     return signoff_gate.request(
         policy=policy,
         entity_key=entity_key,
@@ -308,6 +400,174 @@ def request_signoff(
         agent_id=agent_id,
         extensions={**ext, **(extra_extensions or {})},
     )
+
+
+def read_identity_gaps(
+    identity: IdentityResolver | None,
+    records: Callable[[], list],
+) -> dict[str, Any]:
+    """The identity-gap read: which attestations' SEIs does Loomweave report dead?
+
+    GOV-2 honesty: a bare ``[]`` when Loomweave is unwired would read as an
+    all-clear on exactly the condition this read exists to catch, so the
+    payload always discriminates ``status: "unavailable"`` (could not check,
+    with reasons) from ``status: "checked"`` (checked, possibly zero gaps).
+    ``records`` is called only when a check can actually run.
+    """
+    from legis.governance.gaps import find_orphan_gaps
+    from legis.identity.loomweave_client import LoomweaveError
+
+    if identity is None or identity.client is None:
+        return {
+            "status": "unavailable",
+            "gaps": [],
+            "unavailable": [{"reason": "loomweave client not configured"}],
+        }
+    try:
+        gaps = find_orphan_gaps(records(), identity.client)
+    except LoomweaveError as exc:
+        # Loomweave is wired but a check failed mid-flight (outage, timeout,
+        # malformed response). The read distinguishes "could not check" from a
+        # checked-empty list (GOV-2): degrade to unavailable rather than letting
+        # the transport error escape as an INTERNAL_ERROR / 500, which would read
+        # as a hard fault on a recoverable condition.
+        return {
+            "status": "unavailable",
+            "gaps": [],
+            "unavailable": [{"reason": f"loomweave check failed: {exc}"}],
+        }
+    return {
+        "status": "checked",
+        "gaps": [
+            {"sei": g.sei, "reason": g.reason, "lineage": g.lineage}
+            for g in gaps
+        ],
+    }
+
+
+def read_lineage_integrity(
+    identity: IdentityResolver | None,
+    records: Callable[[], list],
+) -> dict[str, Any]:
+    """The lineage-integrity read: do recorded snapshots still prefix lineage?
+
+    GOV-1 honesty: three-way status with ``diverged > unverified > verified``
+    precedence — a divergence is never masked by an unavailable sibling, and an
+    unverifiable lineage is never reported verified. Same unwired discipline as
+    ``read_identity_gaps``.
+    """
+    from legis.governance.gaps import find_lineage_integrity
+
+    if identity is None or identity.client is None:
+        return {
+            "status": "unavailable",
+            "divergences": [],
+            "unavailable": [{"reason": "loomweave client not configured"}],
+        }
+    integrity = find_lineage_integrity(records(), identity.client)
+    return {
+        "status": (
+            "diverged" if integrity.divergences
+            else "unverified" if integrity.unavailable
+            else "verified"
+        ),
+        "divergences": [
+            {"sei": d.sei, "recorded_length": d.recorded_length,
+             "current_length": d.current_length} for d in integrity.divergences
+        ],
+        "unavailable": [
+            {"sei": u.sei, "reason": u.reason} for u in integrity.unavailable
+        ],
+    }
+
+
+def _binding_entity_from_backfill(
+    records: list[Any], original_seq: int
+) -> tuple[EntityKey, str] | None:
+    """ADR-0003 recovery: resolve a locator-keyed request through SEI_BACKFILL.
+
+    Walks the verified trail newest-first for a ``SEI_BACKFILL`` event that
+    re-keys ``original_seq`` onto a stable SEI; returns the backfilled key and
+    content hash, or ``None`` when no usable backfill exists.
+    """
+    for rec in reversed(records):
+        payload = rec.payload
+        if payload.get("event") != "SEI_BACKFILL":
+            continue
+        if payload.get("original_seq") != original_seq:
+            continue
+        try:
+            entity_key = EntityKey.from_dict(payload["entity_key"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not entity_key.identity_stable:
+            continue
+        content_hash = payload.get("extensions", {}).get("loomweave", {}).get(
+            "content_hash"
+        ) or ""
+        return entity_key, content_hash
+    return None
+
+
+def bind_signoff_issue(
+    signoff_gate: SignoffGate | None,
+    trail_verifier,
+    filigree,
+    *,
+    issue_id: str,
+    request_seq: int,
+    key: bytes | None = None,
+    ledger=None,
+) -> dict[str, Any]:
+    """Bind a CLEARED structured sign-off to a Filigree issue.
+
+    The single bind decision both adapters drive (Q-H2): fail-closed trail
+    verification first, then a recorded and cleared request, then the SEI and
+    content hash sourced from the recorded request — never the caller — with
+    the ADR-0003 ``SEI_BACKFILL`` recovery for locator-keyed requests, then the
+    attach + ledger record via ``bind_signoff_to_issue``.
+    """
+    from legis.governance.signoff_binding import bind_signoff_to_issue
+
+    if filigree is None:
+        # LEG-2: the message names the operator knob (C-8: operator action).
+        raise NotEnabledError(
+            "filigree binding not enabled: ask the operator to set "
+            "FILIGREE_API_URL (out-of-band) and relaunch"
+        )
+    if signoff_gate is None:
+        raise NotEnabledError(
+            "structured cell not enabled: ask the operator to set "
+            "LEGIS_HMAC_KEY (out-of-band) and relaunch"
+        )
+    records = verified_records(signoff_gate, trail_verifier, lambda: [])
+    request = signoff_gate.request_record(request_seq)
+    if request is None:
+        raise NoSuchRequestError(f"no sign-off request at seq {request_seq}")
+    if not signoff_gate.is_cleared(request_seq):
+        raise NotClearedError("sign-off not cleared")
+    entity_key = EntityKey.from_dict(request["entity_key"])
+    content_hash = request.get("extensions", {}).get("loomweave", {}).get(
+        "content_hash"
+    ) or ""
+    if not entity_key.identity_stable:
+        backfilled = _binding_entity_from_backfill(records, request_seq)
+        if backfilled is not None:
+            entity_key, content_hash = backfilled
+    try:
+        return bind_signoff_to_issue(
+            filigree,
+            issue_id=issue_id,
+            entity_key=entity_key,
+            content_hash=content_hash,
+            signoff_seq=request_seq,
+            key=key,
+            ledger=ledger,
+        )
+    except ValueError as exc:
+        # ADR-0003 fail-closed: a locator-keyed (non-SEI) sign-off cannot be
+        # rename-stably bound; the sign-off stands, only the pointer waits.
+        raise BindingUnavailableError(str(exc)) from exc
 
 
 def sign_off(
@@ -323,7 +583,11 @@ def sign_off(
     reaches past the service layer to the gate (Q-H2).
     """
     if signoff_gate is None:
-        raise NotEnabledError("structured cell not enabled")
+        # LEG-2: the message names the operator knob (C-8: operator action).
+        raise NotEnabledError(
+            "structured cell not enabled: ask the operator to set "
+            "LEGIS_HMAC_KEY (out-of-band) and relaunch"
+        )
     return signoff_gate.sign_off(
         request_seq=request_seq,
         operator_id=operator_id,

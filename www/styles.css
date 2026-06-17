@@ -1,0 +1,468 @@
+/* ============================================================================
+   LEGIS — single-product landing site layout
+   ----------------------------------------------------------------------------
+   Layered on colors_and_type.css (the token + type source of truth, copied
+   verbatim from the Weft hub). Reuses the weft-hub component grammar — header
+   with path-hint, hero + axiom + stat strip, .axiom, .tag chips, .bindings,
+   the footer with Foundryside attribution — and adds the single-product
+   sections (the governance 2×2, federation engagement, security & honesty).
+   Legis identity is the violet thread (--thread-legis); the amber --accent
+   stays the interactive accent per the token rule (colour = status/member,
+   never decoration).
+   ============================================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { margin: 0; }
+body {
+  background: var(--surface-base);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: var(--surface-base); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 5px; }
+
+.mark { display: block; flex: 0 0 auto; }
+
+/* ---- links --------------------------------------------------------------- */
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+/* external-link affordance */
+.ext::after { content: " \2197"; font-size: 0.85em; color: var(--text-muted); }
+
+/* Legis identity: the header glyph paints violet (overrides the inherited hub
+   rule `.brand .mark { color: var(--text-primary) }`, which ignores --thread). */
+.brand.thread-legis .mark { color: var(--thread-legis); }
+
+/* ---- skip link (keyboard) ------------------------------------------------ */
+.skip-link {
+  position: absolute; left: -9999px; top: 0; z-index: 100;
+  background: var(--surface-overlay); color: var(--text-primary);
+  padding: 8px 14px; border-radius: var(--radius); font-size: 12px;
+}
+.skip-link:focus { left: 8px; top: 8px; text-decoration: none; outline: 2px solid var(--accent); }
+
+/* ---- shared section width ------------------------------------------------ */
+.hero, .what, .cells, .federation, .security, .hub-footer { max-width: 980px; margin: 0 auto; }
+
+/* ============================ HEADER ============================ */
+.hub-header {
+  display: flex; align-items: center; gap: 22px;
+  padding: 12px 30px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--surface-raised);
+  position: sticky; top: 0; z-index: 10;
+}
+.brand { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.brand .mark { color: var(--text-primary); }
+.wordmark {
+  font-family: var(--font-display); font-size: 19px; font-weight: 700;
+  letter-spacing: -0.02em; color: var(--text-primary); white-space: nowrap;
+}
+.path-hint { font-size: 11px; color: var(--text-muted); margin-left: 2px; }
+
+.hub-nav { display: flex; gap: 4px; margin-left: auto; flex-wrap: wrap; }
+.hub-nav a {
+  font-size: 12px; color: var(--text-secondary); text-decoration: none;
+  padding: 6px 11px; border-radius: var(--radius); white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.hub-nav a:hover, .hub-nav a:focus-visible {
+  background: var(--surface-overlay); color: var(--text-primary); text-decoration: none;
+}
+.hub-nav a.ext::after { content: " \2197"; font-size: 0.8em; opacity: 0.6; }
+
+/* ============================ HERO ============================ */
+.hero { padding: 64px 30px 40px; }
+.eyebrow { display: flex; align-items: center; gap: 9px; margin-bottom: 22px; }
+.dot { width: 7px; height: 7px; border-radius: 50%; }
+.dot-ready { background: var(--ready); }
+
+.hero-title {
+  font-family: var(--font-display); font-weight: 700;
+  font-size: clamp(38px, 7vw, 56px); letter-spacing: -0.03em; line-height: 1.02;
+  margin: 0; color: var(--text-primary);
+}
+.hero-lede { font-size: 16px; max-width: 680px; margin-top: 22px; }
+.hero-lede strong { color: var(--text-primary); font-weight: 600; }
+
+.axiom {
+  margin-top: 26px; padding: 16px 20px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-raised);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.axiom-label { margin-bottom: 7px; }
+.axiom-text { font-size: 15px; color: var(--text-primary); line-height: 1.5; }
+
+/* Hero metric strip — the refactored weft-hub kit's `Stat` row (display variant). */
+.hero-stats {
+  display: flex; gap: 44px; flex-wrap: wrap;
+  margin-top: 30px; padding-top: 26px;
+  border-top: 1px solid var(--border-default);
+}
+.stat { display: flex; flex-direction: column; gap: 5px; }
+.stat-label {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+.stat-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.stat-dot.t-ready   { background: var(--ready); }
+.stat-dot.t-accent  { background: var(--accent); }
+.stat-dot.t-muted   { background: var(--text-muted); }
+.stat-dot.t-legis   { background: var(--thread-legis); }
+.stat-value {
+  font-family: var(--font-display); font-weight: 700;
+  font-size: 34px; letter-spacing: -0.02em; line-height: 1;
+  color: var(--text-primary);
+}
+.stat-value-sm { font-size: 26px; letter-spacing: -0.01em; }
+.stat-unit { font-size: 18px; color: var(--text-muted); font-weight: 600; }
+.hero-foot { margin-top: 22px; }
+
+/* ============================ ROSTER ============================ */
+.roster { padding: 20px 30px 40px; }
+.section-label { margin-bottom: 16px; }
+.member-list { display: flex; flex-direction: column; gap: 10px; }
+
+/* card = container; toggle = the clickable header; detail = revealed sibling */
+.member-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--thread, var(--accent));
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.member-card.is-dim { opacity: 0.72; }
+
+/* summary = the clickable header. Native <details> handles expand/collapse with
+   zero JS; JS only upgrades the roster to single-open. Strip the default
+   disclosure triangle — the whole row is the affordance. */
+.member-toggle {
+  display: block; width: 100%; text-align: left;
+  background: transparent; border: 0; color: inherit; font: inherit;
+  padding: 16px 18px; cursor: pointer;
+  list-style: none;
+  transition: background var(--dur-fast) var(--ease);
+}
+.member-toggle::-webkit-details-marker { display: none; }
+.member-toggle::marker { content: ""; }
+.member-toggle:hover { background: var(--surface-overlay); }
+.member-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.member-row { display: flex; align-items: center; gap: 12px; }
+.member-row .mark { color: var(--thread, var(--accent)); }
+.member-main { flex: 1; min-width: 0; }
+.member-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+.member-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.member-lang { font-size: 11px; color: var(--text-muted); }
+.member-domain { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+.member-status {
+  font-size: 10.5px; color: var(--thread, var(--accent));
+  white-space: nowrap; margin-left: auto; padding-left: 8px;
+}
+
+/* Revealed when the parent <details> is open (native — no JS required). */
+.member-detail {
+  margin: 0 18px; padding: 13px 0 16px;
+  border-top: 1px solid var(--border-default);
+}
+.detail-label { margin-bottom: 6px; }
+.detail-answer { display: block; font-size: 13px; color: var(--text-primary); line-height: 1.5; font-style: italic; }
+.detail-repo { display: inline-block; margin-top: 11px; font-size: 11.5px; }
+.detail-repo-none { color: var(--text-muted); }
+.detail-note { display: block; margin-top: 7px; font-size: 11px; color: var(--text-muted); line-height: 1.45; }
+
+/* ---- Lacuna — adjacent specimen (same world, set apart) ----------------- */
+.lacuna-block { margin-top: 22px; }
+.lacuna-label { margin-bottom: 10px; color: var(--lacuna-accent-dim); }
+.lacuna-strip {
+  display: flex; align-items: center; gap: 14px; padding: 15px 18px;
+  background: var(--lacuna-surface);
+  border: 1.5px dashed var(--lacuna-border);
+  border-radius: var(--radius);
+  transition: border-color var(--dur-fast) var(--ease);
+  text-decoration: none; color: inherit;
+}
+.lacuna-strip:hover { border-color: var(--lacuna-accent-dim); text-decoration: none; }
+.lacuna-strip:focus-visible { outline: 2px solid var(--lacuna-accent); outline-offset: 2px; }
+.lacuna-strip .mark { color: var(--lacuna-accent); }
+.lacuna-body { flex: 1; min-width: 0; }
+.lacuna-kind { font-size: 11px; color: var(--lacuna-accent-dim); }
+.lacuna-loc { font-size: 11px; color: var(--lacuna-accent); white-space: nowrap; margin-left: auto; padding-left: 8px; }
+.lacuna-strip.ext::after { content: ""; } /* suppress global ext arrow; loc text carries the cue */
+
+/* ============================ PRODUCT DIRECTORY ============================ */
+/* A no-JS directory of curated cheat-sheets — one anchor card per realized
+   member, linking into its docs product page. Reuses the thread grammar
+   (glyph colour + 4px left-rule), never a fill. */
+.products { padding: 8px 30px 40px; max-width: 980px; margin: 0 auto; }
+.products .section-label { margin-bottom: 6px; }
+.products-lede { max-width: 660px; margin: 0 0 18px; }
+.product-grid {
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px;
+}
+.product-card {
+  display: flex; flex-direction: column; gap: 9px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-default);
+  border-left: 3px solid var(--thread, var(--accent));
+  border-radius: var(--radius-lg);
+  padding: 16px 18px;
+  color: inherit; text-decoration: none;
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease);
+}
+.product-card:hover { background: var(--surface-overlay); text-decoration: none; }
+.product-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.product-card .mark { color: var(--thread, var(--accent)); }
+.product-top { display: flex; align-items: center; gap: 11px; }
+.product-head { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; min-width: 0; }
+.product-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.product-lang { font-size: 11px; color: var(--text-muted); }
+.product-domain { font-size: 12px; color: var(--thread, var(--accent)); }
+.product-what { font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; flex: 1; }
+.product-link {
+  font-size: 11.5px; font-weight: 600; color: var(--accent);
+  margin-top: 2px; align-self: flex-start;
+}
+.product-card:hover .product-link { text-decoration: underline; }
+/* www cards are external (GitHub blobs) and carry .ext; suppress the global ↗
+   after the whole card block — the "Cheat-sheet →" link text carries the cue. */
+.product-card.ext::after { content: ""; }
+.products-foot { margin-top: 16px; }
+
+/* ====================== COMPOSITION LAW ====================== */
+.composition { padding: 28px 30px 24px; }
+.comp-title {
+  font-family: var(--font-display); font-size: 26px; font-weight: 600;
+  letter-spacing: -0.015em; color: var(--text-primary); margin: 0 0 4px;
+}
+.comp-lede { max-width: 660px; margin-bottom: 20px; }
+/* Pill tabs — the design system's `Tabs variant="pill"`: active gets a quiet
+   overlay fill, not the amber accent. Only the text colour transitions; the
+   pill-fill (a binary active state) snaps so it can't stick mid-transition. */
+.mode-toggle { display: flex; gap: 4px; margin-bottom: 16px; flex-wrap: wrap; }
+.mode-btn {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+  padding: 6px 12px; border-radius: var(--radius); cursor: pointer;
+  border: none; background: transparent; color: var(--text-secondary);
+  transition: color var(--dur-fast) var(--ease);
+}
+.mode-btn:hover { color: var(--text-primary); }
+.mode-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.mode-btn.is-active {
+  font-weight: 600; background: var(--surface-overlay); color: var(--text-primary);
+}
+.mode-panel {
+  background: var(--surface-raised); border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg); padding: 22px 24px; min-height: 64px;
+}
+.mode-panel .mode-text { font-size: 15px; color: var(--text-primary); line-height: 1.55; }
+
+/* ====================== HOW THEY COMPOSE (weave) ====================== */
+.weave { padding: 16px 30px 44px; }
+.facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 16px 0 28px; }
+.fact {
+  background: var(--surface-raised); border: 1px solid var(--border-default);
+  border-left: 3px solid var(--accent); border-radius: var(--radius-lg);
+  padding: 18px 20px;
+}
+.fact-title { font-size: 15px; font-weight: 600; color: var(--text-primary); margin: 7px 0 8px; }
+.fact-body { font-size: 13px; color: var(--text-secondary); line-height: 1.55; }
+
+.bindings { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.bindings li {
+  font-size: 13px; color: var(--text-secondary); line-height: 1.5;
+  padding: 11px 14px; background: var(--surface-raised);
+  border: 1px solid var(--border-default); border-radius: var(--radius);
+  display: flex; align-items: baseline; gap: 7px; flex-wrap: wrap;
+}
+.b-name { font-weight: 600; color: var(--thread, var(--accent)); }
+.b-arrow { color: var(--text-muted); }
+.b-desc { color: var(--text-secondary); }
+.weave-foot { margin-top: 16px; }
+
+/* ---- small inline status tags (status-coloured, alpha fill) -------------- */
+.tag {
+  display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.04em;
+  padding: 2px 7px; border-radius: var(--radius-sm); white-space: nowrap; margin-left: 2px;
+}
+.tag-ok   { color: var(--ready); background: color-mix(in oklab, var(--ready) 16%, transparent); }
+.tag-warn { color: var(--aging); background: color-mix(in oklab, var(--aging) 16%, transparent); }
+.tag-dim  { color: var(--text-muted); background: var(--surface-overlay); }
+
+/* ============================ FOOTER ============================ */
+.hub-footer {
+  border-top: 1px solid var(--border-default);
+  padding: 20px 30px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+}
+.hub-footer .mark { color: var(--text-muted); }
+.foot-note { font-size: 11px; color: var(--text-muted); }
+.foot-links { display: flex; gap: 14px; flex-wrap: wrap; margin-left: auto; }
+.foot-links a { font-size: 11px; color: var(--text-secondary); }
+.foot-links a:hover { color: var(--text-primary); }
+.foot-meta { font-size: 11px; color: var(--text-muted); }
+/* parent-org attribution: Foundryside (org) above Weft (federation) — neutral, never a thread color */
+.foot-org { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); text-decoration: none; transition: color 0.15s var(--ease); }
+.foot-org .mark { color: inherit; }
+.foot-org:hover { color: var(--text-secondary); }
+
+/* ============================ WHAT LEGIS IS ============================ */
+.what { padding: 12px 30px 40px; }
+
+/* owns-grid — the four authoritative artifacts, thread left-rule (no fill) */
+.owns-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin: 20px 0 24px; }
+.owns-card {
+  background: var(--surface-raised); border: 1px solid var(--border-default);
+  border-left: 3px solid var(--thread, var(--accent)); border-radius: var(--radius-lg);
+  padding: 16px 18px;
+}
+.owns-title { font-size: 14px; font-weight: 600; color: var(--text-primary); margin-bottom: 7px; }
+.owns-body { font-size: 12.5px; color: var(--text-secondary); line-height: 1.55; }
+.owns-body .t-code { color: var(--text-primary); }
+
+/* what Legis is NOT */
+.not-block {
+  background: var(--surface-raised); border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg); padding: 18px 20px;
+}
+.not-label { margin-bottom: 12px; }
+.not-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-wrap: wrap; gap: 8px 10px;
+}
+.not-list li {
+  font-size: 12.5px; color: var(--text-secondary);
+  background: var(--surface-overlay); border: 1px solid var(--border-default);
+  border-radius: var(--radius); padding: 6px 11px;
+}
+.not-foot { margin: 14px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.55; }
+.not-foot em { color: var(--text-secondary); font-style: italic; }
+
+/* ============================ THE 2×2 (centerpiece) ============================ */
+.cells { padding: 12px 30px 40px; }
+
+/* Filter pills — the design system's Tabs variant="pill". Additive only: every
+   cell is rendered statically below; JS just dims the non-matching cells. */
+.cell-filter { display: flex; gap: 4px; margin: 18px 0 14px; flex-wrap: wrap; }
+.cell-btn {
+  font-family: var(--font-mono); font-size: 12px; font-weight: 500;
+  padding: 6px 12px; border-radius: var(--radius); cursor: pointer;
+  border: none; background: transparent; color: var(--text-secondary);
+  transition: color var(--dur-fast) var(--ease);
+}
+.cell-btn:hover { color: var(--text-primary); }
+.cell-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cell-btn.is-active { font-weight: 600; background: var(--surface-overlay); color: var(--text-primary); }
+
+/* axis legend — orientation labels for the 2×2 */
+.cell-axes {
+  display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.cell-axes span {
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em;
+  text-transform: uppercase; color: var(--text-muted);
+}
+
+.cell-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.cell-card {
+  display: flex; flex-direction: column;
+  background: var(--surface-raised); border: 1px solid var(--border-default);
+  border-left: 3px solid var(--thread, var(--accent)); border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+/* JS-only emphasis: when the grid carries a filter, non-matching cells dim. */
+.cell-grid.is-filtered .cell-card { opacity: 0.34; }
+.cell-grid.is-filtered .cell-card.is-match { opacity: 1; }
+.cell-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 9px; }
+.cell-name { font-family: var(--font-display); font-size: 19px; font-weight: 700; letter-spacing: -0.01em; color: var(--thread, var(--accent)); }
+.cell-axis { font-size: 10.5px; }
+.cell-body { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0 0 14px; flex: 1; }
+.cell-body .t-code { color: var(--text-primary); }
+.cell-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.cell-cost { font-size: 11px; color: var(--text-muted); }
+
+/* graded-enforcement primitive callout */
+.prim-block {
+  margin-top: 16px; padding: 16px 20px;
+  border-left: 3px solid var(--accent); background: var(--surface-raised);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+.prim-label { margin-bottom: 8px; }
+.prim-body { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+.prim-body strong { color: var(--text-primary); }
+
+/* ============================ FEDERATION ============================ */
+.federation { padding: 12px 30px 40px; }
+.combos-label { margin-top: 26px; }
+.b-plus { color: var(--text-muted); font-weight: 600; }
+.bindings .t-code { color: var(--text-primary); }
+
+/* ============================ SECURITY & HONESTY ============================ */
+.security { padding: 12px 30px 48px; }
+
+/* the tamper-evident definition — quiet, neutral accent (it's a precision note) */
+.lim-note {
+  background: var(--surface-raised); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); padding: 16px 20px; margin: 18px 0 20px;
+}
+.lim-note-label { margin-bottom: 8px; }
+.lim-note-body { font-size: 13px; color: var(--text-secondary); line-height: 1.6; margin: 0; }
+.lim-note-body strong { color: var(--text-primary); }
+
+.lim-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.lim-list li {
+  font-size: 12.5px; color: var(--text-secondary); line-height: 1.6;
+  padding: 13px 16px; background: var(--surface-raised);
+  border: 1px solid var(--border-default); border-radius: var(--radius);
+}
+.lim-title { display: block; font-weight: 600; color: var(--text-primary); margin-bottom: 4px; }
+
+/* the two published reviews */
+.review-block { margin-top: 24px; }
+.review-lede { font-size: 14px; margin-bottom: 16px; }
+.review-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.review-card {
+  display: flex; flex-direction: column; gap: 7px;
+  background: var(--surface-raised); border: 1px solid var(--border-default);
+  border-left: 3px solid var(--thread, var(--accent)); border-radius: var(--radius-lg);
+  padding: 16px 18px; color: inherit; text-decoration: none;
+  transition: background var(--dur-fast) var(--ease);
+}
+.review-card:hover { background: var(--surface-overlay); text-decoration: none; }
+.review-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.review-card.ext::after { content: ""; }
+.review-name { font-size: 13px; font-weight: 600; color: var(--accent); }
+.review-card:hover .review-name { text-decoration: underline; }
+.review-what { font-size: 12px; color: var(--text-secondary); line-height: 1.55; }
+.review-foot { margin-top: 16px; font-size: 12px; color: var(--text-muted); line-height: 1.6; }
+
+/* ============================ RESPONSIVE ============================ */
+@media (max-width: 720px) {
+  .facts { grid-template-columns: 1fr; }
+  .owns-grid { grid-template-columns: 1fr; }
+  .cell-grid { grid-template-columns: 1fr; }
+  .review-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .hub-header { gap: 12px; padding: 12px 18px; }
+  .path-hint { display: none; }
+  .hero { padding: 44px 18px 32px; }
+  .hero-stats { gap: 24px 32px; }
+  .stat-value { font-size: 28px; }
+  .what, .cells, .federation, .security { padding-left: 18px; padding-right: 18px; }
+  .hub-footer { padding: 18px; }
+  .foot-links { margin-left: 0; flex-basis: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition: none !important; animation: none !important; }
+}

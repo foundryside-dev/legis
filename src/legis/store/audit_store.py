@@ -18,7 +18,7 @@ import hashlib
 import json
 import logging
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +42,11 @@ logger = logging.getLogger(__name__)
 
 GENESIS = "0" * 64
 
+# A signer that, given the chain position a record will occupy (seq, prev_hash),
+# returns the fully-built, signed payload. Used by ``append_signed`` to bind seq
+# into the v3 HMAC (AUD-1).
+BuildSignedPayload = Callable[[int, str], dict[str, Any]]
+
 
 def _apply_sqlite_pragmas(dbapi_connection: Any, url: str) -> None:
     """Apply the durability/concurrency PRAGMAs to a freshly-opened connection.
@@ -57,11 +62,23 @@ def _apply_sqlite_pragmas(dbapi_connection: Any, url: str) -> None:
       ``except Exception: pass`` never caught this most-likely case, so the
       connection ran without WAL and the symptom surfaced much later as an
       opaque "database is locked" under concurrency. Detect and log it here.
+
+    Durability is ``synchronous=FULL``, NOT the throughput-favouring ``NORMAL``
+    (AUD-3). Under WAL, ``NORMAL`` fsyncs the WAL only at a checkpoint, so a
+    committed-but-not-yet-checkpointed append is lost on a power-cut — and the
+    survivors form a consistent, contiguous, fully-signed chain, i.e. a
+    valid-looking *shortened* trail indistinguishable from "nothing more was
+    written". For an audit-integrity store that silent tail-loss is the harm,
+    so each commit is fsynced (``FULL``); throughput is the right thing to
+    trade. This is the prevention half; AUD-1's out-of-band head anchor is the
+    detection half (it flags a trail that shrank below its recorded head). The
+    floor is intentionally not configurable — an audit store's durability must
+    not be lowerable back to the bug.
     """
     cursor = dbapi_connection.cursor()
     try:
         journal_row = cursor.execute("PRAGMA journal_mode=WAL").fetchone()
-        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA synchronous=FULL")
         cursor.execute("PRAGMA busy_timeout=5000")
         journal_mode = journal_row[0] if journal_row else None
         if journal_mode is not None and str(journal_mode).lower() != "wal":
@@ -97,12 +114,19 @@ def _chain(prev_hash: str, c_hash: str) -> str:
 
 
 class AuditStore:
-    def __init__(self, url: str) -> None:
+    def __init__(
+        self,
+        url: str,
+        *,
+        initialize: bool = True,
+        apply_pragmas: bool = True,
+    ) -> None:
         # The federated store subtree (.weft/legis) is created lazily, here at
         # open time — SQLite makes the .db file but never its parent directory.
         from legis.config import ensure_sqlite_parent
 
-        ensure_sqlite_parent(url)
+        if initialize:
+            ensure_sqlite_parent(url)
         # NullPool: hold no connection between operations — an append-only
         # audit store wants no lingering locks and clean resource lifecycle.
         self._engine = create_engine(url, future=True, poolclass=NullPool)
@@ -113,10 +137,11 @@ class AuditStore:
         self._txn = threading.local()
 
         from sqlalchemy import event
-        @event.listens_for(self._engine, "connect")
-        def set_sqlite_pragma(dbapi_connection, connection_record):
-            if "sqlite" in url:
-                _apply_sqlite_pragmas(dbapi_connection, url)
+        if apply_pragmas:
+            @event.listens_for(self._engine, "connect")
+            def set_sqlite_pragma(dbapi_connection, connection_record):
+                if "sqlite" in url:
+                    _apply_sqlite_pragmas(dbapi_connection, url)
 
         self._md = MetaData()
         self._log = Table(
@@ -128,8 +153,9 @@ class AuditStore:
             Column("prev_hash", Text, nullable=False),
             Column("chain_hash", Text, nullable=False),
         )
-        self._md.create_all(self._engine)
-        self._install_append_only_triggers()
+        if initialize:
+            self._md.create_all(self._engine)
+            self._install_append_only_triggers()
 
     def _install_append_only_triggers(self) -> None:
         if self._engine.dialect.name == "sqlite":
@@ -184,6 +210,14 @@ class AuditStore:
             finally:
                 self._txn.conn = None
 
+    def in_batch(self) -> bool:
+        """Whether a ``transaction()`` batch is held on this thread's connection.
+
+        Lets a caller skip a fresh-connection read (forbidden mid-batch, see
+        ``_assert_no_batch_in_progress``) and defer it until the batch commits —
+        e.g. a head-anchor advance that must run after the lock is released."""
+        return getattr(self._txn, "conn", None) is not None
+
     def _assert_no_batch_in_progress(self, method: str) -> None:
         """Fail loudly if a fresh-connection read runs inside a held batch (Q-M5).
 
@@ -204,26 +238,49 @@ class AuditStore:
                 "appends — resolve all reads before opening the batch (Q-M5)."
             )
 
-    def _insert(self, conn: Any, payload: dict[str, Any]) -> int:
-        c_hash = content_hash(payload)
-        prev = conn.execute(
-            select(self._log.c.chain_hash)
+    def _head(self, conn: Any) -> tuple[int, str]:
+        """The current chain head as (last_seq, prev_hash) under the open conn.
+
+        Read once and reused by both insert paths so the seq a signer binds
+        (AUD-1 / v3) is exactly the seq the row receives.
+        """
+        row = conn.execute(
+            select(self._log.c.seq, self._log.c.chain_hash)
             .order_by(self._log.c.seq.desc())
             .limit(1)
-        ).scalar()
-        prev_hash = prev if prev is not None else GENESIS
-        result = conn.execute(
+        ).first()
+        if row is None:
+            return 0, GENESIS
+        return row.seq, row.chain_hash
+
+    def _write(self, conn: Any, seq: int, payload: dict[str, Any], prev_hash: str) -> int:
+        c_hash = content_hash(payload)
+        conn.execute(
             insert(self._log).values(
+                seq=seq,
                 payload=canonical_json(payload),
                 content_hash=c_hash,
                 prev_hash=prev_hash,
                 chain_hash=_chain(prev_hash, c_hash),
             )
         )
-        primary_key = result.inserted_primary_key
-        if primary_key is None:
-            raise RuntimeError("audit_log insert did not return a primary key")
-        return int(primary_key[0])
+        return seq
+
+    def _insert(self, conn: Any, payload: dict[str, Any]) -> int:
+        last_seq, prev_hash = self._head(conn)
+        return self._write(conn, last_seq + 1, payload, prev_hash)
+
+    def _insert_signed(
+        self, conn: Any, build_payload: BuildSignedPayload
+    ) -> int:
+        # AUD-1: hand the signer its own chain position so it can bind seq into
+        # the HMAC (v3). seq is the explicit max+1 computed here under the held
+        # write lock — never autoincrement — so the value the signer commits to
+        # is provably the value the row gets, with no read-then-insert race.
+        last_seq, prev_hash = self._head(conn)
+        seq = last_seq + 1
+        payload = build_payload(seq, prev_hash)
+        return self._write(conn, seq, payload, prev_hash)
 
     def append(self, payload: dict[str, Any]) -> int:
         ambient = getattr(self._txn, "conn", None)
@@ -235,6 +292,23 @@ class AuditStore:
             if conn.dialect.name == "sqlite":
                 conn.execute(text("BEGIN IMMEDIATE"))
             return self._insert(conn, payload)
+
+    def append_signed(self, build_payload: BuildSignedPayload) -> int:
+        """Append a record that binds its own chain position into its signature.
+
+        ``build_payload(seq, prev_hash)`` is called with the position this record
+        will occupy and must return the fully-built, signed payload (the gate
+        folds ``seq`` into the v3 signed field set). The whole reserve-sign-insert
+        runs under one ``BEGIN IMMEDIATE`` lock, so a concurrent append cannot
+        steal the seq the signer committed to.
+        """
+        ambient = getattr(self._txn, "conn", None)
+        if ambient is not None:
+            return self._insert_signed(ambient, build_payload)
+        with self._engine.begin() as conn:
+            if conn.dialect.name == "sqlite":
+                conn.execute(text("BEGIN IMMEDIATE"))
+            return self._insert_signed(conn, build_payload)
 
     def read_all(self) -> list[AuditRecord]:
         self._assert_no_batch_in_progress("read_all")
@@ -277,6 +351,7 @@ class AuditStore:
         # see that function's cost note (rc4 review #7) for why it is not narrowed.
         self._assert_no_batch_in_progress("verify_integrity")
         prev_hash = GENESIS
+        expected_seq = 1
         try:
             records = self.read_all()
         except (json.JSONDecodeError, TypeError, ValueError):
@@ -290,6 +365,24 @@ class AuditStore:
             )
             return False
         for rec in records:
+            # Contiguity (AUD-1): the chain walk below only verifies that each
+            # *link* points at its predecessor's hash, which an attacker with
+            # file access can recompute (the chain is plain SHA, keyless). What
+            # they cannot hide is the seq column skipping a deleted row. seq is
+            # assigned strictly contiguously at append (1..N, no gaps — appends
+            # never reuse or skip), so any gap or reorder is out-of-band
+            # deletion. This is the always-on half of the delete-and-rechain
+            # defence; binding seq into the per-record HMAC (v3) is the other.
+            if rec.seq != expected_seq:
+                logger.error(
+                    "audit trail integrity check failed at seq=%s: non-contiguous "
+                    "sequence (expected seq=%s) — a record was deleted or reordered "
+                    "out of band",
+                    rec.seq,
+                    expected_seq,
+                )
+                return False
+            expected_seq += 1
             # json.loads accepts Infinity/NaN, so a directly-tampered payload
             # survives read_all's decode but makes canonical_json(allow_nan=
             # False) raise out of content_hash. Treat that as tamper, not a

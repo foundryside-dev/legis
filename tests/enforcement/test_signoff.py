@@ -65,7 +65,7 @@ def test_protected_signoff_is_tamper_bound(tmp_path):
     )
     g.sign_off(request_seq=req.seq, operator_id="op-1", rationale="ok")
     ext = store.read_all()[1].payload["extensions"]
-    assert ext["signoff_signature"].startswith("hmac-sha256:v2:")
+    assert ext["signoff_signature"].startswith("hmac-sha256:v3:")
 
 
 def test_protected_signoff_binds_the_original_request_payload(tmp_path):
@@ -89,7 +89,7 @@ def test_protected_signoff_binds_the_original_request_payload(tmp_path):
 
     signoff = store.read_all()[1].payload
     assert signoff["extensions"]["request_payload_hash"] == content_hash(request_payload)
-    assert signoff["extensions"]["signoff_signature"].startswith("hmac-sha256:v2:")
+    assert signoff["extensions"]["signoff_signature"].startswith("hmac-sha256:v3:")
 
 
 def test_signoff_index_bounds_validation(tmp_path):

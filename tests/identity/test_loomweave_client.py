@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 
 import pytest
 
@@ -121,6 +122,42 @@ def test_sign_loomweave_request_matches_loomweave_hmac_contract():
     }
 
 
+def test_capability_probe_is_signed_when_key_is_provisioned():
+    # ID-3: the capability probe is the trust-establishing handshake — it decides
+    # whether legis treats the provider as SEI-capable at all. When a key is
+    # provisioned it must carry the Weft-component HMAC like every other route;
+    # an unsigned probe is the one route an auth-enforcing Loomweave cannot
+    # authenticate, and the lone unsigned exception in a keyed deployment.
+    fetch = _fake_fetch({("GET", "/api/v1/_capabilities"): {"sei": {"supported": True, "version": 1}}})
+    c = HttpLoomweaveIdentity(
+        "http://localhost",
+        fetch=fetch,
+        hmac_key="s3cr3t",
+        clock=lambda: 1_900_000_000,
+        nonce_factory=lambda: "nonce-1",
+    )
+
+    assert c.capability() is True
+
+    headers = fetch.calls[-1][3]
+    expected = sign_loomweave_request(
+        b"s3cr3t",
+        "GET",
+        "http://localhost/api/v1/_capabilities",
+        None,
+        timestamp=1_900_000_000,
+        nonce="nonce-1",
+    )
+    assert headers == expected
+
+
+def test_capability_probe_stays_unsigned_when_no_key():
+    # Keyless (loopback/trusted) deployments are unchanged: no key → no headers.
+    fetch = _fake_fetch({("GET", "/api/v1/_capabilities"): {"sei": {"supported": True, "version": 1}}})
+    assert HttpLoomweaveIdentity("http://localhost", fetch=fetch).capability() is True
+    assert fetch.calls[-1][3] == {}
+
+
 def test_resolve_locator_sends_weft_hmac_headers_when_key_is_provisioned():
     body = {"sei": "loomweave:eid:abc", "current_locator": "python:function:m.f", "content_hash": "h", "alive": True}
     fetch = _fake_fetch({("POST", "/api/v1/identity/resolve"): body})
@@ -194,3 +231,28 @@ def test_urllib_fetch_rejects_oversized_responses(monkeypatch):
     monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
     with pytest.raises(LoomweaveError, match="too large"):
         _urllib_fetch("GET", "http://localhost/api/v1/_capabilities", None)
+
+
+def test_insecure_remote_http_warns_when_flag_bypasses_https(monkeypatch, caplog):
+    # ID-SEI-1: the flag permits plaintext to a REMOTE host — which voids the SEI
+    # response TLS custody seal — so it must warn loudly (it was silent before).
+    monkeypatch.setenv("LEGIS_ALLOW_INSECURE_REMOTE_HTTP", "1")
+    with caplog.at_level(logging.WARNING):
+        HttpLoomweaveIdentity("http://remote.example:9000")
+    assert any(
+        "LEGIS_ALLOW_INSECURE_REMOTE_HTTP" in r.getMessage() for r in caplog.records
+    )
+
+
+def test_no_insecure_warning_for_loopback_or_https(monkeypatch, caplog):
+    monkeypatch.setenv("LEGIS_ALLOW_INSECURE_REMOTE_HTTP", "1")
+    with caplog.at_level(logging.WARNING):
+        HttpLoomweaveIdentity("http://localhost:9000")   # loopback plaintext is fine
+        HttpLoomweaveIdentity("https://remote.example")  # remote but TLS-protected
+    assert caplog.records == []
+
+
+def test_remote_http_without_flag_still_raises(monkeypatch):
+    monkeypatch.delenv("LEGIS_ALLOW_INSECURE_REMOTE_HTTP", raising=False)
+    with pytest.raises(LoomweaveError):
+        HttpLoomweaveIdentity("http://remote.example")

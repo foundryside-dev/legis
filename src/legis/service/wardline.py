@@ -84,21 +84,39 @@ def resolve_scan_routing(
             "server Wardline routing is misconfigured",
         )
     server_routing = server_cell is not None or server_cell_by_severity is not None
-    request_routing = (
-        request_cell is not None
-        or request_severity_map is not None
-        or request_fail_on is not None
-    )
-    if server_routing:
-        if request_routing:
-            raise WardlineRoutingError(
-                WardlineRoutingError.SERVER_OWNED, "Wardline routing is server-owned"
-            )
-    else:
+    # Name the request-side routing args the caller actually supplied so the
+    # rejection points at the concrete offending knob (the "cell trap"), not a
+    # generic "routing is server-owned". Order is the schema order.
+    supplied_request_args = [
+        name
+        for name, value in (
+            ("cell", request_cell),
+            ("severity_map", request_severity_map),
+            ("fail_on", request_fail_on),
+        )
+        if value is not None
+    ]
+    request_routing = bool(supplied_request_args)
+    if server_routing and request_routing:
+        raise WardlineRoutingError(
+            WardlineRoutingError.SERVER_OWNED,
+            "Wardline routing is server-owned; the server already pins the "
+            "cell, so request-side routing arg(s) "
+            f"{', '.join(supplied_request_args)} were rejected. (Request-side "
+            "routing requires the LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING opt-in.)",
+        )
+    elif not server_routing:
         if not allow_request_routing:
+            supplied_note = (
+                " supplied request-side arg(s) "
+                f"{', '.join(supplied_request_args)} were rejected;"
+                if supplied_request_args
+                else ""
+            )
             raise WardlineRoutingError(
                 WardlineRoutingError.SERVER_OWNED,
-                "Wardline routing is server-owned; configure LEGIS_WARDLINE_CELL "
+                "Wardline routing is server-owned;"
+                f"{supplied_note} configure LEGIS_WARDLINE_CELL "
                 "or LEGIS_WARDLINE_CELL_BY_SEVERITY",
             )
         if request_fail_on is not None:
@@ -153,6 +171,28 @@ def resolve_scan_routing(
     )
 
 
+@dataclass(frozen=True)
+class RoutedScan:
+    """The outcome of routing a wardline scan.
+
+    Carries the per-finding ``routed`` records AND the scan-level
+    ``artifact_status`` posture (``verified`` / ``dirty`` / ``unverified``), so a
+    caller can echo dev-grade-vs-CI-grade at the response root instead of leaving
+    it buried in each routed record's provenance — and absent entirely when
+    nothing routes (opp #6 / vacuous-green, same class as wardline W2).
+
+    ``artifact_status_reason`` is the honesty surface for the status: a bare
+    ``"unverified"`` cannot distinguish key-absent (verification DISABLED) from a
+    key that failed to verify, so the reason (``key_absent`` /
+    ``dirty_dev_artifact`` / ``signature_verified``) rides at the root too. It is
+    always present — no posture without its provenance (PDR-0023).
+    """
+
+    routed: list[dict[str, Any]]
+    artifact_status: str
+    artifact_status_reason: str
+
+
 def route_wardline_scan(
     scan: Mapping[str, Any],
     *,
@@ -165,7 +205,7 @@ def route_wardline_scan(
     fail_on: WardlineSeverity | None = None,
     artifact_key: bytes | None = None,
     allow_dirty: bool = False,
-) -> list[dict[str, Any]]:
+) -> RoutedScan:
     artifact_provenance = verify_wardline_artifact(
         scan, artifact_key, allow_dirty=allow_dirty
     )
@@ -192,7 +232,7 @@ def route_wardline_scan(
         }
         policy = None
 
-    return route_findings(
+    routed = route_findings(
         findings,
         policy=policy,
         cell_map=cell_map,
@@ -201,4 +241,9 @@ def route_wardline_scan(
         engine=engine,
         signoff=signoff,
         batch_provenance=batch_provenance,
+    )
+    return RoutedScan(
+        routed=routed,
+        artifact_status=artifact_provenance["artifact_status"],
+        artifact_status_reason=artifact_provenance["artifact_status_reason"],
     )

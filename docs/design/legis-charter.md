@@ -2,7 +2,7 @@
 
 ## Summary
 
-Legis is the planned fourth Weft product. It is responsible for project change provenance and the git/CI common operating picture. (The authoritative federation roster and axiom live in the Weft hub at `~/weft/doctrine.md`; this "fourth product" framing is Legis's own self-description, consistent with the hub's roster ruling.)
+Legis is a shipped, admitted Weft product (`1.0.0`). It is responsible for project change provenance and the git/CI common operating picture. (The authoritative federation roster and axiom live in the Weft hub at `~/weft/doctrine.md`; this charter is Legis's own self-description, consistent with the hub's roster ruling.)
 
 ## Authority boundary
 
@@ -38,16 +38,33 @@ Legis becomes the common operating picture for project change and governance whi
 ## Known governance gaps
 
 - **Self-asserted write actor (`verified_author: null`).** Actor identity on
-  federation write events (e.g. a comment or status change attributed to an
-  agent) is self-asserted by the caller, not cryptographically verified. For
-  trust-local, single-operator use this is acceptable. A multi-principal
-  deployment that needs non-repudiable write attribution would require a
-  verified-identity binding at the write boundary — Legis governs *change*
-  provenance but does not today mint or verify the actor identity carried on a
-  sibling's write. Verified authorship is a deferred item in the governance
-  story, not a current guarantee. (Surfaced in the 2026-06 lacuna dogfood as
-  finding C3; tracked federation-side under the residual-friction tail.)
+  write events is self-asserted by the caller, not cryptographically verified.
+  This holds in two places with the same trust property:
+  - *Federation writes* (e.g. a comment or status change attributed to an agent
+    on a sibling's surface) — Legis governs *change* provenance but does not mint
+    or verify the actor identity carried on a sibling's write.
+  - *Legis's own governance/audit records.* Every override and sign-off record
+    stores a self-asserted actor — the `agent_id` (and `operator_id` for operator
+    overrides) — written verbatim into the append-only, hash-chained audit store.
+    The narrative `verified_author: null` maps to these concrete stored fields.
+    Two real safeguards bound the gap, but neither is authentication: the MCP
+    actor is **launch-bound** (the `--agent-id` is fixed at launch; no tool schema
+    accepts actor identity as a call argument, so an in-session agent cannot pick,
+    spoof, or rotate its actor per call), and the complex tier's HMAC signs *over*
+    `agent_id` — but that is **tamper-evidence** (the value was not altered after
+    write), not proof the value was true at write time. (Note: the governed
+    *subject*'s identity — the SEI of a code entity — *is* resolved via Loomweave;
+    only the *actor* is unauthenticated. The two are kept separate.)
 
-## Near-term scope
+  For trust-local, single-operator use this is acceptable. Non-repudiable write
+  attribution would require an operator-held verified-identity binding at the
+  write boundary (`service/governance.py` submit paths) — out-of-band, never an
+  agent-reachable surface, per capability confinement (proposed convention C-8).
+  Verified authorship is a deferred item in the governance story, not a current
+  guarantee. The records do not *falsely* claim verification — the field is
+  plainly `agent_id`, so this is an honesty/documentation gap, not a false
+  assertion. (Surfaced in the 2026-06 lacuna dogfood as finding C3.)
 
-The initial repository is documentation-first. It should make the intended role reviewable before runtime implementation starts.
+## Status
+
+Legis is at `1.0.0` — shipped, admitted to the federation, and runtime-implemented (`serve`, the MCP surface, and the CI gates are all live). This charter records the role the implementation fills; it is no longer a pre-implementation design sketch. For what Legis does *not* yet guarantee, see the **Known governance gaps** above — the open item there (verified write authorship) is the honest limit on the current `1.0.0` story, not a closed one.
