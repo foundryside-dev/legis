@@ -31,6 +31,7 @@ from sqlalchemy import (
     Text,
     create_engine,
     insert,
+    inspect,
     select,
     text,
 )
@@ -310,9 +311,22 @@ class AuditStore:
                 conn.execute(text("BEGIN IMMEDIATE"))
             return self._insert_signed(conn, build_payload)
 
+    def _has_log_table(self, conn) -> bool:
+        """True iff the ``audit_log`` table exists on this connection.
+
+        An ``initialize=False`` handle opened against an unprovisioned DB (a
+        missing or empty/no-table file) has no table; reads then treat the store
+        as empty rather than raising ``OperationalError("no such table")``
+        (fail-closed: callers map an empty store to their safe default). DDL only
+        ever runs under ``initialize=True``, so a read can never create it.
+        """
+        return inspect(conn).has_table("audit_log")
+
     def read_all(self) -> list[AuditRecord]:
         self._assert_no_batch_in_progress("read_all")
         with self._engine.begin() as conn:
+            if not self._has_log_table(conn):
+                return []
             rows = conn.execute(
                 select(self._log).order_by(self._log.c.seq.asc())
             ).all()
@@ -330,6 +344,8 @@ class AuditStore:
     def read_by_seq(self, seq: int) -> AuditRecord | None:
         self._assert_no_batch_in_progress("read_by_seq")
         with self._engine.begin() as conn:
+            if not self._has_log_table(conn):
+                return None
             row = conn.execute(
                 select(self._log).where(self._log.c.seq == seq)
             ).first()
@@ -428,6 +444,8 @@ class AuditStore:
     def get_latest_sequence_and_hash(self) -> tuple[int, str]:
         self._assert_no_batch_in_progress("get_latest_sequence_and_hash")
         with self._engine.begin() as conn:
+            if not self._has_log_table(conn):
+                return 0, GENESIS
             row = conn.execute(
                 select(self._log.c.seq, self._log.c.chain_hash)
                 .order_by(self._log.c.seq.desc())

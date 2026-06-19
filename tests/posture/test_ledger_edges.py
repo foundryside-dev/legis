@@ -43,6 +43,45 @@ def test_read_floor_empty_initialized_store_is_none(tmp_path):
     assert ledger.read_floor() is None
 
 
+# -- unprovisioned ledger: a file with no audit_log table ---------------------
+# Production reads open the ledger initialize=False (mcp.py: build_runtime), so a
+# pre-posture / unprovisioned DB has NO audit_log table. Such a read must degrade
+# to the same fail-closed "no ledger" state (None / False) as a missing file, not
+# crash with OperationalError("no such table: audit_log"). (dogfood: legis-5fd3b257c3)
+
+
+def test_read_floor_empty_file_no_table_is_none(tmp_path):
+    # A 0-byte / no-table DB opened initialize=False must read as None, not raise.
+    db = tmp_path / "empty-posture.db"
+    db.touch()
+    ledger = PostureLedger(f"sqlite:///{db}", initialize=False)
+    assert ledger.read_floor() is None
+
+
+def test_epoch_reset_unacknowledged_no_table_is_false(tmp_path):
+    # epoch_reset_unacknowledged() reads via read_all() with no existence guard;
+    # an unprovisioned (empty-file) ledger must report False, not raise.
+    db = tmp_path / "empty-posture.db"
+    db.touch()
+    ledger = PostureLedger(f"sqlite:///{db}", initialize=False)
+    assert ledger.epoch_reset_unacknowledged() is False
+
+
+def test_epoch_reset_unacknowledged_missing_file_is_false(tmp_path):
+    # Missing file (no path.exists guard inside read_all) must also degrade.
+    url = f"sqlite:////{tmp_path.as_posix().lstrip('/')}/missing.db"
+    ledger = PostureLedger(url, initialize=False)
+    assert ledger.epoch_reset_unacknowledged() is False
+
+
+def test_current_epoch_fingerprint_no_table_is_none(tmp_path):
+    # The change-gate epoch read must also tolerate an unprovisioned ledger.
+    db = tmp_path / "empty-posture.db"
+    db.touch()
+    ledger = PostureLedger(f"sqlite:///{db}", initialize=False)
+    assert ledger.current_epoch_fingerprint() is None
+
+
 def test_session_opened_implemented_in_phase3(tmp_path):
     # Phase 3.2 supersedes the Phase 1 stub: session_opened now appends a
     # keyless OPERATOR_SESSION_OPENED record (full coverage in test_session.py).

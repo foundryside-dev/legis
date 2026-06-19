@@ -218,6 +218,71 @@ def test_install_age_file_sink_refuses_without_passphrase(project, monkeypatch):
     assert not (project / ".weft" / "legis" / "operator.age").exists()
 
 
+# ---------------------------------------------------------------------------
+# env backend ADOPTS the operator key (dogfood: legis-1844bf8ac9)
+# ---------------------------------------------------------------------------
+# The --insecure-key-in-env path must use the operator-supplied
+# LEGIS_OPERATOR_KEY as the epoch key, NOT mint a throwaway. Minting fresh
+# stamps GENESIS with a key the later EnvSigner (which reads LEGIS_OPERATOR_KEY)
+# does not hold -> set_floor refuses fingerprint_mismatch -> the floor is a dead
+# read-only affordance. Adoption makes the env signer's fingerprint == the epoch.
+
+
+def test_install_env_backend_adopts_operator_key(project, monkeypatch):
+    env_key = "a1" * 32  # a known, valid 64-hex operator key
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", env_key)
+
+    fp = install.install_posture(project, backend="env")
+
+    # GENESIS is stamped with the ENV key's fingerprint, not a throwaway minted one.
+    assert fp == key_fingerprint(env_key)
+    recs = _records(project)
+    assert len(recs) == 1
+    assert recs[0].payload["kind"] == KIND_GENESIS
+    assert recs[0].payload["key_fingerprint"] == key_fingerprint(env_key)
+
+
+def test_install_env_backend_floor_writable_with_env_key(project, monkeypatch):
+    # End-to-end: the epoch the env signer will present must match the GENESIS
+    # epoch (this is exactly the comparison set_floor makes at step 2). If they
+    # match, the floor is writable; before the fix they differed every install.
+    import warnings
+
+    from legis.posture import EnvSigner, PostureLedger
+
+    env_key = "b2" * 32
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", env_key)
+    install.install_posture(project, backend="env")
+
+    led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+    epoch_fp = led.current_epoch_fingerprint()
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # InsecureEnvKeyWarning is expected
+        signer = EnvSigner(insecure_env=True)
+    assert signer.fingerprint() == epoch_fp  # no fingerprint_mismatch refusal
+
+
+def test_install_env_backend_refuses_without_key(project, monkeypatch):
+    # No LEGIS_OPERATOR_KEY -> fail loud, write no dead GENESIS (fail-closed).
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY", raising=False)
+    with pytest.raises(install.OperatorKeyCustodyError):
+        install.install_posture(project, backend="env")
+    db = project / ".weft" / "legis" / "legis-posture.db"
+    if db.exists():
+        assert _records(project) == []
+
+
+def test_install_env_backend_refuses_malformed_key(project, monkeypatch):
+    # A non-hex / wrong-length LEGIS_OPERATOR_KEY must not become a dead epoch.
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", "not-a-valid-hex-key")
+    with pytest.raises(install.OperatorKeyCustodyError):
+        install.install_posture(project, backend="env")
+    db = project / ".weft" / "legis" / "legis-posture.db"
+    if db.exists():
+        assert _records(project) == []
+
+
 def test_install_default_backend_selection(project, monkeypatch):
     # keychain available -> keychain
     monkeypatch.setattr(install, "_keychain_available", lambda: True)

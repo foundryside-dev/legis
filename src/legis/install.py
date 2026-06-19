@@ -1243,9 +1243,12 @@ def install_posture(
          or a ``KEY_RESET`` tail) -> no mint, no append; return the existing
          epoch fingerprint. This mirrors ``PostureLedger.genesis``'s own guard so
          install never mints a throwaway key on a second pass.
-      4. else: ``mint_key()`` -> hand to the backend via ``key_sink`` -> compute
-         the fingerprint -> ``ledger.genesis(key_fingerprint=fp, ...)``. The key
-         bytes reach ONLY the sink; the ledger stores the fingerprint alone.
+      4. else: for the ``env`` backend, ADOPT the operator-supplied key from
+         ``LEGIS_OPERATOR_KEY`` (validated, fail-loud if absent/malformed) so the
+         later ``EnvSigner`` matches the epoch; for every other backend
+         ``mint_key()``. Then hand to the backend via ``key_sink`` -> compute the
+         fingerprint -> ``ledger.genesis(key_fingerprint=fp, ...)``. The key bytes
+         reach ONLY the sink; the ledger stores the fingerprint alone.
     """
     from legis.clock import SystemClock
     from legis.posture import (
@@ -1263,7 +1266,14 @@ def install_posture(
     if ledger.store.get_latest_sequence_and_hash()[0] != 0:
         return ledger.current_epoch_fingerprint()
 
-    key_hex = mint_key()
+    # The env escape hatch SIGNS with LEGIS_OPERATOR_KEY (EnvSigner), so GENESIS
+    # must be stamped with THAT key's fingerprint — minting a throwaway here would
+    # leave the floor read-only (the env signer could never match the epoch).
+    # Adopt + validate it; every other backend mints a fresh key into custody.
+    if backend == "env":
+        key_hex = _adopt_env_operator_key()
+    else:
+        key_hex = mint_key()
     sink = key_sink if key_sink is not None else _default_key_sink
     # Hand the key to custody BEFORE writing GENESIS: if custody fails we have
     # written no fingerprint we cannot later sign against (fail-closed).
@@ -1273,6 +1283,34 @@ def install_posture(
     when = recorded_at if recorded_at is not None else SystemClock().now_iso()
     ledger.genesis(key_fingerprint=fp, agent_id=agent_id, recorded_at=when)
     return fp
+
+
+def _adopt_env_operator_key() -> str:
+    """Read + validate the operator key from ``LEGIS_OPERATOR_KEY`` (env backend).
+
+    The ``--insecure-key-in-env`` path must adopt the operator-supplied key as
+    the epoch key so the later :class:`~legis.posture.EnvSigner` (which reads
+    ``LEGIS_OPERATOR_KEY`` at sign time) matches the GENESIS epoch. A missing or
+    malformed key fails LOUD rather than minting a throwaway the signer can never
+    match — which would leave the floor read-only and ``LEGIS_OPERATOR_KEY`` a
+    dead affordance (dogfood: legis-1844bf8ac9).
+    """
+    key_hex = os.environ.get("LEGIS_OPERATOR_KEY")
+    if not key_hex:
+        raise OperatorKeyCustodyError(
+            "the env operator-key backend (--insecure-key-in-env) requires the "
+            "operator key in LEGIS_OPERATOR_KEY; refusing to mint a throwaway key "
+            "the env signer could never match (the floor would be read-only)"
+        )
+    try:
+        if len(bytes.fromhex(key_hex)) != 32:
+            raise ValueError
+    except ValueError:
+        raise OperatorKeyCustodyError(
+            "LEGIS_OPERATOR_KEY must be 64 hex chars (a 32-byte key, e.g. as "
+            "minted by `legis`); refusing to genesis an unusable operator epoch"
+        ) from None
+    return key_hex
 
 
 def _default_key_sink(key_hex: str, backend: str) -> None:
