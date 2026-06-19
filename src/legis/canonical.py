@@ -27,8 +27,10 @@ is needed only the day a *non-Python* verifier lands; because this is the single
 canonicalization choke point, that upgrade stays a one-file change. The
 companion Q-L5 fingerprint
 reconciliation (decorator.py / boundary_scan.py) is independent and is done —
-those fingerprints are Python ``ast.dump`` output, not cross-language JSON, so
-RFC-8785 does not apply to them.
+those fingerprints are a content hash of a version-stable AST serialization
+(``decorator._stable_ast_repr``, which superseded the interpreter-fragile
+``ast.dump`` per legis-13b4e97bf4), not cross-language JSON, so RFC-8785 does not
+apply to them.
 """
 
 from __future__ import annotations

@@ -9,6 +9,42 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.1.0] — 2026-06-19
+
+Three defects surfaced by a `lacuna` dogfooding pass, confirmed (investigation +
+adversarial verification) against the shipped 1.0.0 surface and fixed test-first.
+
+### ⚠️ BREAKING (for pinned fingerprints) — version-stable policy-boundary fingerprint
+
+- **`@policy_boundary` `test_fingerprint` is now interpreter-stable (legis-13b4e97bf4).**
+  The fingerprint canonicalization hashed raw `ast.dump` output, whose text is
+  Python-version-dependent (3.13 omits default-empty AST fields that 3.12 renders), so a
+  fingerprint pinned under one interpreter reported a spurious
+  `POLICY_BOUNDARY_TEST_FINGERPRINT_MISMATCH` under another. `decorator.get_normalized_ast_str`
+  now serializes via `_stable_ast_repr`, which emits **every** field of every node in a
+  fixed order — version-stable by construction (pinned by a cross-interpreter 3.12↔3.13
+  test). **This changes the fingerprint value for all sources.** Consumers with pinned
+  `test_fingerprint`s (e.g. lacuna's specimen) must regenerate them once against 1.1.0;
+  after that they no longer drift across Python minors.
+
+### Fixed
+
+- **Posture reads degrade instead of crashing on an unprovisioned ledger (legis-5fd3b257c3).**
+  Production opens the posture ledger `initialize=False`, so a pre-posture / empty (no
+  `audit_log` table) DB made `posture_get` and `policy_list` raise
+  `OperationalError: no such table: audit_log`, surfaced to the agent as a non-recoverable
+  `INTERNAL_ERROR` leaking the SQL string — the intended fail-closed `structured` degrade
+  was never delivered. `AuditStore` reads (`get_latest_sequence_and_hash`, `read_all`,
+  `read_by_seq`) now treat an absent table as an empty store (the same state as a missing
+  file), so every posture read fails closed to `structured` rather than crashing.
+- **`install --posture --insecure-key-in-env` adopts the operator key instead of dropping it
+  (legis-1844bf8ac9).** `install_posture` unconditionally minted a fresh key and the `env`
+  custody sink was a no-op, so an operator-supplied `LEGIS_OPERATOR_KEY` was ignored: GENESIS
+  was stamped with a throwaway key the later `EnvSigner` never held, and every `posture set`
+  refused with `fingerprint_mismatch` (the floor was a dead read-only affordance). The `env`
+  backend now adopts and validates `LEGIS_OPERATOR_KEY` (64 hex) as the epoch key, and fails
+  loud (no dead GENESIS) when it is absent or malformed.
+
 ## [1.0.0] — 2026-06-13
 
 This is the gold release — the legis unit of the coordinated **Weft 1.0** launch. It

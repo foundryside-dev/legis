@@ -149,6 +149,27 @@ def test_posture_get_missing_ledger_structured(tmp_path):
     assert sc2["effective_cell"] == "structured"
 
 
+def test_posture_get_unprovisioned_ledger_degrades_not_errors(tmp_path):
+    # The PRODUCTION wiring opens the ledger initialize=False; an unprovisioned
+    # (empty / no audit_log table) DB must deliver the fail-closed 'structured'
+    # degrade, NOT a raw OperationalError mapped to a non-recoverable
+    # INTERNAL_ERROR leaking the SQL string. (dogfood: legis-5fd3b257c3)
+    empty_db = tmp_path / "legis-posture.db"
+    empty_db.touch()  # 0-byte file, no audit_log table
+    ledger = PostureLedger(f"sqlite:///{empty_db}", initialize=False)
+    runtime = _runtime(tmp_path, ledger=ledger)
+
+    result = _call(runtime, "posture_get", {})
+    assert not result.get("isError"), result
+    sc = result["structuredContent"]
+    assert sc["floor"] == "structured"
+    assert sc["epoch_reset_unacknowledged"] is False
+
+    # policy_list shares the floored-registry read path; it too must not crash.
+    pl = _call(runtime, "policy_list", {})
+    assert not pl.get("isError"), pl
+
+
 def test_posture_get_indicates_unacknowledged_key_reset(tmp_path):
     # A KEY_RESET with no follow-on signed transition -> the agent sees the same
     # pending-operator-action signal doctor surfaces (Quality medium).

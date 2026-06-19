@@ -101,6 +101,31 @@ def policy_boundary(
     return decorator
 
 
+def _stable_ast_repr(node: Any) -> str:
+    """A Python-version-stable serialization of an AST node.
+
+    ``ast.dump`` is NOT version-stable: its 3.13 default (``show_empty=False``)
+    omits default-empty fields that 3.12 renders, so the same source hashes
+    differently across interpreters (dogfood: legis-13b4e97bf4). This walks
+    ``node._fields`` explicitly and emits EVERY field in its declared order, so an
+    empty ``arguments`` node renders identically on every interpreter. Node
+    attributes (``lineno`` / ``col_offset``) are excluded — matching
+    ``ast.dump``'s default and keeping the fingerprint about structure, not
+    source formatting.
+    """
+    import ast
+
+    if isinstance(node, ast.AST):
+        fields = ", ".join(
+            f"{name}={_stable_ast_repr(getattr(node, name, None))}"
+            for name in node._fields
+        )
+        return f"{type(node).__name__}({fields})"
+    if isinstance(node, list):
+        return "[" + ", ".join(_stable_ast_repr(item) for item in node) + "]"
+    return repr(node)
+
+
 def get_normalized_ast_str(source: str) -> str:
     import ast
     parsed = ast.parse(source)
@@ -111,7 +136,9 @@ def get_normalized_ast_str(source: str) -> str:
                 val = node.body[0].value
                 if isinstance(val, ast.Constant) and isinstance(val.value, str):
                     node.body.pop(0)
-    return ast.dump(parsed)
+    # NOT ast.dump(parsed): that is interpreter-version-dependent. The custom
+    # serializer is version-stable so a pinned fingerprint survives a Python bump.
+    return _stable_ast_repr(parsed)
 
 
 def fingerprint_source(source: str) -> str:
