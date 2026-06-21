@@ -43,26 +43,15 @@ def test_release_publish_requires_live_loomweave_conformance():
     assert env["LEGIS_LOOMWEAVE_HMAC_KEY"] == "${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}"
 
     commands = "\n".join(str(step.get("run", "")) for step in live_job["steps"])
-    # Skip-not-fail contract (0dafc83 / f95036b): when the live-oracle release
-    # env is unprovisioned the job passes as a fast no-op so it never blocks the
-    # PyPI publish; when the env IS present, the oracle runs for real and a
-    # conformance failure blocks publish — the gate still bites where it can.
-    # (The old hard-fail "Missing required release conformance environment"
-    # guard was deliberately removed and must not be reintroduced.)
-    assert "Missing required release conformance environment" not in commands
-    assert "configured=false" in commands  # the skip branch is present
-    assert "configured=true" in commands  # the run branch is present
-    assert "not blocking publish" in commands  # skip, not hard-fail
+    assert "Missing required release conformance environment" in commands
+    assert "configured=false" not in commands
+    assert "configured=true" not in commands
+    assert "not blocking publish" not in commands
     assert "tests/conformance/test_live_loomweave_oracle.py" in commands
-    # The real oracle run is gated on the live config being detected, so an
-    # unprovisioned environment skips it rather than erroring.
-    gated = [
+    oracle_steps = [
         step
         for step in live_job["steps"]
         if "test_live_loomweave_oracle.py" in str(step.get("run", ""))
     ]
-    assert gated
-    assert all(
-        step.get("if") == "steps.oracle_config.outputs.configured == 'true'"
-        for step in gated
-    )
+    assert oracle_steps
+    assert all("if" not in step for step in oracle_steps)
