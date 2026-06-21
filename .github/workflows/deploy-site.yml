@@ -4,8 +4,9 @@
 # copied verbatim into the build output). It consumes the shared
 # @weft/site-kit, which lives in a SUBDIRECTORY of a DIFFERENT repo (the weft
 # hub). npm cannot install a git subdirectory directly, so a fetch step
-# sparse-checks-out packages/site-kit into site/vendor/site-kit/ before
-# `npm install` resolves the `file:./vendor/site-kit` dependency.
+# sparse-checks-out packages/site-kit at a pinned reviewed commit into
+# site/vendor/site-kit/ before `npm install` resolves the `file:./vendor/site-kit`
+# dependency.
 name: Deploy legis site
 
 on:
@@ -51,7 +52,7 @@ jobs:
           node-version: 22
 
       - name: Fetch @weft/site-kit
-        # Sparse-fetch packages/site-kit from the weft hub repo into
+        # Sparse-fetch packages/site-kit from the pinned Weft commit into
         # vendor/site-kit/ so the file: dependency resolves on install.
         run: npm run fetch-site-kit
 
