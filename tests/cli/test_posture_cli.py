@@ -19,6 +19,7 @@ import pytest
 from legis.cli import main
 from legis.posture import session as session_mod
 from legis.posture.ledger import PostureLedger
+from legis.posture.signing import _RawKeySigner
 
 
 @pytest.fixture
@@ -78,6 +79,7 @@ def test_posture_set_with_session(posture_env, capsys, monkeypatch):
         operator_id="operator@example",
         backend_id="env",
         unlock_ref=None,
+        signer=_RawKeySigner(key_hex),
     )
     from legis.posture import InsecureEnvKeyWarning
 
@@ -103,7 +105,11 @@ def test_posture_rekey_preserves_existing_floor(posture_env, capsys, monkeypatch
     # Move the floor up so a reset-downgrade regression is visible.
     monkeypatch.setenv("LEGIS_OPERATOR_KEY", key_hex)
     session_mod.open_session(
-        ttl=300, operator_id="op@example", backend_id="env", unlock_ref=None
+        ttl=300,
+        operator_id="op@example",
+        backend_id="env",
+        unlock_ref=None,
+        signer=_RawKeySigner(key_hex),
     )
     from legis.posture import InsecureEnvKeyWarning
 

@@ -212,11 +212,14 @@ def test_posture_get_conforms_missing_and_floored(tmp_path):
     ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
 
     class _MemSigner:
+        def __init__(self, held_key=key):
+            self._key = held_key
+
         def fingerprint(self):
             return fp
 
         def sign(self, fields):
-            return enf_signing.sign(fields, key, version="v3")
+            return enf_signing.sign(fields, self._key, version="v3")
 
     ledger.transition(
         "structured",

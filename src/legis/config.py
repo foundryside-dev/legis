@@ -34,7 +34,7 @@ The posture-ratchet feature (spec §5/§6) amends this doctrine narrowly: an
 operator-authority key is *minted at install* and held by a custody backend
 (OS keychain / age-encrypted file / env escape hatch). Two new in-scope paths
 appear under this subtree as a result — ``operator_session.json`` (ephemeral
-elevation-session metadata + an unlock *reference*, never the key) and
+elevation-session metadata + an unlock *reference* + session HMAC, never the key) and
 ``operator.age`` (the age-file backend's *encrypted* blob). Both are
 gitignored at install. The key plaintext itself is still never written to disk
 by legis except via the explicit ``--insecure-key-in-env`` escape hatch.

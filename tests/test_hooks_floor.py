@@ -26,11 +26,14 @@ def _seed_floor(db_url: str, floor: str) -> None:
     if floor != "chill":
 
         class _MemSigner:
+            def __init__(self, held_key=key):
+                self._key = held_key
+
             def fingerprint(self) -> str:
                 return fp
 
             def sign(self, fields: dict) -> str:
-                return enf_signing.sign(fields, key, version="v3")
+                return enf_signing.sign(fields, self._key, version="v3")
 
         ledger.transition(
             floor,

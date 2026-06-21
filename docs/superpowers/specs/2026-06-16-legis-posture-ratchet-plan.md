@@ -160,7 +160,7 @@ Fail-closed rule: **no open session, or expired session → `posture set` / `tra
 
 - **Create:** `src/legis/posture/session.py`. Includes a local `_atomic_write_json(path, obj)` helper (temp file + `os.replace`) — **`_atomic_write_text` does NOT exist in `install.py`; do not import it.** **(addresses reality-grounding critical)**
 - **Test first:** `tests/posture/test_session.py`:
-  - `test_enable_writes_session_file` — `open_session(ttl=300, operator_id=..., backend_id=..., unlock_ref=...)` writes `.weft/legis/operator_session.json` containing only `session_id, operator_id, opened_at, ttl, expires_at, backend_id, unlock_ref` — assert NO `key`, NO passphrase, NO raw blob plaintext.
+  - `test_enable_writes_session_file` — `open_session(ttl=300, operator_id=..., backend_id=..., unlock_ref=..., signer=...)` writes `.weft/legis/operator_session.json` containing only `session_id, operator_id, opened_at, ttl, expires_at, backend_id, unlock_ref, session_sig` — assert NO `key`, NO passphrase, NO raw blob plaintext.
   - `test_age_backend_unlock_ref_is_none` — for an age-file session, `unlock_ref is None` (per D5: re-prompt is the unlock; only keychain stores an item id). **(addresses Architecture medium)**
   - `test_session_active_within_ttl` / `test_session_expired_after_ttl` — `is_active` honors TTL; `load_session()` past TTL returns `None` AND deletes the file.
   - `test_load_session_double_expire_is_safe` — calling `load_session()` twice past TTL returns `None` both times without raising; the self-delete catches `FileNotFoundError`. **(addresses Quality medium)**
@@ -168,7 +168,7 @@ Fail-closed rule: **no open session, or expired session → `posture set` / `tra
   - `test_unique_session_id` — two `open_session` calls produce distinct `session_id`.
   - `test_second_enable_replaces_first` — a second `operator enable` **replaces** the session file atomically (only one active session at a time). This resolves the concurrent-session ambiguity: there is exactly one authoritative `operator_session.json`. **(addresses Quality critical: concurrent-session race)**
 - **Implementation:**
-  - `open_session(...)` writes the JSON atomically via the local `_atomic_write_json`. Generates `session_id = secrets.token_hex(...)`. A second `open_session` overwrites the prior file (single active session).
+  - `open_session(...)` writes the JSON atomically via the local `_atomic_write_json`. Generates `session_id = secrets.token_hex(...)`, signs the session metadata with the operator signer, and stores that HMAC as `session_sig`. A second `open_session` overwrites the prior file (single active session).
   - `load_session() -> Session | None`: reads file; if `now > expires_at` → delete (catching `FileNotFoundError`), return `None`.
   - `end_session()` deletes file (idempotent).
   - `unlock_ref` per D5: keychain → item id; age-file → `None`; env → `None`.
@@ -296,7 +296,7 @@ Fail-closed/idempotent: **second install over an existing ledger leaves floor + 
   - `test_operator_disable_ends_session` — deletes the session file.
   - `test_enable_default_ttl_5m` — no `--ttl` → 300s.
   - `test_ci_env_backend_opens_session_with_id` — with `LEGIS_OPERATOR_KEY` set, no keychain, `legis operator enable --insecure-key-in-env`: emits the plaintext warning, writes a session file with `backend_id="env"`, and a subsequent `posture set` produces a `TRANSITION` carrying a **non-null `session_id`** (env path still goes through a session, per D3). **(addresses systems high: CI bootstrap + session accountability)**
-- **Implementation:** `operator` subparser with `enable [--ttl] [--insecure-key-in-env]`, `disable`. `_run_operator`: `enable` → keychain/age unlock (or env opt-in) → `open_session(...)` + `ledger.session_opened(...)`. `disable` → `end_session()`. **CI bootstrap sequence (documented in the CLI help and `docs/`):** set `LEGIS_OPERATOR_KEY`, run `legis operator enable --insecure-key-in-env`, then `legis posture set <cell>`. The env path NEVER signs without an open session — there is no second auth path that bypasses session accountability.
+- **Implementation:** `operator` subparser with `enable [--ttl] [--insecure-key-in-env]`, `disable`. `_run_operator`: `enable` → keychain/age unlock (or env opt-in) → `open_session(..., signer=signer)` + `ledger.session_opened(...)`. `disable` → `end_session()`. **CI bootstrap sequence (documented in the CLI help and `docs/`):** set `LEGIS_OPERATOR_KEY`, run `legis operator enable --insecure-key-in-env`, then `legis posture set <cell>`. The env path NEVER signs without an open session — there is no second auth path that bypasses session accountability.
 - **Verify:** `pytest tests/cli/test_operator_cli.py -q`.
 
 ---
@@ -460,7 +460,7 @@ Create `tests/posture/test_security_honesty.py` asserting the spec's honesty gua
 ### Task 12.1 — Published honesty-statement update **(NEW — addresses systems low)**
 
 - **Modify:** `README.md` "Known security limitations" (and align spec §9).
-- **Implementation:** add the operator-session-file residual to the published honesty statement: *"A process with read access to `.weft/legis/operator_session.json` can read the keychain item id and, if it also has keychain access, produce arbitrary signatures during the window. This is the same tier as raw-DB-write access. The mitigation is OS keychain access control (item accessible only to the legis process user), not file encryption of the session file."* Consistent with the existing tamper-evident-not-tamper-proof stance.
+- **Implementation:** add the operator-session-file residual to the published honesty statement: *"A process with read access to `.weft/legis/operator_session.json` can read the keychain item id and session HMAC; if it also has keychain access, it can produce arbitrary signatures during the window. This is the same tier as raw-DB-write access. The mitigation is OS keychain access control (item accessible only to the legis process user), not file encryption of the session file."* Consistent with the existing tamper-evident-not-tamper-proof stance.
 - **Verify:** manual doc read; no test (documentation honesty item).
 
 ---

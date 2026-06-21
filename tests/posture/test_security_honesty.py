@@ -81,12 +81,13 @@ def _genesis(tmp_path, *, key_hex: str):
     return ledger, fp
 
 
-def _open_session(*, backend_id: str = "keychain", unlock_ref=None):
+def _open_session(*, backend_id: str = "keychain", unlock_ref=None, signer):
     return session_mod.open_session(
         ttl=300,
         operator_id="operator@example",
         backend_id=backend_id,
         unlock_ref=unlock_ref,
+        signer=signer,
     )
 
 
@@ -124,7 +125,7 @@ def test_tty_session_expiry(tmp_path):
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
     sess_path = session_mod.operator_session_path()
 
-    _open_session()
+    _open_session(signer=_MemSigner(key_bytes))
     # Force the window's expiry into the past without sleeping.
     data = json.loads(sess_path.read_text(encoding="utf-8"))
     data["expires_at"] = time.time() - 10
@@ -195,7 +196,7 @@ def test_rekey_preserves_existing_floor(tmp_path):
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
 
     # Elevate the floor first so a reset-downgrade regression is visible.
-    _open_session()
+    _open_session(signer=_MemSigner(key_bytes))
     set_floor(
         "protected",
         ledger=ledger,
@@ -228,7 +229,7 @@ def test_every_signature_carries_session_id(tmp_path):
     key_bytes = bytes.fromhex(key_hex)
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
 
-    sess = _open_session()
+    sess = _open_session(signer=_MemSigner(key_bytes))
     set_floor(
         "structured",
         ledger=ledger,
@@ -261,9 +262,9 @@ def test_every_signature_carries_session_id(tmp_path):
 
     os.environ[_OPERATOR_KEY_ENV] = key_hex
     try:
-        env_sess = _open_session(backend_id="env")
         with pytest.warns(InsecureEnvKeyWarning):
             env_signer = EnvSigner(insecure_env=True)
+        env_sess = _open_session(backend_id="env", signer=env_signer)
         env_result = set_floor(
             "structured",
             ledger=ledger,

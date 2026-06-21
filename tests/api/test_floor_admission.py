@@ -34,11 +34,14 @@ def _mem_signer():
     from legis.enforcement import signing as enf_signing
 
     class _MemSigner:
+        def __init__(self):
+            self._key = KEY
+
         def fingerprint(self):
             return _fp()
 
         def sign(self, fields):
-            return enf_signing.sign(fields, KEY, version="v3")
+            return enf_signing.sign(fields, self._key, version="v3")
 
     return _MemSigner()
 

@@ -66,11 +66,14 @@ def _seeded_ledger(tmp_path, floor=None, *, genesis=True):
     if floor is not None and floor != "chill":
 
         class _MemSigner:
+            def __init__(self, held_key=key):
+                self._key = held_key
+
             def fingerprint(self):
                 return fp
 
             def sign(self, fields):
-                return enf_signing.sign(fields, key, version="v3")
+                return enf_signing.sign(fields, self._key, version="v3")
 
         ledger.transition(
             floor,

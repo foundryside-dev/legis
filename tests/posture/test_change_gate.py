@@ -17,6 +17,8 @@ tests/store/test_audit_store.py), never via posture_db_url().
 from __future__ import annotations
 
 import hashlib
+import json
+import time
 
 import pytest
 
@@ -67,6 +69,19 @@ class _BoomSigner:
         raise RuntimeError("signer backend exploded")
 
 
+class _FakeFingerprintSigner:
+    """Claims the epoch fingerprint but cannot sign with the epoch key."""
+
+    def __init__(self, fingerprint: str):
+        self._fingerprint = fingerprint
+
+    def fingerprint(self) -> str:
+        return self._fingerprint
+
+    def sign(self, fields: dict) -> str:
+        return "hmac-sha256:v3:" + "0" * 64
+
+
 @pytest.fixture(autouse=True)
 def _session_dir(tmp_path, monkeypatch):
     """Point operator_session_path() at a per-test tmp dir.
@@ -91,12 +106,15 @@ def _genesis(tmp_path, key: bytes):
     return ledger, fp
 
 
-def _open_session(*, backend_id: str = "keychain", unlock_ref=None):
+def _open_session(*, backend_id: str = "keychain", unlock_ref=None, signer=None):
+    if signer is None:
+        signer = _MemSigner(b"k" * 32)
     return session_mod.open_session(
         ttl=300,
         operator_id="operator@example",
         backend_id=backend_id,
         unlock_ref=unlock_ref,
+        signer=signer,
     )
 
 
@@ -114,6 +132,57 @@ def test_set_refused_without_session(tmp_path):
     )
     assert result.accepted is False
     # Ledger unchanged: only the GENESIS.
+    assert len(ledger.store.read_all()) == 1
+    assert ledger.read_floor() == "chill"
+
+
+def test_set_refused_with_forged_session_file(tmp_path, _session_dir):
+    key = b"k" * 32
+    ledger, fp = _genesis(tmp_path, key)
+    _session_dir.write_text(
+        json.dumps(
+            {
+                "session_id": "forged-session",
+                "operator_id": "attacker@example",
+                "opened_at": time.time(),
+                "ttl": 300,
+                "expires_at": time.time() + 300,
+                "backend_id": "keychain",
+                "unlock_ref": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = set_floor(
+        "structured",
+        ledger=ledger,
+        signer=_MemSigner(key),
+        agent_id="op",
+        rationale="tighten",
+        clock=FixedClock("t1"),
+    )
+
+    assert result.accepted is False
+    assert len(ledger.store.read_all()) == 1
+    assert ledger.read_floor() == "chill"
+
+
+def test_set_refused_when_signer_self_attests_fingerprint(tmp_path):
+    key = b"k" * 32
+    ledger, fp = _genesis(tmp_path, key)
+    _open_session()
+
+    result = set_floor(
+        "structured",
+        ledger=ledger,
+        signer=_FakeFingerprintSigner(fp),
+        agent_id="op",
+        rationale="tighten",
+        clock=FixedClock("t1"),
+    )
+
+    assert result.accepted is False
     assert len(ledger.store.read_all()) == 1
     assert ledger.read_floor() == "chill"
 
@@ -162,7 +231,7 @@ def test_set_refused_on_wrong_passphrase(tmp_path):
     ledger = PostureLedger(_url(tmp_path), initialize=True)
     fp = key_fingerprint(key)
     ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
-    _open_session(backend_id="age-file")
+    _open_session(backend_id="age-file", signer=_MemSigner(bytes.fromhex(key)))
 
     blob = wrap_key(key, "correct-passphrase")
     signer = AgeFileSigner(blob=blob, passphrase_cb=lambda: "WRONG-passphrase")

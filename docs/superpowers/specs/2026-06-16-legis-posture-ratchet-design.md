@@ -109,7 +109,7 @@ Backends (v1):
 
 **Crypto is a mandatory dependency.** The age-file backend uses the `cryptography` package (scrypt KDF + AES-GCM); it is a hard dependency, not an optional extra — encrypted-at-rest custody is core to this feature and only grows in importance. (No `age` CLI shell-out.)
 
-**age-file session ergonomics (accepted friction).** For the age-file backend *without* an available OS keychain to hold a session-wrapping secret, each `posture set` within the window **re-prompts for the passphrase** — the session file holds only metadata, never the key or passphrase. This is the honest trade-off and is intentional: the friction is the point; anyone who wants the smooth "no further prompts in the window" experience uses the keychain backend.
+**age-file session ergonomics (accepted friction).** For the age-file backend *without* an available OS keychain to hold a session-wrapping secret, each `posture set` within the window **re-prompts for the passphrase** — the session file holds metadata plus a session HMAC, never the key or passphrase. This is the honest trade-off and is intentional: the friction is the point; anyone who wants the smooth "no further prompts in the window" experience uses the keychain backend.
 
 Default backend at install: **OS keychain if available, else age-file**; the env escape hatch only on an explicit `--insecure-key-in-env`.
 
@@ -122,16 +122,16 @@ Per-action keychain prompts are replaced by a **time-boxed elevation session**:
 ```
 legis operator enable [--ttl 5m]
    └─ OS keychain prompt ── human auths ──or not
-         └─ on auth: a session is opened for the TTL. The key NEVER lands on disk in
-            plaintext; the session file holds only metadata + a backend-specific unlock
-            reference (keychain item id, or an age session-wrapped blob), never the key
+        └─ on auth: a session is opened for the TTL. The key NEVER lands on disk in
+           plaintext; the session file holds metadata + a backend-specific unlock
+           reference + a session HMAC, never the key
                └─ within the window: posture set (and, future, sign-offs/verdicts/commits)
                   are signed on request — keychain backend: silent (no further prompt);
                   age-file-without-keychain: re-prompts per set (accepted friction)
                      └─ TTL lapses → session file deleted (any wrapped blob gone) → locked
 ```
 
-- **v1 session model is a persisted session file, not an in-memory daemon.** `legis` is a fresh process per CLI invocation, so the "ssh-agent style" long-lived signing daemon is deferred to v1.1. v1 uses a two-level key hierarchy: at `enable`, custody is unlocked once; the operator key is held only via a backend-specific unlock reference in `.weft/legis/operator_session.json` (keychain item id, or an age-wrapped blob whose wrapping secret lives in the keychain) — never the raw key, never a passphrase. "Zeroized on TTL lapse" = the session file (and any wrapped blob it held) is deleted; the key in custody is untouched.
+- **v1 session model is a persisted session file, not an in-memory daemon.** `legis` is a fresh process per CLI invocation, so the "ssh-agent style" long-lived signing daemon is deferred to v1.1. v1 uses a two-level key hierarchy: at `enable`, custody is unlocked once; the operator key authenticates the session metadata in `.weft/legis/operator_session.json`, which carries a backend-specific unlock reference (keychain item id, or `None` for age/env) and an HMAC — never the raw key, never a passphrase. "Zeroized on TTL lapse" = the session file is deleted; the key in custody is untouched.
 - **Default TTL: 5 minutes**, configurable via `--ttl`; `legis operator disable` ends it early.
 - The human's act of enabling **is** "humans on the loop, not in the loop" — a declaration of presence supervising a burst of work, not per-signature approval.
 

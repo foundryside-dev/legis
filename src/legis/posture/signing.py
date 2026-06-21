@@ -265,6 +265,46 @@ class KeychainSigner:
         return _sign_with_key(fields, self._key())
 
 
+def _verification_key_hex(signer: PostureSigner) -> str:
+    """Extract the held key from supported custody signers for local verification.
+
+    This stays inside the posture module boundary: callers still receive only a
+    signer object, while the change gate can prove the produced signature verifies
+    under key material whose fingerprint matches the standing epoch.
+    """
+    if isinstance(signer, _RawKeySigner):
+        return signer._key_hex
+    if isinstance(signer, (AgeFileSigner, KeychainSigner)):
+        return signer._key()
+    key = getattr(signer, "_key", None)
+    if isinstance(key, bytes):
+        return key.hex()
+    if isinstance(key, str):
+        return key
+    raise TypeError("unsupported posture signer backend")
+
+
+def verify_signer_signature(
+    signer: PostureSigner,
+    fields: dict,
+    signature: str,
+    *,
+    expected_fingerprint: str,
+) -> bool:
+    """True iff *signature* verifies under the signer's actual held key.
+
+    A self-attested ``fingerprint()`` is not enough: the key material used for
+    verification must hash to the epoch fingerprint and must validate the HMAC.
+    """
+    try:
+        key_hex = _verification_key_hex(signer)
+        if key_fingerprint(key_hex) != expected_fingerprint:
+            return False
+        return _enf_signing.verify(fields, signature, bytes.fromhex(key_hex))
+    except Exception:  # noqa: BLE001 - custody faults fail closed
+        return False
+
+
 # -- backend selection -------------------------------------------------------
 
 

@@ -545,6 +545,7 @@ def _run_operator(args) -> int:
             operator_id=operator_id,
             backend_id=backend_id,
             unlock_ref=unlock_ref,
+            signer=signer,
         )
         # The env path STILL opens a session (D3): every TRANSITION it later
         # produces carries this session_id, so there is no auth path that

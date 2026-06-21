@@ -229,10 +229,24 @@ class PostureLedger:
                     "posture transition refused: signer key fingerprint does not "
                     "match the current epoch fingerprint"
                 )
-            # Sign the content (sans signature) bound to its chain position.
+            # Sign the content (sans signature) bound to its chain position, then
+            # verify the produced signature against the actual held key material.
+            # A self-attested fingerprint plus arbitrary signature is not enough.
             fields = {k: v for k, v in payload.items() if k != "operator_sig"}
             fields["chain_seq"] = seq
             payload["operator_sig"] = signer.sign(fields)
+            from legis.posture.signing import verify_signer_signature
+
+            if not verify_signer_signature(
+                signer,
+                fields,
+                payload["operator_sig"],
+                expected_fingerprint=key_fingerprint,
+            ):
+                raise ValueError(
+                    "posture transition refused: signer did not prove custody of "
+                    "the current epoch key"
+                )
             return payload
 
         self.store.append_signed(build)
@@ -334,6 +348,7 @@ class PostureLedger:
 # Refusal reasons (stable discriminants so callers can branch / report).
 REFUSED_NO_SESSION = "no_open_session"
 REFUSED_NO_EPOCH = "no_key_epoch"
+REFUSED_SESSION_AUTH_FAILED = "session_auth_failed"
 REFUSED_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 REFUSED_SIGNER_ERROR = "signer_error"
 
@@ -417,6 +432,16 @@ def set_floor(
         return PostureSetResult(
             accepted=False,
             reason=REFUSED_FINGERPRINT_MISMATCH,
+            session_id=sess.session_id,
+        )
+    if not _session.verify_session_signature(
+        sess,
+        signer,
+        expected_fingerprint=epoch_fp,
+    ):
+        return PostureSetResult(
+            accepted=False,
+            reason=REFUSED_SESSION_AUTH_FAILED,
             session_id=sess.session_id,
         )
 
