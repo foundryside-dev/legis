@@ -532,7 +532,7 @@ def test_override_submit_entity_sei_binds_on_the_sei(tmp_path):
                     "arguments": {
                         "policy": "ordinary.policy",
                         "entity": "src/x.py:f",
-                        "entity_sei": "loomweave:eid:supplied",
+                        "entity_sei": "loomweave:eid:abc123",
                         "rationale": "generated file; lint is not applicable",
                     },
                 },
@@ -546,10 +546,45 @@ def test_override_submit_entity_sei_binds_on_the_sei(tmp_path):
     assert result["structuredContent"]["outcome"] == "ACCEPTED_SELF"
     recorded = store.read_all()[0].payload
     assert recorded["entity_key"] == {
-        "value": "loomweave:eid:supplied",
+        "value": "loomweave:eid:abc123",
         "identity_stable": True,
     }
     assert recorded["identity_stable"] is True
+
+
+def test_override_submit_rejects_entity_sei_for_unrelated_locator(tmp_path):
+    # Both identities are live, but they do not bind to the same entity. The
+    # authoring surface must reject instead of recording under the wrong SEI.
+    from legis.identity.resolver import IdentityResolver
+
+    runtime, store = _runtime(tmp_path, agent_id="agent-launch")
+    runtime.cell_registry = PolicyCellRegistry(default_cell="chill")
+    runtime.identity = IdentityResolver(_FakeLoomweave(alive=True))
+
+    responses = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_submit",
+                    "arguments": {
+                        "policy": "ordinary.policy",
+                        "entity": "src/x.py:f",
+                        "entity_sei": "loomweave:eid:attacker",
+                        "rationale": "anything",
+                    },
+                },
+            }
+        ),
+        runtime,
+    )
+
+    result = responses[0]["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "UNRESOLVED_INPUT"
+    assert store.read_all() == []
 
 
 def test_override_submit_unresolvable_entity_sei_records_nothing_with_weft_reason(tmp_path):

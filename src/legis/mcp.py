@@ -605,12 +605,14 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "a locator/symbol for legis to resolve (L2, degrades to a "
                 "locator key if Loomweave can't resolve it), OR pass entity_sei "
                 "to bind a SEI you already hold at the point of entry (L1) — "
-                "legis verifies it is alive and keys the governance record "
-                "directly on it. A non-resolving entity_sei returns "
-                "UNRESOLVED_INPUT (weft-reason unresolved_input) and records "
-                "NOTHING, never a locator-keyed record masquerading as a stable "
-                "bind. entity is still required (it carries the source-path used "
-                "for the protected-cell fingerprint binding)."
+                "legis verifies the SEI is alive and that entity resolves live "
+                "to the same SEI before keying the governance record on it. A "
+                "non-resolving or unbound entity_sei returns UNRESOLVED_INPUT "
+                "(weft-reason unresolved_input) and records NOTHING, never a "
+                "locator-keyed record masquerading as a stable bind or evidence "
+                "on an unrelated stable identity. entity is still required (it "
+                "carries the source-path used for the protected-cell fingerprint "
+                "binding)."
             ),
             "inputSchema": _schema(
                 ["policy", "entity", "rationale"],
@@ -1244,9 +1246,10 @@ def _recovery_for(code: str) -> dict[str, Any]:
             "unenabled."
         ),
         "UNRESOLVED_INPUT": (
-            "The inline entity_sei did not resolve to a live, stable identity, so "
-            "nothing was recorded (weft SEI-on-entry fail-closed). See the "
-            "weft_reason.fix: confirm the SEI is alive in Loomweave, or drop "
+            "The inline entity_sei did not resolve to a live, stable identity, "
+            "or it was not bound to the submitted entity, so nothing was recorded "
+            "(weft SEI-on-entry fail-closed). See the weft_reason.fix: confirm "
+            "the SEI is alive and matches the entity in Loomweave, or drop "
             "entity_sei and submit the entity as a locator/symbol for legis to "
             "resolve."
         ),

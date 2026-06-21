@@ -222,8 +222,9 @@ class OverrideIn(BaseModel):
     rationale: str
     agent_id: str | None = None
     # weft SEI-on-entry (L1): an SEI the agent already holds, bound at the point of
-    # entry. When set, legis verifies it is alive and keys the record on it; a
-    # non-resolving value is rejected (422 unresolved_input) and records nothing.
+    # entry. When set, legis verifies it is alive and matches the submitted entity
+    # before keying the record on it; a non-resolving or unbound value is rejected
+    # (422 unresolved_input) and records nothing.
     entity_sei: str | None = None
     # Protected-cell inputs (Phase 9 unification): the source/AST binding the
     # protected gate requires. Optional on the unified body — when the floored
