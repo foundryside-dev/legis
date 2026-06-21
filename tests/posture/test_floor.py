@@ -11,8 +11,6 @@ from __future__ import annotations
 
 import itertools
 
-import pytest
-
 from legis.policy.cells import (
     CELL_TIER_ORDER,
     PolicyCellRegistry,
@@ -53,24 +51,22 @@ def test_floor_only_raises():
     assert FlooredRegistry(inner, floor="chill").cell_for("protp") == "protected"
 
 
-def test_missing_floor_defers_to_registry():
-    # An absent/empty ledger makes the floor a no-op (identity floor chill): the
-    # registry's OWN default stands. In production that default is fail-closed
-    # (structured); under the dev opt-in it is chill (N3 keyless-chill). The
-    # floor never forces structured over a deliberate registry default.
+def test_missing_floor_fails_closed_structured():
+    # An absent/empty/deleted ledger means no signed posture evidence is
+    # available. That is a fail-closed condition: it raises even a chill registry
+    # to structured instead of deferring to registry defaults.
     class _NoLedger:
         def read_floor(self):
             return None
 
-    # dev/chill registry -> absent floor defers to chill (keyless-chill holds).
     dev = floored_registry(PolicyCellRegistry(default_cell="chill"), _NoLedger())
-    assert dev.floor == "chill"
-    assert dev.cell_for("anything") == "chill"
+    assert dev.floor == "structured"
+    assert dev.cell_for("anything") == "structured"
 
-    # production fail-closed registry -> absent floor still yields structured.
     prod = floored_registry(
         PolicyCellRegistry(default_cell="structured"), _NoLedger()
     )
+    assert prod.floor == "structured"
     assert prod.cell_for("anything") == "structured"
 
 

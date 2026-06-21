@@ -524,17 +524,17 @@ def _posture_db_path(url: str) -> Path | None:
 def check_posture_chain(root: Path) -> DoctorCheck:
     """Report-only hash-chain integrity for the posture ledger (Task 10.1).
 
-    A missing or zero-byte store is ``ok`` ("no ledger yet") — the floor simply
-    defers to the registry default (fail-closed ``structured``); doctor must NOT
-    create the DB. A schema-present-but-tampered chain is ``error`` (report-only;
-    never auto-repaired). Mirrors :func:`check_audit_chain`'s no-leak posture but
+    A missing or zero-byte store is ``ok`` ("no ledger yet") and the runtime
+    floor fails closed to ``structured``; doctor must NOT create the DB. A
+    schema-present-but-tampered chain is ``error`` (report-only; never
+    auto-repaired). Mirrors :func:`check_audit_chain`'s no-leak posture but
     special-cases the missing store before the zero-byte schema check so an
     un-installed project reads as ``ok``, not ``error``."""
     cid = "store.posture_chain"
     url = _posture_url(root)
     db = _posture_db_path(url)
     if db is not None and (not db.exists() or db.stat().st_size == 0):
-        return DoctorCheck(cid, "ok", message="no ledger yet (floor defers to registry default)")
+        return DoctorCheck(cid, "ok", message="no ledger yet (floor fail-closed structured)")
     return check_audit_chain(cid, url)
 
 

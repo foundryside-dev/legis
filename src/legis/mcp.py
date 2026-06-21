@@ -2343,10 +2343,8 @@ def _tool_posture_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, An
     # D0/D2: read the floor FRESH off the held ledger handle (never cached). The
     # posture REPORT is fail-closed at the posture layer (cross-cutting checklist
     # #1): an absent/empty ledger reports the floor as 'structured', never chill
-    # — independent of the dev registry default. (That is distinct from the
-    # FlooredRegistry chokepoint, where a None floor is the identity no-op so it
-    # does not force-raise a dev default; here we are reporting the POSTURE, not
-    # routing through the registry.)
+    # — independent of the dev registry default. The FlooredRegistry routing
+    # chokepoint uses the same None -> structured fallback.
     ledger = runtime.posture_ledger
     raw_floor = ledger.read_floor() if ledger is not None else None
     floor = "structured" if raw_floor is None else raw_floor

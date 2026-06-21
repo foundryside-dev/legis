@@ -12,6 +12,20 @@ def _chill_registry() -> PolicyCellRegistry:
     return PolicyCellRegistry(default_cell="chill")
 
 
+class _ChillPostureLedger:
+    def read_floor(self) -> str:
+        return "chill"
+
+    def epoch_reset_unacknowledged(self) -> bool:
+        return False
+
+
+def _chill_posture_ledger() -> _ChillPostureLedger:
+    # Explicit posture evidence for auth-only tests. Missing posture evidence is
+    # tested elsewhere and now fails closed to structured.
+    return _ChillPostureLedger()
+
+
 def test_mutating_routes_default_deny_without_unsafe_dev_flag(monkeypatch):
     monkeypatch.delenv("LEGIS_UNSAFE_DEV_AUTH", raising=False)
     monkeypatch.delenv("LEGIS_API_SECRET", raising=False)
@@ -35,7 +49,12 @@ def test_unsafe_dev_flag_allows_unauthenticated_local_writes(monkeypatch):
     monkeypatch.setenv("LEGIS_UNSAFE_DEV_AUTH", "1")
     monkeypatch.delenv("LEGIS_API_SECRET", raising=False)
     monkeypatch.delenv("LEGIS_API_TOKEN_ACTORS", raising=False)
-    client = TestClient(create_app(cell_registry=_chill_registry()))
+    client = TestClient(
+        create_app(
+            cell_registry=_chill_registry(),
+            posture_ledger=_chill_posture_ledger(),
+        )
+    )
 
     resp = client.post(
         "/overrides",
@@ -111,7 +130,12 @@ def test_scoped_tokens_separate_writer_and_operator_authority(monkeypatch, tmp_p
     )
     monkeypatch.setenv("LEGIS_HMAC_KEY", "secret-key")
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
-    client = TestClient(create_app(cell_registry=_chill_registry()))
+    client = TestClient(
+        create_app(
+            cell_registry=_chill_registry(),
+            posture_ledger=_chill_posture_ledger(),
+        )
+    )
 
     writer = {"Authorization": "Bearer agent-token"}
     operator = {"Authorization": "Bearer op-token"}
@@ -166,7 +190,12 @@ def test_unscoped_token_actor_does_not_grant_operator_authority(monkeypatch, tmp
 def test_authenticated_writer_identity_does_not_require_body_agent_id(monkeypatch, tmp_path):
     monkeypatch.setenv("LEGIS_API_TOKEN_ACTORS", "agent-a:writer=agent-token")
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
-    client = TestClient(create_app(cell_registry=_chill_registry()))
+    client = TestClient(
+        create_app(
+            cell_registry=_chill_registry(),
+            posture_ledger=_chill_posture_ledger(),
+        )
+    )
 
     resp = client.post(
         "/overrides",
@@ -216,7 +245,12 @@ def test_single_secret_defaults_to_writer_only_and_fails_closed_on_operator(monk
     monkeypatch.setenv("LEGIS_HMAC_KEY", "secret-key")
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
     monkeypatch.delenv("LEGIS_API_SECRET_SCOPE", raising=False)
-    client = TestClient(create_app(cell_registry=_chill_registry()))
+    client = TestClient(
+        create_app(
+            cell_registry=_chill_registry(),
+            posture_ledger=_chill_posture_ledger(),
+        )
+    )
     auth = {"Authorization": "Bearer super-secret"}
 
     # writer route: allowed
@@ -241,7 +275,12 @@ def test_single_secret_operator_scope_opt_in_grants_operator(monkeypatch, tmp_pa
     monkeypatch.setenv("LEGIS_API_SECRET_SCOPE", "writer|operator")
     monkeypatch.setenv("LEGIS_HMAC_KEY", "secret-key")
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
-    client = TestClient(create_app(cell_registry=_chill_registry()))
+    client = TestClient(
+        create_app(
+            cell_registry=_chill_registry(),
+            posture_ledger=_chill_posture_ledger(),
+        )
+    )
     auth = {"Authorization": "Bearer super-secret"}
 
     assert client.post(

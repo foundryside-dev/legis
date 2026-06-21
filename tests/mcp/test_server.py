@@ -50,6 +50,25 @@ class _ScriptedJudge:
 KEY = b"protected-key-1"
 
 
+def _chill_posture_ledger(tmp_path):
+    import hashlib
+    import uuid
+
+    from legis.posture.ledger import PostureLedger
+
+    ledger = PostureLedger(
+        f"sqlite:///{tmp_path / f'posture-{uuid.uuid4().hex}.db'}",
+        initialize=True,
+    )
+    key = b"k" * 32
+    ledger.genesis(
+        key_fingerprint=hashlib.sha256(key).hexdigest(),
+        agent_id="installer",
+        recorded_at="t0",
+    )
+    return ledger
+
+
 def _runtime(
     tmp_path,
     *,
@@ -68,6 +87,7 @@ def _runtime(
         initialized=True,
         engine=engine,
         check_surface=check_surface,
+        posture_ledger=_chill_posture_ledger(tmp_path),
     ), store
 
 
@@ -631,15 +651,26 @@ def test_n3_acceptance_chill_is_reachable_keyless_via_build_runtime(tmp_path, mo
     # configured non-secret governance surface. Pins the claim our errors/docs
     # assert as fact — chill/coached are reachable WITHOUT LEGIS_HMAC_KEY — end to
     # end through the real launch path (build_runtime + the lazy keyless _engine),
-    # not via an injected engine. A future change making _engine need a key would
-    # fail HERE instead of silently falsifying the "reachable keyless" promise.
+    # not via an injected engine. The chill posture is explicit signed state here:
+    # a missing posture ledger fails closed to structured.
+    import hashlib
+
     from legis.mcp import build_runtime, call_tool
+    from legis.posture.ledger import PostureLedger
 
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
     monkeypatch.delenv("LEGIS_POLICY_CELLS", raising=False)
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))  # no policy/cells.toml here
     monkeypatch.setenv("LEGIS_DEV_DEFAULT_CELLS", "1")  # operator dev posture -> chill
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
+    posture_db = tmp_path / "posture.db"
+    monkeypatch.setenv("LEGIS_POSTURE_DB", f"sqlite:///{posture_db}")
+    key = b"k" * 32
+    PostureLedger(f"sqlite:///{posture_db}", initialize=True).genesis(
+        key_fingerprint=hashlib.sha256(key).hexdigest(),
+        agent_id="installer",
+        recorded_at="t0",
+    )
     runtime = build_runtime("agent-1")
     assert runtime.protected_gate is None  # genuinely keyless launch
 
