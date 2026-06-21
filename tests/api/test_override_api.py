@@ -64,6 +64,14 @@ def coached_client(tmp_path, opinion):
     ))
 
 
+def coached_without_judge_client(tmp_path):
+    store = AuditStore(f"sqlite:///{tmp_path / 'gov.db'}")
+    eng = EnforcementEngine(store, FixedClock("2026-06-02T12:00:00+00:00"))
+    return TestClient(create_app(
+        enforcement=eng, cell_registry=_registry(), posture_ledger=_genesis_ledger(tmp_path),
+    ))
+
+
 CHILL_BODY = {
     "policy": "no-broad-except",
     "entity": "src/app.py:handler",
@@ -114,6 +122,16 @@ def test_coached_blocked_post_returns_409_with_judge_reasoning(tmp_path):
     assert body["judge_rationale"] == "rationale is boilerplate"
     # Even blocked, the attempt is in the trail for async review.
     assert len(c.get("/overrides").json()) == 1
+
+
+def test_coached_without_judge_returns_not_enabled_without_write(tmp_path):
+    c = coached_without_judge_client(tmp_path)
+    resp = c.post("/overrides", json=COACHED_BODY)
+    assert resp.status_code == 404
+    detail = resp.json()["detail"].lower()
+    assert "coached" in detail
+    assert "not enabled" in detail
+    assert c.get("/overrides").json() == []
 
 
 def test_coached_accepted_post_returns_201(tmp_path):

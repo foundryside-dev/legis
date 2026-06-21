@@ -567,9 +567,23 @@ def create_app(
         recorded_actor = _recorded_actor(actor, body.agent_id)
 
         if cell in ("chill", "coached"):
+            simple_engine = engine()
+            explanation = _explain_policy(
+                registry,
+                policy=body.policy,
+                entity=body.entity,
+                engine=simple_engine,
+                protected_gate=protected_gate,
+                signoff_gate=signoff_gate,
+            )
+            if not explanation.enabled:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"cell {explanation.cell!r} is not enabled for override submission",
+                )
             try:
                 result = _submit_override(
-                    engine(),
+                    simple_engine,
                     identity=identity,
                     policy=body.policy,
                     entity=body.entity,
