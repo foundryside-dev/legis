@@ -426,19 +426,19 @@ Fail-closed: **`doctor` exits non-zero on an unacknowledged `KEY_RESET`** (spec 
 
 ## PHASE 11 — Rekey / lost-key path
 
-Fail-closed/loud: **rekey resets to chill, needs no old key, preserves history, writes `KEY_RESET`, doctor flags it** (spec §8).
+Fail-closed/loud: **rekey preserves the standing floor, needs no old key, preserves history, writes `KEY_RESET`, doctor flags it** (spec §8).
 
 ### Task 11.1 — `posture rekey`
 
 - **Modify:** `src/legis/posture/ledger.py` (`rekey()`), `src/legis/cli.py` (`posture rekey`).
 - **Test first:** `tests/posture/test_rekey.py`:
-  - `test_rekey_resets_to_chill` — `read_floor()` == `"chill"` after rekey.
+  - `test_rekey_preserves_existing_floor` — `read_floor()` remains at the standing floor after rekey.
   - `test_rekey_mints_new_epoch` — new `key_fingerprint` != prior; new key handed to backend.
   - `test_rekey_preserves_history` — all prior records present; `verify_integrity()` True; `KEY_RESET` chained onto existing history (not a fresh DB).
   - `test_rekey_needs_no_old_key` — succeeds with no open session / no prior key available.
-  - `test_rekey_writes_key_reset_record` — exactly one `KEY_RESET` with `kind=KEY_RESET, floor=chill, key_fingerprint=<new>, agent_id, recorded_at`.
+  - `test_rekey_writes_key_reset_record` — exactly one `KEY_RESET` with `kind=KEY_RESET, floor=<standing-floor>, key_fingerprint=<new>, agent_id, recorded_at`.
   - `test_doctor_flags_rekey` — after rekey, `legis doctor` exits non-zero until an acknowledging signed transition verifying against the new epoch (ties to 10.2).
-- **Implementation:** `rekey(*, agent_id, recorded_at)`: `mint_key()` → backend; compute new fingerprint; `store.append(PostureRecord(kind=KEY_RESET, floor="chill", key_fingerprint=new_fp, ...).to_payload())` (keyless, chained onto existing chain — `append`, not `append_signed`). CLI `_run_posture` dispatches `rekey`.
+- **Implementation:** `rekey(*, agent_id, recorded_at)`: read the standing floor (missing/empty ledger -> `structured`), `mint_key()` → backend; compute new fingerprint; `store.append(PostureRecord(kind=KEY_RESET, floor=<standing-floor>, key_fingerprint=new_fp, ...).to_payload())` (keyless, chained onto existing chain — `append`, not `append_signed`). CLI `_run_posture` dispatches `rekey`.
 - **Verify:** `pytest tests/posture/test_rekey.py -q`.
 
 ---
@@ -449,7 +449,7 @@ Create `tests/posture/test_security_honesty.py` asserting the spec's honesty gua
 
 - **`test_tty_session_expiry`** — past TTL, `load_session()` returns `None` and deletes the file; a `posture set` after expiry is refused.
 - **`test_key_never_returned_to_caller`** — no backend exposes raw key bytes; `sign()` returns only a prefixed signature; `fingerprint()` returns a hash. Behavioral (per Quality medium): assert the returned signature does not contain the key hex, and no public method/attr value equals the key.
-- **`test_rekey_resets_to_chill`** — (cross-ref Phase 11) rekey can never land above chill.
+- **`test_rekey_preserves_existing_floor`** — (cross-ref Phase 11) rekey cannot downgrade an elevated floor.
 - **`test_every_signature_carries_session_id`** — every `TRANSITION` in a window has `session_id` == the open session's id; a no-session transition is refused. Includes the **env-backend path** (D3): an `EnvSigner` transition still carries `session_id`.
 - **`test_env_escape_hatch_warns`** — `EnvSigner` requires explicit `--insecure-key-in-env` and emits an honest warning.
 - **`test_age_file_passphrase_required`** — age-file unlock with wrong/absent passphrase fails closed (no signature).

@@ -90,17 +90,17 @@ def test_posture_set_with_session(posture_env, capsys, monkeypatch):
     assert fp  # sanity: a real fingerprint was minted
 
 
-def test_posture_rekey_resets_to_chill(posture_env, capsys, monkeypatch):
-    # Phase 11 / Task 11.1 — `legis posture rekey` mints a new epoch, resets the
-    # floor to chill, and preserves history. The env backend's sink is a no-op
-    # (the new key goes to LEGIS_OPERATOR_KEY out of band), so no prior key is
-    # needed — rekey is the lost-key recovery path.
+def test_posture_rekey_preserves_existing_floor(posture_env, capsys, monkeypatch):
+    # Phase 11 / Task 11.1 — `legis posture rekey` mints a new epoch while
+    # preserving the standing floor and history. The env backend's sink is a
+    # no-op (the new key goes to LEGIS_OPERATOR_KEY out of band), so no prior key
+    # is needed — rekey is the lost-key recovery path.
     from legis.config import posture_db_url
 
     key_hex = "ab" * 32
     key = bytes.fromhex(key_hex)
     fp0 = _genesis(key)
-    # Move the floor up so the reset visibly drops it back to chill.
+    # Move the floor up so a reset-downgrade regression is visible.
     monkeypatch.setenv("LEGIS_OPERATOR_KEY", key_hex)
     session_mod.open_session(
         ttl=300, operator_id="op@example", backend_id="env", unlock_ref=None
@@ -114,7 +114,7 @@ def test_posture_rekey_resets_to_chill(posture_env, capsys, monkeypatch):
     rc = main(["posture", "rekey", "--backend", "env"])
     assert rc == 0
     ledger = PostureLedger(posture_db_url(), initialize=False)
-    assert ledger.read_floor() == "chill"
+    assert ledger.read_floor() == "structured"
     # New epoch minted; history preserved + chain intact.
     assert ledger.current_epoch_fingerprint() != fp0
     assert ledger.store.verify_integrity() is True
@@ -131,4 +131,4 @@ def test_posture_rekey_needs_no_session(posture_env, capsys):
     assert PostureLedger(posture_db_url(), initialize=False).read_floor() == "chill"
     # Doctor would now flag the unacknowledged reset (Task 10.2); the CLI says so.
     out = capsys.readouterr().out.lower()
-    assert "rekey" in out or "reset" in out or "chill" in out
+    assert "rekey" in out or "reset" in out or "floor preserved" in out

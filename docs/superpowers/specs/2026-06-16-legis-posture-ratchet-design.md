@@ -25,7 +25,7 @@ The mechanism for "the operator authorizes a change" must respect a hard constra
 - The floor applies **uniformly across every surface — MCP, HTTP API, and CLI — through one shared `FlooredRegistry` chokepoint.** As part of this, the HTTP API's cell-addressed submit routes are **unified into one policy-routed submit** so the server (not the caller) owns the cell decision; this closes the API floor-bypass door and makes the README's "API/MCP/CLI routed through the same service layer" claim true (see §3a).
 - Install **mints** an operator key and hands it to a custody backend; the key is never written to disk in plaintext by Legis (except the explicit env escape hatch).
 - An **operator elevation session** (`legis operator enable`) — `sudo` for governance signing — unlocks signing for a short, time-boxed, **attributable** window via an OS keychain prompt.
-- A lost key is **recoverable, not catastrophic**: a keyless `rekey` that resets to chill, preserves history, and is loudly recorded.
+- A lost key is **recoverable, not catastrophic**: a keyless `rekey` that preserves the standing floor, preserves history, and is loudly recorded.
 - Every keyed action is **tamper-evident** and produces exactly one append-only record — no silent path (consistent with `src/legis/enforcement/engine.py`).
 
 ### Non-goals (v1)
@@ -155,11 +155,11 @@ Changing the floor = appending a `TRANSITION` record. The gate:
 Losing the key must be **embarrassing, not catastrophic** — "you're re-signing everything because you lost your key", not "you can no longer prove you operate this project, rebuild the repo."
 
 `legis posture rekey`:
-- **Requires no old key** (you lost it) — but is therefore, by definition, a keyless way to become the operator. It is made safe by being **loud and self-limiting**:
-  - It **resets the floor to chill** and mints a **new** operator key (into the chosen backend). You cannot rekey directly into a high posture; to get back up you `operator enable` + `posture set` with the new key (the "embarrassing, re-sign everything" part).
+- **Requires no old key** (you lost it) — but is therefore, by definition, a keyless way to become the operator. It is made safe by being **loud and floor-preserving**:
+  - It **preserves the standing floor** and mints a **new** operator key (into the chosen backend). You cannot use rekey to lower the current posture; to acknowledge the new epoch you `operator enable` + `posture set <current-floor>` with the new key (the "embarrassing, re-sign everything" part).
   - It writes a **`KEY_RESET` genesis record chained onto the existing history** — history is preserved, not nuked — recording that the operator key was reset without proof of the prior key.
   - `legis doctor` surfaces the reset prominently ("posture key epoch reset on <date> by <agent_id>").
-- **Threat symmetry / honesty:** an attacker can also run `rekey` to force chill — but only in the loudest possible way (an indelible, dated, attributed `KEY_RESET`). They cannot silently downgrade, and they cannot rekey *into* a chosen posture. This is exactly Legis's tamper-**evident** stance: the honest claim is "an unauthorized posture reset leaves a permanent mark", not "is impossible".
+- **Threat symmetry / honesty:** an attacker can also run `rekey` to force a key-epoch reset — but only in the loudest possible way (an indelible, dated, attributed `KEY_RESET`). They cannot silently downgrade, and they cannot rekey *into* a chosen posture. This is exactly Legis's tamper-**evident** stance: the honest claim is "an unauthorized posture reset leaves a permanent mark", not "is impossible".
 
 ## 9. Honesty / threat model statement (published, per Legis doctrine)
 
@@ -176,7 +176,7 @@ Legis states its own residual limits rather than hiding them in comments (`READM
 - **Gate:** transition refused with no open session; refused on fingerprint mismatch; accepted with valid session; fail-closed on signer error; exactly one record per outcome.
 - **Custody backends:** keychain (mocked secure store), age-file (real encrypt/decrypt round-trip), env escape hatch emits warning. Signer never returns key bytes to caller.
 - **Elevation session:** enable opens window + writes `OPERATOR_SESSION_OPENED`; TTL lapse zeroizes; `disable` ends early; every in-window signature carries `session_id`.
-- **Rekey:** resets to chill, mints new epoch, writes `KEY_RESET` onto existing chain (history preserved), needs no old key, doctor flags it.
+- **Rekey:** preserves the standing floor, mints new epoch, writes `KEY_RESET` onto existing chain (history preserved), needs no old key, doctor flags it.
 - **Doctor reconciliation:** floor-vs-registry report; ledger discontinuity / epoch-reset surfaced; **`legis doctor` exits non-zero on an unacknowledged `KEY_RESET`** so a rekey (legitimate or attacker-forced) fails CI loudly; zero-byte/missing store handled report-only (consistent with existing doctor posture).
 - **API unification:** unified `POST /overrides` routes by policy through `FlooredRegistry` and returns the discriminated outcome for each cell; a `floor=structured` floor refuses a would-be chill self-clear (no bypass); operator-clear routes (`/signoff/{seq}/sign`, `/protected/operator-override`) unchanged; existing `tests/api/*` rewritten against the unified route; `docs/federation/sei-conformance.md` updated and the SEI conformance vector re-pinned to the new route surface.
 
@@ -196,7 +196,7 @@ These share v1's primitive but each is its own risk surface and spec.
 - **Any** floor change needs the key (the key exists from install, so direction-aware ratcheting is unnecessary); registry tightening above the floor stays keyless.
 - Custody is the real control, **not** CLI-vs-MCP surface gating.
 - Elevation sessions (`operator enable`, 5-min TTL) replace per-action prompts and provide the accountability record.
-- Lost key → keyless `rekey` that resets to chill, preserves history, is loudly recorded.
+- Lost key → keyless `rekey` that preserves the standing floor, preserves history, is loudly recorded.
 - v1 scope = elevation-session primitive + posture floor as its only consumer; the rest is future state.
 
 ### Decisions resolved post-plan (2026-06-16, against the workflow plan + review)

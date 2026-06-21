@@ -627,15 +627,15 @@ def _transition_acknowledges(rec: Any, *, new_fp: str, key_provider: Any) -> boo
 def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCheck:
     """Non-zero exit on an unacknowledged ``KEY_RESET`` (Task 10.2, D6).
 
-    A ``rekey`` resets the floor to chill and chains a ``KEY_RESET`` carrying a
-    fresh epoch fingerprint — loud and indelible (design §8). Until an operator
-    re-raises the floor with a ``TRANSITION`` whose ``operator_sig`` *verifies*
-    against the new epoch key, the reset is unacknowledged and doctor fails CI
-    (``error`` / ``run_doctor`` returns non-zero). Per D6, a later TRANSITION of
-    the right kind is NOT enough — record-kind presence is replayable; the
-    signature must verify under the new epoch. Missing/empty ledger → ``ok``.
-    Never renders key material (the fingerprint and the verification result are
-    the only signals)."""
+    A ``rekey`` preserves the standing floor and chains a ``KEY_RESET`` carrying
+    a fresh epoch fingerprint — loud and indelible (design §8). Until an operator
+    acknowledges the reset with a ``TRANSITION`` whose ``operator_sig``
+    *verifies* against the new epoch key, the reset is unacknowledged and doctor
+    fails CI (``error`` / ``run_doctor`` returns non-zero). Per D6, a later
+    TRANSITION of the right kind is NOT enough — record-kind presence is
+    replayable; the signature must verify under the new epoch. Missing/empty
+    ledger → ``ok``. Never renders key material (the fingerprint and the
+    verification result are the only signals)."""
     cid = "store.posture_key_reset"
     if key_provider is None:
         key_provider = _operator_key_provider
@@ -668,13 +668,14 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
         return DoctorCheck(cid, "ok", message="key epoch reset acknowledged by a signed transition")
     agent = reset.payload.get("agent_id") or "unknown"
     when = reset.payload.get("recorded_at") or "unknown"
+    floor = reset.payload.get("floor") or "structured"
     return DoctorCheck(
         cid,
         "error",
         message=(
             f"posture key epoch reset on {when} by {agent} — unacknowledged. The floor "
-            "is reset to chill; re-raise it with a signed `legis posture set` under the "
-            "new key (doctor stays non-zero until then). [operator]"
+            f"remains {floor}; acknowledge the reset with a signed `legis posture set` "
+            "under the new key (doctor stays non-zero until then). [operator]"
         ),
         repairable=False,
     )
@@ -721,7 +722,8 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
         "warn",
         message=(
             "operator key not reachable in any backend — `posture set` will refuse; "
-            "`legis posture rekey` to recover (resets to chill, mints a new epoch). [operator]"
+            "`legis posture rekey` to recover (mints a new epoch and preserves the "
+            "current floor). [operator]"
         ),
     )
 

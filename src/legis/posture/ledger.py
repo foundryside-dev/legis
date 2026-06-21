@@ -10,9 +10,11 @@ Fail-closed contract (design §4/§5):
   * **Absent ledger** (no DB file, or an empty store) -> ``read_floor()`` returns
     ``None``; callers map that to the fail-closed ``structured`` default, NEVER
     ``chill``. Only an explicit ``GENESIS`` record makes ``chill`` the floor.
-  * The current floor is the *last* record's ``floor`` field, read via an O(1)
-    tail read (``get_latest_sequence_and_hash`` + ``read_by_seq``), never the
-    O(N) ``read_all`` loop — ``read_floor`` is on the per-request hot path.
+  * The current floor is the latest authoritative floor record's ``floor`` field
+    (``GENESIS`` / ``TRANSITION`` / ``KEY_RESET``), read backward from the tail
+    (``get_latest_sequence_and_hash`` + ``read_by_seq``), never the O(N)
+    ``read_all`` loop. Metadata records such as ``OPERATOR_SESSION_OPENED`` must
+    not lower the effective floor, even if they carry a stale ``floor`` field.
 """
 
 from __future__ import annotations
@@ -73,6 +75,8 @@ def _sqlite_file(url: str) -> Path | None:
 class PostureLedger:
     """Domain wrapper over an ``AuditStore`` for the posture-floor ledger."""
 
+    _FLOOR_RECORD_KINDS = frozenset({KIND_GENESIS, KIND_TRANSITION, KIND_KEY_RESET})
+
     def __init__(self, url: str, *, initialize: bool = True) -> None:
         from legis.store.audit_store import AuditStore
 
@@ -82,11 +86,12 @@ class PostureLedger:
     # -- reads ---------------------------------------------------------------
 
     def read_floor(self) -> str | None:
-        """The current floor (last record's ``floor``), or ``None`` if no ledger.
+        """The current floor (latest authoritative floor record), or ``None``.
 
-        O(1) tail read: two indexed SQLite queries, no JSON-decode loop. A
-        missing DB file or an empty store both report ``None`` (fail-closed:
-        callers map ``None`` -> ``structured``).
+        Tail read, never a ``read_all`` loop. A missing DB file or an empty store
+        both report ``None`` (fail-closed: callers map ``None`` -> ``structured``).
+        Metadata records are skipped so an operator session record cannot lower
+        an already-raised floor by becoming the tail.
         """
         path = _sqlite_file(self._url)
         if path is not None and not path.exists():
@@ -94,16 +99,21 @@ class PostureLedger:
         seq, _ = self.store.get_latest_sequence_and_hash()
         if seq == 0:
             return None
-        rec = self.store.read_by_seq(seq)
-        if rec is None:
-            return None
-        return rec.payload.get("floor")
+        while seq > 0:
+            rec = self.store.read_by_seq(seq)
+            if rec is not None:
+                kind = rec.payload.get("kind")
+                floor = rec.payload.get("floor")
+                if kind in self._FLOOR_RECORD_KINDS and floor is not None:
+                    return floor
+            seq -= 1
+        return None
 
     def epoch_reset_unacknowledged(self) -> bool:
         """True iff the current key epoch was opened by a ``KEY_RESET`` that no
         later ``TRANSITION`` has acknowledged (design §8/§10).
 
-        A ``rekey`` resets the floor to ``chill`` and chains a ``KEY_RESET``
+        A ``rekey`` preserves the standing floor and chains a ``KEY_RESET``
         carrying a fresh epoch fingerprint. Until an operator signs a follow-on
         ``TRANSITION`` under that new epoch, the reset is *unacknowledged* — a
         pending operator action the agent should surface (the same signal the
@@ -246,7 +256,9 @@ class PostureLedger:
         (``keychain_auth_ref`` — the keychain item id, or ``None`` for
         age-file/env, per D5). Every ``TRANSITION`` produced in the window then
         carries this ``session_id``, so the trail reads back as "operator X
-        opened a window at T; within it the floor moved A->B".
+        opened a window at T; within it the floor moved A->B". The record does
+        not carry ``floor``; :meth:`read_floor` ignores metadata records so a
+        session-open tail cannot change the effective floor.
         """
         self.store.append(
             {
@@ -272,10 +284,10 @@ class PostureLedger:
 
         The lost-key / recovery path (design §8). Fail-closed/loud invariants:
 
-          * **Resets to chill.** The ``KEY_RESET`` carries ``floor="chill"`` so
-            the floor can never *rise* across a reset — the post-reset state is
-            the safest-to-self-clear cell, and the operator must re-raise it with
-            a fresh signed ``TRANSITION`` under the new epoch.
+          * **Preserves the standing floor.** The ``KEY_RESET`` carries the
+            current floor because runtime routing reads the floor from the tail
+            record. A missing/empty ledger falls back to the fail-closed
+            ``structured`` floor, never the self-clearable ``chill`` default.
           * **Needs no old key and no open session.** Rekey is the recovery
             mechanism for a lost custody key, so it deliberately mints a new key
             without proving possession of the old one (a lost key cannot sign)
@@ -296,6 +308,7 @@ class PostureLedger:
         """
         from legis.posture.signing import key_fingerprint, mint_key
 
+        floor = self.read_floor() or "structured"
         key_hex = mint_key()
         new_fp = key_fingerprint(key_hex)
         # Hand the key to custody BEFORE appending the reset: a custody failure
@@ -304,7 +317,7 @@ class PostureLedger:
             key_sink(key_hex, backend)
         record = PostureRecord(
             kind=KIND_KEY_RESET,
-            floor="chill",
+            floor=floor,
             key_fingerprint=new_fp,
             agent_id=agent_id,
             recorded_at=recorded_at,

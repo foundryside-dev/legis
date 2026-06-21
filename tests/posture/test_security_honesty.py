@@ -4,7 +4,7 @@ These tests pin the published honesty guarantees of the posture-ratchet feature
 (design §6, §8, §9, §10): the operator key never reaches the caller and never
 lands in logs; every floor transition is accountable to an open elevation
 session; the env escape hatch is loud and explicit; the age-file backend fails
-closed on a wrong/absent passphrase; and a rekey can never land above ``chill``.
+closed on a wrong/absent passphrase; and a rekey cannot downgrade the floor.
 
 They are deliberately *behavioral*, not aspirational (per the Quality reviews):
 the key-never-leaks tests sign with a known key and assert that key's hex never
@@ -183,18 +183,18 @@ def test_key_never_returned_to_caller():
         assert signer.sign(fields) != key_hex
 
 
-# -- test_rekey_resets_to_chill ----------------------------------------------
+# -- test_rekey_preserves_existing_floor --------------------------------------
 
 
-def test_rekey_resets_to_chill(tmp_path):
-    """(Cross-ref Phase 11) a rekey can never land above chill — even from an
-    elevated floor, the post-reset floor is chill (design §8).
+def test_rekey_preserves_existing_floor(tmp_path):
+    """(Cross-ref Phase 11) a rekey changes the epoch without lowering an
+    elevated floor (security finding ab59c0bb).
     """
     key_hex = mint_key()
     key_bytes = bytes.fromhex(key_hex)
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
 
-    # Elevate the floor first so the reset visibly drops it back to chill.
+    # Elevate the floor first so a reset-downgrade regression is visible.
     _open_session()
     set_floor(
         "protected",
@@ -206,13 +206,14 @@ def test_rekey_resets_to_chill(tmp_path):
     )
     assert ledger.read_floor() == "protected"
 
-    # Rekey resets to chill regardless of the prior (elevated) floor.
+    # Rekey must not use lost-key recovery to downgrade the prior floor.
     ledger.rekey(agent_id="op", recorded_at="t2")
-    assert ledger.read_floor() == "chill"
-    # The KEY_RESET record itself carries floor="chill" (cannot land above).
+    assert ledger.read_floor() == "protected"
+    # The KEY_RESET record itself carries the standing floor because runtime
+    # floor reads use the tail payload.
     resets = [r for r in ledger.store.read_all() if r.payload["kind"] == KIND_KEY_RESET]
     assert len(resets) == 1
-    assert resets[0].payload["floor"] == "chill"
+    assert resets[0].payload["floor"] == "protected"
 
 
 # -- test_every_signature_carries_session_id ---------------------------------

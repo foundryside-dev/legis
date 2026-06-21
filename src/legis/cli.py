@@ -214,9 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     prekey = posture_sub.add_parser(
         "rekey",
         help=(
-            "Lost-key recovery: mint a new operator key epoch, reset the floor "
-            "to chill, and chain a loud KEY_RESET (doctor stays non-zero until "
-            "you re-raise the floor with a signed `posture set` under the new key)"
+            "Lost-key recovery: mint a new operator key epoch while preserving "
+            "the standing floor, and chain a loud KEY_RESET (doctor stays "
+            "non-zero until you acknowledge the reset with a signed "
+            "`posture set` under the new key)"
         ),
     )
     prekey.add_argument(
@@ -453,11 +454,12 @@ def _run_posture(args) -> int:
         return 0
 
     if command == "rekey":
-        # Lost-key recovery (Phase 11 / design §8): mint a fresh key epoch, reset
-        # the floor to chill, and chain a loud KEY_RESET. Needs NO open session
-        # and NO old key — a lost key cannot sign, so the indelible, doctor-flagged
-        # record IS the accountability. The new key bytes reach ONLY custody via
-        # the install key-sink; the ledger stores the fingerprint alone.
+        # Lost-key recovery (Phase 11 / design §8): mint a fresh key epoch while
+        # preserving the standing floor, and chain a loud KEY_RESET. Needs NO
+        # open session and NO old key — a lost key cannot sign, so the indelible,
+        # doctor-flagged record IS the accountability. The new key bytes reach
+        # ONLY custody via the install key-sink; the ledger stores the fingerprint
+        # alone.
         from legis.install import _default_key_sink, choose_install_backend
 
         backend = args.backend
@@ -476,8 +478,9 @@ def _run_posture(args) -> int:
             return 1
         print(
             f"posture rekey: new key epoch {new_fp[:12]}… minted (backend={backend}); "
-            f"floor reset to chill. Re-raise it with a signed `legis posture set` "
-            f"under the new key — `legis doctor` stays non-zero until you do."
+            f"floor preserved as {ledger.read_floor() or 'structured'}. Acknowledge "
+            f"the reset with a signed `legis posture set` under the new key — "
+            f"`legis doctor` stays non-zero until you do."
         )
         return 0
 

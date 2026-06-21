@@ -67,7 +67,7 @@ def _append_key_reset(ledger: PostureLedger, *, new_fp: str, agent_id: str, reco
     doctor tests construct the record directly so they don't depend on it)."""
     record = PostureRecord(
         kind=KIND_KEY_RESET,
-        floor="chill",
+        floor=ledger.read_floor() or "structured",
         key_fingerprint=new_fp,
         agent_id=agent_id,
         recorded_at=recorded_at,

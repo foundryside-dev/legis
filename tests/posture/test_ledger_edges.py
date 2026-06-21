@@ -97,8 +97,8 @@ def test_session_opened_implemented_in_phase3(tmp_path):
 
 
 def test_rekey_implemented_in_phase11(tmp_path):
-    # Phase 11 supersedes the Phase 1 stub: rekey() mints a fresh epoch, resets
-    # the floor to chill, and chains a keyless KEY_RESET onto preserved history
+    # Phase 11 supersedes the Phase 1 stub: rekey() mints a fresh epoch, keeps
+    # the standing floor, and chains a keyless KEY_RESET onto preserved history
     # (full coverage in test_rekey.py).
     ledger = PostureLedger(f"sqlite:///{tmp_path}/posture.db", initialize=True)
     ledger.genesis(
