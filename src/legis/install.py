@@ -910,7 +910,7 @@ def mcp_entry_is_current(project_root: Path) -> bool:
         return False
     if not _mcp_args_are_current(entry.get("args")):
         return False
-    if not _mcp_command_resolves_safely(entry.get("command"), project_root):
+    if not _mcp_command_resolves_safely(entry.get("command"), project_root, entry.get("args")):
         return False
     env = _safe_mcp_env(entry.get("env"))
     return env is not None and env == entry.get("env", {})
@@ -986,36 +986,82 @@ _REJECTED_MCP_ENV_PREFIXES = ("LEGIS_OPERATOR_KEY",)
 _REJECTED_MCP_ENV_KEYS = _UNSAFE_MCP_ENV_KEYS | _SECRET_MCP_ENV_KEYS
 
 
-def _mcp_args_are_current(args: Any) -> bool:
+def _mcp_args_invocation_kind(args: Any) -> str | None:
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-        return False
+        return None
     if args[:1] == ["mcp"]:
+        kind = "legis"
         tail = args
-    elif args[:2] == ["-m", "legis"]:
-        tail = args[2:]
     elif args[:3] == ["-P", "-m", "legis"]:
+        kind = "python-module"
         tail = args[3:]
     else:
-        return False
+        return None
     if tail[:1] != ["mcp"]:
-        return False
+        return None
     try:
         agent_idx = tail.index("--agent-id")
     except ValueError:
-        return False
-    return agent_idx + 1 < len(tail) and bool(tail[agent_idx + 1])
+        return None
+    if not (agent_idx + 1 < len(tail) and bool(tail[agent_idx + 1])):
+        return None
+    return kind
 
 
-def _mcp_command_resolves_safely(command: Any, project_root: Path) -> bool:
+def _mcp_args_are_current(args: Any) -> bool:
+    return _mcp_args_invocation_kind(args) is not None
+
+
+def _command_basename(command: str, resolved: str) -> str:
+    # Prefer the operator-authored command token when it names a path; otherwise
+    # use the PATH resolution. This keeps bare "python3.12" / "legis" forms
+    # honest without trusting a misleading absolute symlink target name.
+    token = command if ("/" in command or "\\" in command) else resolved
+    return Path(token).name.lower()
+
+
+def _is_legis_executable(command: str, resolved: str) -> bool:
+    return _command_basename(command, resolved) in {"legis", "legis.exe"}
+
+
+def _is_python_executable(command: str, resolved: str) -> bool:
+    base = _command_basename(command, resolved)
+    if base == "py.exe":
+        return True
+    if base.endswith(".exe"):
+        base = base[:-4]
+    return base == "python" or re.fullmatch(r"python3(?:\.\d+)*", base) is not None
+
+
+def _mcp_command_resolves_safely(
+    command: Any,
+    project_root: Path,
+    args: Any | None = None,
+) -> bool:
     if not isinstance(command, str) or not command:
         return False
     if _path_head_is_project_local(command, project_root):
         return False
     resolved = shutil.which(command)
     if resolved is not None:
-        return not _path_head_is_project_local(resolved, project_root)
-    path = Path(command)
-    return path.is_absolute() and path.is_file()
+        if _path_head_is_project_local(resolved, project_root):
+            return False
+        resolved_path = resolved
+    else:
+        path = Path(command)
+        if not (path.is_absolute() and path.is_file()):
+            return False
+        resolved_path = str(path)
+    if not os.access(resolved_path, os.X_OK):
+        return False
+    kind = _mcp_args_invocation_kind(args) if args is not None else None
+    if kind == "legis":
+        return _is_legis_executable(command, resolved_path)
+    if kind == "python-module":
+        return _is_python_executable(command, resolved_path)
+    if args is not None:
+        return False
+    return True
 
 
 def _safe_mcp_env(env: Any) -> dict[str, str] | None:
@@ -1111,7 +1157,11 @@ def register_mcp_json(
         usable = (
             existing.get("type") == "stdio"
             and _mcp_args_are_current(existing.get("args"))
-            and _mcp_command_resolves_safely(existing.get("command"), project_root)
+            and _mcp_command_resolves_safely(
+                existing.get("command"),
+                project_root,
+                existing.get("args"),
+            )
             and _safe_mcp_env(existing.get("env")) == existing.get("env", {})
         )
 
