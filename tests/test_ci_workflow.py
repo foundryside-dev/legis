@@ -40,7 +40,7 @@ def test_release_publish_requires_live_loomweave_conformance():
     env = live_job["env"]
     assert env["LOOMWEAVE_URL"] == "${{ vars.LOOMWEAVE_URL }}"
     assert env["LOOMWEAVE_LIVE_ORACLE_LOCATOR"] == "${{ vars.LOOMWEAVE_LIVE_ORACLE_LOCATOR }}"
-    assert env["LEGIS_LOOMWEAVE_HMAC_KEY"] == "${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}"
+    assert "LEGIS_LOOMWEAVE_HMAC_KEY" not in env
 
     commands = "\n".join(str(step.get("run", "")) for step in live_job["steps"])
     assert "Missing required release conformance environment" in commands
@@ -55,3 +55,13 @@ def test_release_publish_requires_live_loomweave_conformance():
     ]
     assert oracle_steps
     assert all("if" not in step for step in oracle_steps)
+    oracle_step = oracle_steps[0]
+    assert oracle_step["env"] == {
+        "LEGIS_LOOMWEAVE_HMAC_KEY": "${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}"
+    }
+    assert "LEGIS_LOOMWEAVE_HMAC_KEY" in oracle_step["run"]
+    non_oracle_steps = [step for step in live_job["steps"] if step is not oracle_step]
+    assert all(
+        "LEGIS_LOOMWEAVE_HMAC_KEY" not in step.get("env", {})
+        for step in non_oracle_steps
+    )

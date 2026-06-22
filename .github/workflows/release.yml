@@ -61,14 +61,13 @@ jobs:
     env:
       LOOMWEAVE_URL: ${{ vars.LOOMWEAVE_URL }}
       LOOMWEAVE_LIVE_ORACLE_LOCATOR: ${{ vars.LOOMWEAVE_LIVE_ORACLE_LOCATOR }}
-      LEGIS_LOOMWEAVE_HMAC_KEY: ${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Require live oracle configuration
         run: |
           missing=()
-          for name in LOOMWEAVE_URL LOOMWEAVE_LIVE_ORACLE_LOCATOR LEGIS_LOOMWEAVE_HMAC_KEY; do
+          for name in LOOMWEAVE_URL LOOMWEAVE_LIVE_ORACLE_LOCATOR; do
             if [ -z "${!name}" ]; then
               missing+=("${name}")
             fi
@@ -87,7 +86,21 @@ jobs:
         run: uv sync --dev
 
       - name: Run live Loomweave oracle
-        run: uv run pytest tests/conformance/test_live_loomweave_oracle.py
+        env:
+          LEGIS_LOOMWEAVE_HMAC_KEY: ${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}
+        run: |
+          missing=()
+          for name in LOOMWEAVE_URL LOOMWEAVE_LIVE_ORACLE_LOCATOR LEGIS_LOOMWEAVE_HMAC_KEY; do
+            if [ -z "${!name}" ]; then
+              missing+=("${name}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            joined="$(IFS=', '; echo "${missing[*]}")"
+            echo "::error::Missing required release conformance environment: ${joined}"
+            exit 1
+          fi
+          uv run pytest tests/conformance/test_live_loomweave_oracle.py
 
   publish:
     name: Publish to PyPI
