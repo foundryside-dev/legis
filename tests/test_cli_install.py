@@ -139,6 +139,27 @@ def test_install_all_defers_posture_without_custody(tmp_path, monkeypatch, capsy
         assert led.store.read_all() == []
 
 
+def test_install_posture_only_fails_without_custody(tmp_path, monkeypatch, capsys):
+    # An explicit posture install is an automation readiness check: if key
+    # custody is not configured, rc must be nonzero and no GENESIS may be written.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", raising=False)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY", raising=False)
+
+    rc = main(["install", "--posture"])
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "[FAIL] posture ledger:" in out
+    assert "custody" in out
+    db = tmp_path / ".weft" / "legis" / "legis-posture.db"
+    if db.exists():
+        from legis.posture import PostureLedger
+
+        led = PostureLedger(install.posture_db_url_for_install(), initialize=False)
+        assert led.store.read_all() == []
+
+
 def test_install_posture_env_backend_opt_in(tmp_path, monkeypatch, capsys):
     # --insecure-key-in-env selects the env backend; the env sink is a no-op so
     # the GENESIS lands with no age blob and no custody refusal.

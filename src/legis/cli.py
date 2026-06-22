@@ -606,11 +606,11 @@ def _run_install(args) -> int:
         try:
             fp = install_posture(project_root, backend=backend)
         except OperatorKeyCustodyError as exc:
-            # Fail-closed but non-fatal to the broader install: NO genesis was
-            # written (the sink runs before the append), so the ledger never
-            # carries a fingerprint the operator cannot sign against. Tell the
-            # operator how to complete custody and re-run --posture.
-            return True, (
+            # NO genesis was written (the sink runs before the append), so the
+            # ledger never carries a fingerprint the operator cannot sign
+            # against. A broad install may defer posture setup, but an explicit
+            # posture install is a readiness check and must fail closed.
+            return not args.posture, (
                 f"deferred: {exc} "
                 f"(re-run `legis install --posture` once custody is configured)"
             )
