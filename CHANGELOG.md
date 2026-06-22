@@ -9,6 +9,36 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.1.1] — 2026-06-23
+
+Security and release-readiness hardening after the 1.1.0 dogfood release.
+
+### Fixed
+
+- **Posture floor reads now fail closed and ignore metadata tails.** Missing or
+  uninitialized posture ledgers resolve to the structured floor instead of
+  crashing or inheriting a self-clearable registry default, and session metadata
+  appended after a floor transition can no longer become the effective floor.
+- **Operator elevation sessions are authenticated.** Session files now carry a
+  backend-signed HMAC; forged or stale session metadata is refused before a
+  posture transition can be written.
+- **Rekey recovery preserves the standing floor and is doctor-verifiable through
+  age-file custody.** Rekey appends a loud `KEY_RESET` without lowering posture,
+  and doctor can verify the follow-up acknowledgment through the default
+  age-file backend when the operator provides the passphrase.
+- **Explicit posture installation fails closed when key custody is not
+  configured.** Bare `legis install` may still defer posture setup, but
+  `legis install --posture` now exits non-zero if no GENESIS can be written.
+- **Governance and override authority checks are stricter.** Supplied SEIs must
+  bind to the asserted entity before a governance record is accepted, and
+  coached HTTP overrides require an enabled judge instead of recording a
+  no-judge success path.
+- **Install, release, and site-kit custody are tighter.** `.mcp.json`
+  registration rejects non-canonical Legis command heads while preserving safe
+  operator env, release publication requires live Loomweave oracle conformance,
+  release secrets are scoped to the oracle step, and the fetched Weft site-kit
+  dependency is pinned.
+
 ## [1.1.0] — 2026-06-19
 
 Three defects surfaced by a `lacuna` dogfooding pass, confirmed (investigation +
@@ -618,7 +648,9 @@ WP-M1 service-layer extraction, consolidated behind a stable version.
   `HTTPException`, so both HTTP and the forthcoming MCP adapter drive one code
   path. Behavior-preserving; FastAPI handlers are now thin adapters.
 
-[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/foundryside-dev/legis/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/foundryside-dev/legis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc4...v1.0.0
 [1.0.0rc4]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc3...v1.0.0rc4
 [1.0.0rc3]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc2...v1.0.0rc3

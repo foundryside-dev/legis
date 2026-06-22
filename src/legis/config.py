@@ -87,13 +87,14 @@ def project_root() -> Path:
     return Path.cwd()
 
 
-def _store_dir() -> Path:
+def _store_dir(root: Path | None = None) -> Path:
     """The built-in runtime-state subtree.
 
     Repo-local ``weft.toml`` is intentionally ignored here. Load-bearing store
     relocation must come from explicit ``LEGIS_*_DB`` operator env vars.
     """
-    return Path(".weft") / WEFT_MEMBER
+    base = Path(".") if root is None else Path(root)
+    return base / ".weft" / WEFT_MEMBER
 
 
 def _sqlite_url(path: Path) -> str:
@@ -147,24 +148,24 @@ def posture_db_url() -> str:
     return _resolve_db_url(_POSTURE_DB_ENV, _POSTURE_DB_NAME)
 
 
-def operator_session_path() -> Path:
+def operator_session_path(root: Path | None = None) -> Path:
     """The ephemeral elevation-session metadata file (design §6).
 
     Holds only session/window metadata + a backend-specific unlock reference —
     never key plaintext, never a passphrase. Created by ``legis operator
     enable``, deleted on TTL lapse or ``disable``. Gitignored at install.
     """
-    return _store_dir() / "operator_session.json"
+    return _store_dir(root) / "operator_session.json"
 
 
-def operator_age_path() -> Path:
+def operator_age_path(root: Path | None = None) -> Path:
     """The age-encrypted operator-key blob for the age-file custody backend.
 
     Project-rooted under ``.weft/legis/`` (the federation convention), NOT a
     home-config path. Encrypted at rest (scrypt + AES-GCM); gitignored at
     install. Only the age-file backend uses it.
     """
-    return _store_dir() / "operator.age"
+    return _store_dir(root) / "operator.age"
 
 
 def protected_policies() -> frozenset[str]:

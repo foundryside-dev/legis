@@ -99,7 +99,8 @@ Fail-closed rule for this phase: **absent ledger → `read_floor()` reports "no 
   - `test_genesis_writes_chill_floor` — fresh DB; `ledger.genesis(...)` appends one `kind=GENESIS, floor="chill"`; `read_floor()` returns `"chill"`.
   - `test_read_floor_missing_ledger_returns_none` — no DB file; `read_floor()` returns `None`; assert it does NOT return `"chill"`.
   - `test_read_floor_is_last_record` — after genesis then a transition to `structured`, `read_floor()` returns `"structured"`.
-  - `test_read_floor_uses_tail_read` — instrument/spy that `read_floor()` does **not** call `read_all()`; it uses `get_latest_sequence_and_hash()` + `read_by_seq`. **(addresses Architecture medium: per-request hot path)**
+  - `test_read_floor_uses_tail_read` — instrument/spy that `read_floor()` does **not** call `read_all()`; it uses a tail-oriented query for the latest authoritative floor record. **(addresses Architecture medium: per-request hot path)**
+  - `test_read_floor_does_not_point_read_each_metadata_tail` — metadata records after the floor do not force a repeated `read_by_seq()` loop over the tail.
   - `test_chain_integrity` — `store.verify_integrity()` True after genesis + transition.
   - `test_idempotent_open` — opening the ledger twice over an existing DB does NOT append a second GENESIS.
   - `test_genesis_blocked_after_key_reset` — `genesis()` on a ledger whose tail is a `KEY_RESET` (non-empty, no `GENESIS` re-needed) returns without appending. **(addresses Quality high)**
@@ -108,7 +109,7 @@ Fail-closed rule for this phase: **absent ledger → `read_floor()` reports "no 
 - **Implementation:**
   - `PostureLedger.__init__(self, url, *, initialize=True)` constructs `AuditStore(url, initialize=initialize)` like `audit_store.py:116`.
   - `genesis(key_fingerprint, agent_id, recorded_at)` → keyless `PostureRecord(kind=GENESIS, floor="chill", ...)`, `store.append(record.to_payload())` (`audit_store.py:285`). **Guard:** return early if `store.read_all()` is non-empty (covers both an existing GENESIS and a KEY_RESET tail).
-  - `read_floor() -> str | None`: if DB/file absent → `None`. Else `seq, _ = store.get_latest_sequence_and_hash()`; if no records → `None`; else `return store.read_by_seq(seq).payload["floor"]` (two O(1) SQLite queries, no JSON-decode loop). `read_all()` is reserved for `verify_integrity()` in doctor.
+  - `read_floor() -> str | None`: if DB/file absent → `None`; otherwise issue one descending SQLite query over `audit_log.payload`, skip metadata records, and return the newest authoritative `floor` from `GENESIS`, `TRANSITION`, or `KEY_RESET`. `read_all()` is reserved for `verify_integrity()` in doctor, and metadata tails must not create a repeated `read_by_seq()` loop.
   - `transition(new_cell, *, signer, session_id, key_fingerprint, agent_id, rationale, recorded_at)`: **resolve current-epoch `key_fingerprint` via a tail read BEFORE `append_signed`** (never inside the build callback). Then `append_signed(build_payload)` (`audit_store.py:296`); inside `build(seq, prev_hash)`: assemble signing fields including `chain_seq=seq`, verify `signer.fingerprint() == key_fingerprint` first, then `signer.sign(fields)`; embed `operator_sig`/`session_id`. **Fail-closed:** signer raise or fingerprint mismatch → raise before persist (no half-write).
   - `rekey(...)` and `session_opened(...)` are signatures here, implemented in Phase 11 / Phase 3.2.
 - **Verify:** `pytest tests/posture/test_ledger.py -q`.

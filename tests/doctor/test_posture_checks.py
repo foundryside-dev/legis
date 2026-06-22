@@ -221,6 +221,71 @@ def test_key_reset_acknowledged_ok(posture_env, monkeypatch):
     assert c.ok is True
 
 
+def test_key_reset_acknowledged_with_age_file_backend(posture_env, monkeypatch, tmp_path):
+    from pathlib import Path
+
+    from legis.config import operator_age_path
+    from legis.doctor import check_posture_key_reset
+    from legis.posture.signing import AgeFileSigner, wrap_key
+
+    monkeypatch.chdir(tmp_path)
+    ledger, key2, fp2 = _genesis_then_rekey(posture_env)
+    passphrase = "correct horse"
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", passphrase)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY", raising=False)
+    age_path = operator_age_path()
+    age_path.parent.mkdir(parents=True, exist_ok=True)
+    age_path.write_bytes(wrap_key(key2, passphrase))
+
+    ledger.transition(
+        "structured",
+        signer=AgeFileSigner(blob=age_path.read_bytes(), passphrase_cb=lambda: passphrase),
+        session_id="sess-ack",
+        key_fingerprint=fp2,
+        agent_id="alice",
+        rationale="re-raise after rekey",
+        recorded_at="2026-06-16T01:00:00Z",
+    )
+
+    c = check_posture_key_reset(Path("."))
+    assert c.status == "ok"
+    assert c.ok is True
+
+
+def test_key_reset_acknowledged_with_age_file_backend_uses_doctor_root(
+    posture_env, monkeypatch, tmp_path
+):
+    from legis.doctor import check_posture_key_reset
+    from legis.posture.signing import AgeFileSigner, wrap_key
+
+    repo = tmp_path / "repo"
+    other_cwd = tmp_path / "other"
+    repo.mkdir()
+    other_cwd.mkdir()
+    ledger, key2, fp2 = _genesis_then_rekey(posture_env)
+    passphrase = "correct horse"
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", passphrase)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY", raising=False)
+    age_path = repo / ".weft" / "legis" / "operator.age"
+    age_path.parent.mkdir(parents=True, exist_ok=True)
+    age_path.write_bytes(wrap_key(key2, passphrase))
+
+    ledger.transition(
+        "structured",
+        signer=AgeFileSigner(blob=age_path.read_bytes(), passphrase_cb=lambda: passphrase),
+        session_id="sess-ack",
+        key_fingerprint=fp2,
+        agent_id="alice",
+        rationale="re-raise after rekey",
+        recorded_at="2026-06-16T01:00:00Z",
+    )
+
+    monkeypatch.chdir(other_cwd)
+    c = check_posture_key_reset(repo)
+    assert c.status == "ok"
+    assert c.ok is True
+
+
 def test_key_reset_acknowledged_requires_new_epoch_fingerprint(posture_env, monkeypatch):
     """A TRANSITION signed under the OLD epoch key does NOT acknowledge (D6)."""
     from legis.doctor import check_posture_key_reset
@@ -345,6 +410,47 @@ def test_operator_key_env_present_warns(posture_env, monkeypatch):
     c = check_operator_key_accessible(__import__("pathlib").Path("."))
     assert c.status == "warn"
     assert "env" in (c.message or "").lower()
+
+
+def test_operator_key_age_file_reachable_uses_doctor_root(posture_env, monkeypatch, tmp_path):
+    from legis.doctor import check_operator_key_accessible
+    from legis.posture.signing import wrap_key
+
+    repo = tmp_path / "repo"
+    other_cwd = tmp_path / "other"
+    repo.mkdir()
+    other_cwd.mkdir()
+    ledger = _open(posture_env)
+    key = mint_key()
+    fp = key_fingerprint(key)
+    ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
+    passphrase = "correct horse"
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", passphrase)
+    monkeypatch.delenv("LEGIS_OPERATOR_KEY", raising=False)
+    age_path = repo / ".weft" / "legis" / "operator.age"
+    age_path.parent.mkdir(parents=True, exist_ok=True)
+    age_path.write_bytes(wrap_key(key, passphrase))
+
+    monkeypatch.chdir(other_cwd)
+    c = check_operator_key_accessible(repo)
+    assert c.status == "ok"
+    assert "reachable" in (c.message or "").lower()
+
+
+def test_operator_key_env_mismatch_is_not_reported_usable(posture_env, monkeypatch):
+    from legis.doctor import check_operator_key_accessible
+
+    ledger = _open(posture_env)
+    key = mint_key()
+    fp = key_fingerprint(key)
+    ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", mint_key())
+
+    c = check_operator_key_accessible(__import__("pathlib").Path("."))
+    assert c.status == "warn"
+    msg = (c.message or "").lower()
+    assert "does not match" in msg
+    assert "usable" not in msg
 
 
 def test_operator_key_no_ledger_is_ok(tmp_path, monkeypatch):

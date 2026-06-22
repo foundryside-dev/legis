@@ -568,12 +568,12 @@ def check_posture_ledger(root: Path) -> DoctorCheck:
     return DoctorCheck(cid, "ok", message=f"floor: {floor}")
 
 
-def _operator_key_provider(fingerprint: str) -> str | None:
+def _operator_key_provider(fingerprint: str, *, root: Path | None = None) -> str | None:
     """Default key provider: produce the hex key for *fingerprint* if a backend
-    can without revealing it elsewhere. Today only the env escape hatch is
-    probeable from the doctor process; keychain/age unlocks are operator-side
-    (re-prompt) and report as unreachable here. Returns the key hex ONLY for
-    internal verification — never rendered in any message."""
+    can without revealing it elsewhere. The env escape hatch is probeable when
+    explicitly set; the age-file backend is probeable when the operator supplies
+    ``LEGIS_OPERATOR_KEY_AGE_PASSPHRASE`` for this doctor run. Returns the key
+    hex ONLY for internal verification — never rendered in any message."""
     env_key = os.environ.get(_OPERATOR_KEY_ENV)
     if env_key:
         try:
@@ -582,7 +582,20 @@ def _operator_key_provider(fingerprint: str) -> str | None:
             if key_fingerprint(env_key) == fingerprint:
                 return env_key
         except Exception:  # noqa: BLE001 — malformed env key is just unreachable
-            return None
+            pass
+    age_passphrase = os.environ.get("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE")
+    if age_passphrase:
+        try:
+            from legis.config import operator_age_path
+            from legis.posture.signing import key_fingerprint, unwrap_key
+
+            age_path = operator_age_path(root)
+            if age_path.exists():
+                key_hex = unwrap_key(age_path.read_bytes(), age_passphrase)
+                if key_fingerprint(key_hex) == fingerprint:
+                    return key_hex
+        except Exception:  # noqa: BLE001 — wrong passphrase/blob is unreachable
+            pass
     return None
 
 
@@ -638,7 +651,9 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
     verification result are the only signals)."""
     cid = "store.posture_key_reset"
     if key_provider is None:
-        key_provider = _operator_key_provider
+        def key_provider(fingerprint: str) -> str | None:
+            return _operator_key_provider(fingerprint, root=root)
+
     url = _posture_url(root)
     db = _posture_db_path(url)
     if db is not None and (not db.exists() or db.stat().st_size == 0):
@@ -692,7 +707,9 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
     key. Missing/empty ledger → ``ok`` (nothing to reach yet)."""
     cid = "runtime.operator_key"
     if key_provider is None:
-        key_provider = _operator_key_provider
+        def key_provider(fingerprint: str) -> str | None:
+            return _operator_key_provider(fingerprint, root=root)
+
     url = _posture_url(root)
     db = _posture_db_path(url)
     if db is not None and (not db.exists() or db.stat().st_size == 0):
@@ -706,7 +723,16 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
         return DoctorCheck(cid, "error", message=f"cannot read posture ledger: {exc}")
     if epoch_fp is None:
         return DoctorCheck(cid, "ok", message="no key epoch yet")
-    if os.environ.get(_OPERATOR_KEY_ENV):
+    env_key = os.environ.get(_OPERATOR_KEY_ENV)
+    env_matches_epoch = False
+    if env_key:
+        try:
+            from legis.posture.signing import key_fingerprint
+
+            env_matches_epoch = key_fingerprint(env_key) == epoch_fp
+        except Exception:  # noqa: BLE001 — malformed env key is a mismatch here
+            env_matches_epoch = False
+    if env_matches_epoch:
         return DoctorCheck(
             cid,
             "warn",
@@ -716,7 +742,26 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
             ),
         )
     if key_provider(epoch_fp) is not None:
+        if env_key:
+            return DoctorCheck(
+                cid,
+                "warn",
+                message=(
+                    "LEGIS_OPERATOR_KEY is present but does not match the current key epoch; "
+                    "another custody backend is reachable. [operator]"
+                ),
+            )
         return DoctorCheck(cid, "ok", message="operator key reachable")
+    if env_key:
+        return DoctorCheck(
+            cid,
+            "warn",
+            message=(
+                "LEGIS_OPERATOR_KEY is present but does not match the current key epoch — "
+                "`posture set` will refuse until a matching custody backend is available. "
+                "[operator]"
+            ),
+        )
     return DoctorCheck(
         cid,
         "warn",

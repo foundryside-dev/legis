@@ -11,18 +11,22 @@ Fail-closed contract (design §4/§5):
     ``None``; callers map that to the fail-closed ``structured`` default, NEVER
     ``chill``. Only an explicit ``GENESIS`` record makes ``chill`` the floor.
   * The current floor is the latest authoritative floor record's ``floor`` field
-    (``GENESIS`` / ``TRANSITION`` / ``KEY_RESET``), read backward from the tail
-    (``get_latest_sequence_and_hash`` + ``read_by_seq``), never the O(N)
-    ``read_all`` loop. Metadata records such as ``OPERATOR_SESSION_OPENED`` must
-    not lower the effective floor, even if they carry a stale ``floor`` field.
+    (``GENESIS`` / ``TRANSITION`` / ``KEY_RESET``), found by one descending
+    payload scan from the tail, never the O(N) ``read_all`` loop or a repeated
+    point-read loop over metadata. Metadata records such as
+    ``OPERATOR_SESSION_OPENED`` must not lower the effective floor, even if they
+    carry a stale ``floor`` field.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
+
+from sqlalchemy import select
 
 from legis.posture.records import (
     KIND_GENESIS,
@@ -88,7 +92,8 @@ class PostureLedger:
     def read_floor(self) -> str | None:
         """The current floor (latest authoritative floor record), or ``None``.
 
-        Tail read, never a ``read_all`` loop. A missing DB file or an empty store
+        Single descending table scan, never a ``read_all`` loop and never a
+        point-read loop over metadata tails. A missing DB file or an empty store
         both report ``None`` (fail-closed: callers map ``None`` -> ``structured``).
         Metadata records are skipped so an operator session record cannot lower
         an already-raised floor by becoming the tail.
@@ -96,17 +101,20 @@ class PostureLedger:
         path = _sqlite_file(self._url)
         if path is not None and not path.exists():
             return None
-        seq, _ = self.store.get_latest_sequence_and_hash()
-        if seq == 0:
-            return None
-        while seq > 0:
-            rec = self.store.read_by_seq(seq)
-            if rec is not None:
-                kind = rec.payload.get("kind")
-                floor = rec.payload.get("floor")
+        self.store._assert_no_batch_in_progress("read_floor")
+        with self.store._engine.begin() as conn:
+            if not self.store._has_log_table(conn):
+                return None
+            rows = conn.execute(
+                select(self.store._log.c.payload)
+                .order_by(self.store._log.c.seq.desc())
+            )
+            for row in rows:
+                payload = json.loads(row.payload)
+                kind = payload.get("kind")
+                floor = payload.get("floor")
                 if kind in self._FLOOR_RECORD_KINDS and floor is not None:
                     return floor
-            seq -= 1
         return None
 
     def epoch_reset_unacknowledged(self) -> bool:

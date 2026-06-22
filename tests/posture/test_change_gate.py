@@ -82,6 +82,22 @@ class _FakeFingerprintSigner:
         return "hmac-sha256:v3:" + "0" * 64
 
 
+class _NonExtractableSigner:
+    """Signer that can verify internally but never exposes key material."""
+
+    def __init__(self, key: bytes):
+        self.__key = key
+
+    def fingerprint(self) -> str:
+        return hashlib.sha256(self.__key).hexdigest()
+
+    def sign(self, fields: dict) -> str:
+        return enf_signing.sign(fields, self.__key, version="v3")
+
+    def verify(self, fields: dict, signature: str) -> bool:
+        return enf_signing.verify(fields, signature, self.__key)
+
+
 @pytest.fixture(autouse=True)
 def _session_dir(tmp_path, monkeypatch):
     """Point operator_session_path() at a per-test tmp dir.
@@ -278,6 +294,25 @@ def test_set_accepted_with_valid_session(tmp_path):
     fields = {k: v for k, v in rec.payload.items() if k != "operator_sig"}
     fields["chain_seq"] = rec.seq
     assert enf_signing.verify(fields, sig, key) is True
+
+
+def test_set_accepts_non_extractable_signer_with_internal_verifier(tmp_path):
+    key = b"k" * 32
+    ledger, _ = _genesis(tmp_path, key)
+    signer = _NonExtractableSigner(key)
+    _open_session(signer=signer)
+
+    result = set_floor(
+        "structured",
+        ledger=ledger,
+        signer=signer,
+        agent_id="op",
+        rationale="tighten",
+        clock=FixedClock("t1"),
+    )
+
+    assert result.accepted is True
+    assert ledger.read_floor() == "structured"
 
 
 def test_every_signature_carries_session_id(tmp_path):
