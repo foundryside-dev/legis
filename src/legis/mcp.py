@@ -155,7 +155,6 @@ class McpRuntime:
     initialized: bool = False
     protocol_version: str | None = None
     engine: EnforcementEngine | None = None
-    coached_engine: EnforcementEngine | None = None
     identity: Any | None = None
     protected_gate: ProtectedGate | None = None
     trail_verifier: TrailVerifier | None = None
@@ -176,6 +175,7 @@ class McpRuntime:
     # site via _floored_registry. None on a runtime built without posture wiring,
     # which _floored_registry treats fail-closed as a missing ledger (structured).
     posture_ledger: Any | None = None
+    coached_engine: EnforcementEngine | None = None
 
 
 def _load_policy_cell_registry() -> PolicyCellRegistry:
@@ -1700,6 +1700,30 @@ def _signoff_signed_record(
     return None
 
 
+def _dedupe_records(records: list[Any]) -> list[Any]:
+    deduped = []
+    seen = set()
+    for rec in records:
+        key = (
+            getattr(rec, "seq", None),
+            getattr(rec, "content_hash", None),
+            getattr(rec, "chain_hash", None),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(rec)
+    return deduped
+
+
+def _simple_engine_records(runtime: McpRuntime) -> list[Any]:
+    records = []
+    for engine in (runtime.engine, runtime.coached_engine):
+        if engine is not None:
+            records.extend(engine.records())
+    return _dedupe_records(records)
+
+
 def _verified_records(runtime: McpRuntime) -> list[Any]:
     if runtime.protected_gate is not None:
         return service_verified_records(
@@ -1722,9 +1746,7 @@ def _verified_records(runtime: McpRuntime) -> list[Any]:
             except TamperError as exc:
                 raise AuditIntegrityError(f"audit integrity failure: {exc}") from exc
         return records
-    if runtime.engine is None:
-        return []
-    return runtime.engine.records()
+    return _simple_engine_records(runtime)
 
 
 def _tool_policy_explain(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:

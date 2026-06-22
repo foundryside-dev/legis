@@ -104,7 +104,14 @@ def test_rekey_implemented_in_phase11(tmp_path):
     ledger.genesis(
         key_fingerprint="ab" * 32, agent_id="installer", recorded_at="t0"
     )
-    new_fp = ledger.rekey(agent_id="op", recorded_at="t1")
+    handed: list[tuple[str, str]] = []
+    new_fp = ledger.rekey(
+        agent_id="op",
+        recorded_at="t1",
+        key_sink=lambda key_hex, backend: handed.append((key_hex, backend)),
+        backend="age-file",
+    )
     assert ledger.read_floor() == "chill"
     assert ledger.store.read_all()[-1].payload["kind"] == "KEY_RESET"
     assert new_fp == ledger.current_epoch_fingerprint() != "ab" * 32
+    assert len(handed) == 1

@@ -226,13 +226,20 @@ def test_rekey_preserves_existing_floor(tmp_path):
     assert ledger.read_floor() == "protected"
 
     # Rekey must not use lost-key recovery to downgrade the prior floor.
-    ledger.rekey(agent_id="op", recorded_at="t2")
+    handed: list[tuple[str, str]] = []
+    ledger.rekey(
+        agent_id="op",
+        recorded_at="t2",
+        key_sink=lambda key_hex, backend: handed.append((key_hex, backend)),
+        backend="age-file",
+    )
     assert ledger.read_floor() == "protected"
     # The KEY_RESET record itself carries the standing floor because runtime
     # floor reads use the tail payload.
     resets = [r for r in ledger.store.read_all() if r.payload["kind"] == KIND_KEY_RESET]
     assert len(resets) == 1
     assert resets[0].payload["floor"] == "protected"
+    assert len(handed) == 1
 
 
 # -- test_every_signature_carries_session_id ---------------------------------

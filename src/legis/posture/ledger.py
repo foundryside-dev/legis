@@ -334,12 +334,19 @@ class PostureLedger:
             non-zero until a signed ``TRANSITION`` verifies under the NEW epoch
             (Task 10.2 / D6).
 
-        The freshly-minted key bytes reach ONLY the custody ``key_sink`` (handed
-        off BEFORE the record is written, mirroring ``install_posture`` — if
-        custody fails we have written no fingerprint we cannot later sign
+        The freshly-minted key bytes reach ONLY the required custody ``key_sink``
+        (handed off BEFORE the record is written, mirroring ``install_posture`` —
+        if custody fails we have written no fingerprint we cannot later sign
         against); the ledger stores the new fingerprint alone. Returns the new
         epoch ``key_fingerprint``.
         """
+        if key_sink is None:
+            from legis.install import OperatorKeyCustodyError
+
+            raise OperatorKeyCustodyError(
+                "posture rekey requires an explicit operator-key custody sink"
+            )
+
         from legis.posture.signing import key_fingerprint, mint_key
 
         floor = self.read_floor() or "structured"
@@ -347,8 +354,7 @@ class PostureLedger:
         new_fp = key_fingerprint(key_hex)
         # Hand the key to custody BEFORE appending the reset: a custody failure
         # must leave the ledger untouched (no fingerprint we cannot sign against).
-        if key_sink is not None:
-            key_sink(key_hex, backend)
+        key_sink(key_hex, backend)
         record = PostureRecord(
             kind=KIND_KEY_RESET,
             floor=floor,

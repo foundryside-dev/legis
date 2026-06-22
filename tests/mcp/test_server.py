@@ -142,6 +142,17 @@ def test_cli_has_mcp_subcommand_with_launch_bound_agent_id():
     assert args.agent_id == "agent-1"
 
 
+def test_mcp_runtime_positional_constructor_preserves_identity_slot():
+    from legis.mcp import McpRuntime
+
+    identity = object()
+
+    runtime = McpRuntime("agent-1", False, None, None, identity)
+
+    assert runtime.identity is identity
+    assert runtime.coached_engine is None
+
+
 def test_build_runtime_wires_env_configured_openrouter_judge(tmp_path, monkeypatch):
     from legis.enforcement.llm_client import OpenRouterLLMClient
     from legis.mcp import build_runtime
@@ -196,28 +207,45 @@ def test_build_runtime_wires_env_judge_for_simple_coached_override(tmp_path, mon
     runtime.cell_registry = PolicyCellRegistry(default_cell="coached")
     runtime.posture_ledger = _chill_posture_ledger(tmp_path)
 
-    result = _run(
+    call = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "override_submit",
+            "arguments": {
+                "policy": "review.rationale",
+                "entity": "src/x.py:f",
+                "rationale": "specific rationale",
+                "idempotency_key": "coached-retry-1",
+            },
+        },
+    }
+    responses = _run(
         _messages(
+            {**call, "id": 1},
+            {**call, "id": 2},
             {
                 "jsonrpc": "2.0",
-                "id": 1,
+                "id": 3,
                 "method": "tools/call",
                 "params": {
-                    "name": "override_submit",
-                    "arguments": {
-                        "policy": "review.rationale",
-                        "entity": "src/x.py:f",
-                        "rationale": "specific rationale",
-                    },
+                    "name": "override_rate_get",
+                    "arguments": {},
                 },
-            }
+            },
         ),
         runtime,
-    )[0]["result"]["structuredContent"]
+    )
+
+    result = responses[0]["result"]["structuredContent"]
+    retried = responses[1]["result"]["structuredContent"]
+    rate = responses[2]["result"]["structuredContent"]
 
     assert result["outcome"] == "ACCEPTED_BY_JUDGE"
     assert result["cell"] == "coached"
     assert result["judge_model"] == "openrouter:test-model"
+    assert retried["seq"] == result["seq"]
+    assert rate["sample_size"] == 1
 
 
 def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
