@@ -32,6 +32,25 @@ from legis.store.audit_store import AuditStore
 KEY = b"protected-key-1"
 
 
+def _chill_posture_ledger(tmp_path):
+    import hashlib
+    import uuid
+
+    from legis.posture.ledger import PostureLedger
+
+    ledger = PostureLedger(
+        f"sqlite:///{tmp_path / f'posture-{uuid.uuid4().hex}.db'}",
+        initialize=True,
+    )
+    key = b"k" * 32
+    ledger.genesis(
+        key_fingerprint=hashlib.sha256(key).hexdigest(),
+        agent_id="installer",
+        recorded_at="t0",
+    )
+    return ledger
+
+
 class _ScriptedJudge:
     def __init__(self, *opinions):
         self._opinions = list(opinions)
@@ -59,7 +78,7 @@ def _tool(name):
     return next(t for t in tool_definitions() if t["name"] == name)
 
 
-def _runtime(tmp_path, *, judge=None, registry=None):
+def _runtime(tmp_path, *, judge=None, registry=None, posture_ledger=None):
     from legis.mcp import McpRuntime
 
     store = AuditStore(f"sqlite:///{tmp_path / 'gov.db'}")
@@ -71,6 +90,7 @@ def _runtime(tmp_path, *, judge=None, registry=None):
         initialized=True,
         engine=engine,
         cell_registry=registry,
+        posture_ledger=posture_ledger,
     ), store
 
 
@@ -212,11 +232,14 @@ def test_posture_get_conforms_missing_and_floored(tmp_path):
     ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
 
     class _MemSigner:
+        def __init__(self, held_key=key):
+            self._key = held_key
+
         def fingerprint(self):
             return fp
 
         def sign(self, fields):
-            return enf_signing.sign(fields, key, version="v3")
+            return enf_signing.sign(fields, self._key, version="v3")
 
     ledger.transition(
         "structured",
@@ -234,7 +257,11 @@ def test_posture_get_conforms_missing_and_floored(tmp_path):
 
 
 def test_override_submit_conforms_accepted_self(tmp_path):
-    runtime, _ = _runtime(tmp_path, registry=PolicyCellRegistry(default_cell="chill"))
+    runtime, _ = _runtime(
+        tmp_path,
+        registry=PolicyCellRegistry(default_cell="chill"),
+        posture_ledger=_chill_posture_ledger(tmp_path),
+    )
     payload = _conformant(
         runtime,
         "override_submit",
@@ -251,6 +278,7 @@ def test_override_submit_conforms_judged_accept_and_block(tmp_path):
             JudgeOpinion(Verdict.BLOCKED, "judge@1", "insufficient rationale"),
         ),
         registry=PolicyCellRegistry(default_cell="coached"),
+        posture_ledger=_chill_posture_ledger(tmp_path),
     )
     accepted = _conformant(
         runtime,

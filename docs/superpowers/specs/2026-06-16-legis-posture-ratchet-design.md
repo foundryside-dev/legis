@@ -25,7 +25,7 @@ The mechanism for "the operator authorizes a change" must respect a hard constra
 - The floor applies **uniformly across every surface — MCP, HTTP API, and CLI — through one shared `FlooredRegistry` chokepoint.** As part of this, the HTTP API's cell-addressed submit routes are **unified into one policy-routed submit** so the server (not the caller) owns the cell decision; this closes the API floor-bypass door and makes the README's "API/MCP/CLI routed through the same service layer" claim true (see §3a).
 - Install **mints** an operator key and hands it to a custody backend; the key is never written to disk in plaintext by Legis (except the explicit env escape hatch).
 - An **operator elevation session** (`legis operator enable`) — `sudo` for governance signing — unlocks signing for a short, time-boxed, **attributable** window via an OS keychain prompt.
-- A lost key is **recoverable, not catastrophic**: a keyless `rekey` that resets to chill, preserves history, and is loudly recorded.
+- A lost key is **recoverable, not catastrophic**: a keyless `rekey` that preserves the standing floor, preserves history, and is loudly recorded.
 - Every keyed action is **tamper-evident** and produces exactly one append-only record — no silent path (consistent with `src/legis/enforcement/engine.py`).
 
 ### Non-goals (v1)
@@ -64,7 +64,7 @@ v1 closes this by **routing the API by policy, exactly like MCP**, rather than b
 
 ## 4. The posture ledger
 
-A new small append-only, hash-chained ledger at **`.weft/legis/posture.db`** (sibling to the existing audit stores; consistent with `weft-store-consolidation`). It reuses `src/legis/store/audit_store.py` machinery rather than introducing a new crypto/storage stack. The **current floor is the last record.**
+A new small append-only, hash-chained ledger at **`.weft/legis/legis-posture.db`** (sibling to the existing audit stores; consistent with `weft-store-consolidation`). It reuses `src/legis/store/audit_store.py` machinery rather than introducing a new crypto/storage stack. The **current floor is the newest authoritative floor record** (`GENESIS`, `TRANSITION`, or `KEY_RESET`); metadata tails such as `OPERATOR_SESSION_OPENED` are skipped and cannot lower the effective floor.
 
 Record shape:
 
@@ -82,12 +82,12 @@ Canonicalization reuses the existing `canonical.py` contract (the byte-for-byte 
 
 ### Precedence / source-of-truth
 - The **signed ledger floor is authoritative.** The `cells.toml`/env registry is layered *above* it via the `max(...)` rule and can never lower the effective cell below the floor.
-- **Absent/empty ledger** (genuinely uninstalled, or deleted store) → the floor is a **no-op (identity floor `chill`)**, deferring to the registry's own default. That default is itself fail-closed (`fail_closed_policy_cells()` → `structured`) **in production**, so a deleted/uninstalled ledger still yields `structured` there and can never silently mean "do nothing"; only under the explicit `LEGIS_DEV_DEFAULT_CELLS` dev opt-in does it stay `chill` (preserving the N3 keyless-chill acceptance). The floor only ever **raises** the effective cell, once an operator has written a `GENESIS`/`TRANSITION`. *(Reconciled 2026-06-17 during implementation: forcing `structured` over an absent ledger broke the dev opt-in, the N3 acceptance, and the `build_runtime` no-local-state invariant; deferring to the already-fail-closed registry default preserves all three while staying fail-closed in production. `build_runtime` also opens the ledger `initialize=False` so launching the server never creates the store.)*
+- **Absent/empty ledger** (genuinely uninstalled, deleted store, or initialized without `GENESIS`) → the floor is **`structured`**, fail-closed. `LEGIS_DEV_DEFAULT_CELLS=1` can still make the raw registry default `chill`, but the posture floor is authoritative and a missing ledger raises the effective cell to `structured`, never self-clear. The floor only ever **raises** the effective cell, once an operator has written a `GENESIS`/`TRANSITION`/`KEY_RESET`. `build_runtime` still opens the ledger `initialize=False` so launching the server never creates the store.
 
 ## 5. Install behavior
 
 `legis install` with no prior posture ledger:
-1. Creates `.weft/legis/posture.db` and writes the **`GENESIS` record: `floor = chill`**.
+1. Creates `.weft/legis/legis-posture.db` and writes the **`GENESIS` record: `floor = chill`**.
 2. **Mints the operator key** — `secrets.token_hex(32)`. This is net-new behaviour: `src/legis/config.py:31` currently states Legis touches no key material, and this design **explicitly amends that doctrine** for this one operator-authority key.
 3. Hands the key to the **chosen custody backend** (§6). What lands in the ledger is the key **fingerprint + backend id**, never the key.
 
@@ -109,7 +109,7 @@ Backends (v1):
 
 **Crypto is a mandatory dependency.** The age-file backend uses the `cryptography` package (scrypt KDF + AES-GCM); it is a hard dependency, not an optional extra — encrypted-at-rest custody is core to this feature and only grows in importance. (No `age` CLI shell-out.)
 
-**age-file session ergonomics (accepted friction).** For the age-file backend *without* an available OS keychain to hold a session-wrapping secret, each `posture set` within the window **re-prompts for the passphrase** — the session file holds only metadata, never the key or passphrase. This is the honest trade-off and is intentional: the friction is the point; anyone who wants the smooth "no further prompts in the window" experience uses the keychain backend.
+**age-file session ergonomics (accepted friction).** For the age-file backend *without* an available OS keychain to hold a session-wrapping secret, each `posture set` within the window **re-prompts for the passphrase** — the session file holds metadata plus a session HMAC, never the key or passphrase. This is the honest trade-off and is intentional: the friction is the point; anyone who wants the smooth "no further prompts in the window" experience uses the keychain backend.
 
 Default backend at install: **OS keychain if available, else age-file**; the env escape hatch only on an explicit `--insecure-key-in-env`.
 
@@ -122,16 +122,16 @@ Per-action keychain prompts are replaced by a **time-boxed elevation session**:
 ```
 legis operator enable [--ttl 5m]
    └─ OS keychain prompt ── human auths ──or not
-         └─ on auth: a session is opened for the TTL. The key NEVER lands on disk in
-            plaintext; the session file holds only metadata + a backend-specific unlock
-            reference (keychain item id, or an age session-wrapped blob), never the key
+        └─ on auth: a session is opened for the TTL. The key NEVER lands on disk in
+           plaintext; the session file holds metadata + a backend-specific unlock
+           reference + a session HMAC, never the key
                └─ within the window: posture set (and, future, sign-offs/verdicts/commits)
                   are signed on request — keychain backend: silent (no further prompt);
                   age-file-without-keychain: re-prompts per set (accepted friction)
                      └─ TTL lapses → session file deleted (any wrapped blob gone) → locked
 ```
 
-- **v1 session model is a persisted session file, not an in-memory daemon.** `legis` is a fresh process per CLI invocation, so the "ssh-agent style" long-lived signing daemon is deferred to v1.1. v1 uses a two-level key hierarchy: at `enable`, custody is unlocked once; the operator key is held only via a backend-specific unlock reference in `.weft/legis/operator_session.json` (keychain item id, or an age-wrapped blob whose wrapping secret lives in the keychain) — never the raw key, never a passphrase. "Zeroized on TTL lapse" = the session file (and any wrapped blob it held) is deleted; the key in custody is untouched.
+- **v1 session model is a persisted session file, not an in-memory daemon.** `legis` is a fresh process per CLI invocation, so the "ssh-agent style" long-lived signing daemon is deferred to v1.1. v1 uses a two-level key hierarchy: at `enable`, custody is unlocked once; the operator key authenticates the session metadata in `.weft/legis/operator_session.json`, which carries a backend-specific unlock reference (keychain item id, or `None` for age/env) and an HMAC — never the raw key, never a passphrase. "Zeroized on TTL lapse" = the session file is deleted; the key in custody is untouched.
 - **Default TTL: 5 minutes**, configurable via `--ttl`; `legis operator disable` ends it early.
 - The human's act of enabling **is** "humans on the loop, not in the loop" — a declaration of presence supervising a burst of work, not per-signature approval.
 
@@ -155,11 +155,11 @@ Changing the floor = appending a `TRANSITION` record. The gate:
 Losing the key must be **embarrassing, not catastrophic** — "you're re-signing everything because you lost your key", not "you can no longer prove you operate this project, rebuild the repo."
 
 `legis posture rekey`:
-- **Requires no old key** (you lost it) — but is therefore, by definition, a keyless way to become the operator. It is made safe by being **loud and self-limiting**:
-  - It **resets the floor to chill** and mints a **new** operator key (into the chosen backend). You cannot rekey directly into a high posture; to get back up you `operator enable` + `posture set` with the new key (the "embarrassing, re-sign everything" part).
+- **Requires no old key** (you lost it) — but is therefore, by definition, a keyless way to become the operator. It is made safe by being **loud and floor-preserving**:
+  - It **preserves the standing floor** and mints a **new** operator key (into the chosen backend). You cannot use rekey to lower the current posture; to acknowledge the new epoch you `operator enable` + `posture set <current-floor>` with the new key (the "embarrassing, re-sign everything" part).
   - It writes a **`KEY_RESET` genesis record chained onto the existing history** — history is preserved, not nuked — recording that the operator key was reset without proof of the prior key.
   - `legis doctor` surfaces the reset prominently ("posture key epoch reset on <date> by <agent_id>").
-- **Threat symmetry / honesty:** an attacker can also run `rekey` to force chill — but only in the loudest possible way (an indelible, dated, attributed `KEY_RESET`). They cannot silently downgrade, and they cannot rekey *into* a chosen posture. This is exactly Legis's tamper-**evident** stance: the honest claim is "an unauthorized posture reset leaves a permanent mark", not "is impossible".
+- **Threat symmetry / honesty:** an attacker can also run `rekey` to force a key-epoch reset — but only in the loudest possible way (an indelible, dated, attributed `KEY_RESET`). They cannot silently downgrade, and they cannot rekey *into* a chosen posture. This is exactly Legis's tamper-**evident** stance: the honest claim is "an unauthorized posture reset leaves a permanent mark", not "is impossible".
 
 ## 9. Honesty / threat model statement (published, per Legis doctrine)
 
@@ -176,7 +176,7 @@ Legis states its own residual limits rather than hiding them in comments (`READM
 - **Gate:** transition refused with no open session; refused on fingerprint mismatch; accepted with valid session; fail-closed on signer error; exactly one record per outcome.
 - **Custody backends:** keychain (mocked secure store), age-file (real encrypt/decrypt round-trip), env escape hatch emits warning. Signer never returns key bytes to caller.
 - **Elevation session:** enable opens window + writes `OPERATOR_SESSION_OPENED`; TTL lapse zeroizes; `disable` ends early; every in-window signature carries `session_id`.
-- **Rekey:** resets to chill, mints new epoch, writes `KEY_RESET` onto existing chain (history preserved), needs no old key, doctor flags it.
+- **Rekey:** preserves the standing floor, mints new epoch, writes `KEY_RESET` onto existing chain (history preserved), needs no old key, doctor flags it.
 - **Doctor reconciliation:** floor-vs-registry report; ledger discontinuity / epoch-reset surfaced; **`legis doctor` exits non-zero on an unacknowledged `KEY_RESET`** so a rekey (legitimate or attacker-forced) fails CI loudly; zero-byte/missing store handled report-only (consistent with existing doctor posture).
 - **API unification:** unified `POST /overrides` routes by policy through `FlooredRegistry` and returns the discriminated outcome for each cell; a `floor=structured` floor refuses a would-be chill self-clear (no bypass); operator-clear routes (`/signoff/{seq}/sign`, `/protected/operator-override`) unchanged; existing `tests/api/*` rewritten against the unified route; `docs/federation/sei-conformance.md` updated and the SEI conformance vector re-pinned to the new route surface.
 
@@ -196,7 +196,7 @@ These share v1's primitive but each is its own risk surface and spec.
 - **Any** floor change needs the key (the key exists from install, so direction-aware ratcheting is unnecessary); registry tightening above the floor stays keyless.
 - Custody is the real control, **not** CLI-vs-MCP surface gating.
 - Elevation sessions (`operator enable`, 5-min TTL) replace per-action prompts and provide the accountability record.
-- Lost key → keyless `rekey` that resets to chill, preserves history, is loudly recorded.
+- Lost key → keyless `rekey` that preserves the standing floor, preserves history, is loudly recorded.
 - v1 scope = elevation-session primitive + posture floor as its only consumer; the rest is future state.
 
 ### Decisions resolved post-plan (2026-06-16, against the workflow plan + review)

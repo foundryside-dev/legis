@@ -11,10 +11,10 @@ Fail-closed contract (design §4):
   * The floor only ever *raises* the effective cell (``_max_tier``); it never
     lowers it. A ``protected`` registry cell under a ``chill`` floor stays
     ``protected``.
-  * A missing/empty ledger (``read_floor() is None``) maps to the identity
-    floor ``chill`` (a no-op): the registry's own default stands, which is
-    itself fail-closed (``structured``) in production. The floor only RAISES
-    once an operator has written a genesis/transition (:func:`floored_registry`).
+  * A missing/empty/deleted ledger (``read_floor() is None``) maps to the
+    fail-closed floor ``structured``. A signed GENESIS at ``chill`` is distinct:
+    it is explicit posture evidence and therefore remains ``chill`` until an
+    operator raises it.
   * The floor value is read fresh at every construction; it is never cached on
     a runtime (D2). ``floored_registry`` calls ``read_floor()`` at call time.
 
@@ -77,13 +77,8 @@ def floored_registry(inner: PolicyCellRegistry, ledger: _FloorReader) -> Floored
     """
     floor = ledger.read_floor()
     if floor is None:
-        # Absent/empty ledger -> the IDENTITY floor (chill, the bottom tier), a
-        # pure no-op: max(chill, X) == X, so the registry's own default stands.
-        # That default is itself fail-closed (fail_closed_policy_cells() ->
-        # structured) in production, so an uninstalled/deleted ledger still
-        # yields structured there; under the explicit LEGIS_DEV_DEFAULT_CELLS
-        # opt-in it stays chill (preserving the N3 keyless-chill acceptance). The
-        # floor only RAISES once an operator has written a genesis/transition.
-        # (design §4, reconciled 2026-06-17 during implementation.)
-        floor = "chill"
+        # Absent/empty/deleted ledger -> fail closed. A real signed GENESIS at
+        # chill still returns "chill" from read_floor(); None means there is no
+        # posture evidence to trust.
+        floor = "structured"
     return FlooredRegistry(inner, floor=floor)

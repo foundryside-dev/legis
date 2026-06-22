@@ -4,7 +4,7 @@ These tests pin the published honesty guarantees of the posture-ratchet feature
 (design §6, §8, §9, §10): the operator key never reaches the caller and never
 lands in logs; every floor transition is accountable to an open elevation
 session; the env escape hatch is loud and explicit; the age-file backend fails
-closed on a wrong/absent passphrase; and a rekey can never land above ``chill``.
+closed on a wrong/absent passphrase; and a rekey cannot downgrade the floor.
 
 They are deliberately *behavioral*, not aspirational (per the Quality reviews):
 the key-never-leaks tests sign with a known key and assert that key's hex never
@@ -81,13 +81,32 @@ def _genesis(tmp_path, *, key_hex: str):
     return ledger, fp
 
 
-def _open_session(*, backend_id: str = "keychain", unlock_ref=None):
+def _open_session(*, backend_id: str = "keychain", unlock_ref=None, signer):
     return session_mod.open_session(
         ttl=300,
         operator_id="operator@example",
         backend_id=backend_id,
         unlock_ref=unlock_ref,
+        signer=signer,
     )
+
+
+def _open_recorded_session(
+    ledger: PostureLedger,
+    *,
+    backend_id: str = "keychain",
+    unlock_ref=None,
+    signer,
+):
+    sess = _open_session(backend_id=backend_id, unlock_ref=unlock_ref, signer=signer)
+    ledger.session_opened(
+        operator_id=sess.operator_id,
+        enabled_at="t-session",
+        ttl=sess.ttl,
+        keychain_auth_ref=sess.unlock_ref,
+        session_id=sess.session_id,
+    )
+    return sess
 
 
 def _all_backends(key_hex: str):
@@ -124,7 +143,7 @@ def test_tty_session_expiry(tmp_path):
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
     sess_path = session_mod.operator_session_path()
 
-    _open_session()
+    _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
     # Force the window's expiry into the past without sleeping.
     data = json.loads(sess_path.read_text(encoding="utf-8"))
     data["expires_at"] = time.time() - 10
@@ -145,7 +164,7 @@ def test_tty_session_expiry(tmp_path):
     )
     assert result.accepted is False
     assert result.reason == REFUSED_NO_SESSION
-    assert len(ledger.store.read_all()) == 1  # only GENESIS
+    assert len(ledger.store.read_all()) == 2  # GENESIS + recorded expired session
     assert ledger.read_floor() == "chill"
 
 
@@ -183,19 +202,19 @@ def test_key_never_returned_to_caller():
         assert signer.sign(fields) != key_hex
 
 
-# -- test_rekey_resets_to_chill ----------------------------------------------
+# -- test_rekey_preserves_existing_floor --------------------------------------
 
 
-def test_rekey_resets_to_chill(tmp_path):
-    """(Cross-ref Phase 11) a rekey can never land above chill — even from an
-    elevated floor, the post-reset floor is chill (design §8).
+def test_rekey_preserves_existing_floor(tmp_path):
+    """(Cross-ref Phase 11) a rekey changes the epoch without lowering an
+    elevated floor (security finding ab59c0bb).
     """
     key_hex = mint_key()
     key_bytes = bytes.fromhex(key_hex)
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
 
-    # Elevate the floor first so the reset visibly drops it back to chill.
-    _open_session()
+    # Elevate the floor first so a reset-downgrade regression is visible.
+    _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
     set_floor(
         "protected",
         ledger=ledger,
@@ -206,13 +225,21 @@ def test_rekey_resets_to_chill(tmp_path):
     )
     assert ledger.read_floor() == "protected"
 
-    # Rekey resets to chill regardless of the prior (elevated) floor.
-    ledger.rekey(agent_id="op", recorded_at="t2")
-    assert ledger.read_floor() == "chill"
-    # The KEY_RESET record itself carries floor="chill" (cannot land above).
+    # Rekey must not use lost-key recovery to downgrade the prior floor.
+    handed: list[tuple[str, str]] = []
+    ledger.rekey(
+        agent_id="op",
+        recorded_at="t2",
+        key_sink=lambda key_hex, backend: handed.append((key_hex, backend)),
+        backend="age-file",
+    )
+    assert ledger.read_floor() == "protected"
+    # The KEY_RESET record itself carries the standing floor because runtime
+    # floor reads use the tail payload.
     resets = [r for r in ledger.store.read_all() if r.payload["kind"] == KIND_KEY_RESET]
     assert len(resets) == 1
-    assert resets[0].payload["floor"] == "chill"
+    assert resets[0].payload["floor"] == "protected"
+    assert len(handed) == 1
 
 
 # -- test_every_signature_carries_session_id ---------------------------------
@@ -227,7 +254,7 @@ def test_every_signature_carries_session_id(tmp_path):
     key_bytes = bytes.fromhex(key_hex)
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
 
-    sess = _open_session()
+    sess = _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
     set_floor(
         "structured",
         ledger=ledger,
@@ -260,9 +287,9 @@ def test_every_signature_carries_session_id(tmp_path):
 
     os.environ[_OPERATOR_KEY_ENV] = key_hex
     try:
-        env_sess = _open_session(backend_id="env")
         with pytest.warns(InsecureEnvKeyWarning):
             env_signer = EnvSigner(insecure_env=True)
+        env_sess = _open_recorded_session(ledger, backend_id="env", signer=env_signer)
         env_result = set_floor(
             "structured",
             ledger=ledger,

@@ -371,6 +371,46 @@ def test_mcp_entry_is_current_rejects_repo_local_command(tmp_path):
     assert mcp_entry_is_current(tmp_path) is False
 
 
+def test_mcp_entry_is_current_rejects_non_legis_executable(tmp_path):
+    fake = tmp_path.parent / f"{tmp_path.name}-external" / "fake-runner"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    _write_mcp_entry(
+        tmp_path,
+        {"type": "stdio", "command": str(fake), "args": ["mcp", "--agent-id", "a"]},
+    )
+    assert mcp_entry_is_current(tmp_path) is False
+
+
+def test_mcp_entry_is_current_rejects_python_module_without_safe_path(tmp_path):
+    _write_mcp_entry(
+        tmp_path,
+        {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["-m", "legis", "mcp", "--agent-id", "a"],
+        },
+    )
+    assert mcp_entry_is_current(tmp_path) is False
+
+
+def test_mcp_entry_is_current_rejects_fake_python_prefixed_executable(tmp_path):
+    fake = tmp_path.parent / f"{tmp_path.name}-external" / "python3-fake"
+    fake.parent.mkdir(parents=True, exist_ok=True)
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    _write_mcp_entry(
+        tmp_path,
+        {
+            "type": "stdio",
+            "command": str(fake),
+            "args": ["-P", "-m", "legis", "mcp", "--agent-id", "a"],
+        },
+    )
+    assert mcp_entry_is_current(tmp_path) is False
+
+
 def test_mcp_entry_is_current_rejects_unsafe_or_secret_env(tmp_path):
     for env in (
         {"LEGIS_UNSAFE_DEV_AUTH": "1"},

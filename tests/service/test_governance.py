@@ -127,8 +127,8 @@ def test_resolve_for_entry_without_sei_is_the_locator_path():
 def test_resolve_for_entry_with_sei_keys_directly_on_verified_sei():
     sei_key = EntityKey.from_sei("loomweave:eid:deadbeef")
     identity = _FakeIdentity(
-        _FakeResult(EntityKey.from_locator("ignored"), alive=False,
-                    content_hash=None, lineage_snapshot=None),
+        _FakeResult(sei_key, alive=True, content_hash="h",
+                    lineage_snapshot=["born"]),
         sei_result=_FakeResult(sei_key, alive=True, content_hash="h",
                                lineage_snapshot=["born"]),
     )
@@ -139,6 +139,27 @@ def test_resolve_for_entry_with_sei_keys_directly_on_verified_sei():
     assert key.identity_stable is True
     assert ext["loomweave"]["alive"] is True
     assert ext["loomweave"]["content_hash"] == "h"
+
+
+def test_resolve_for_entry_rejects_sei_for_unrelated_locator():
+    locator_key = EntityKey.from_sei("loomweave:eid:locator-target")
+    supplied_key = EntityKey.from_sei("loomweave:eid:supplied")
+    identity = _FakeIdentity(
+        _FakeResult(locator_key, alive=True, content_hash="locator-h",
+                    lineage_snapshot=["born"]),
+        sei_result=_FakeResult(supplied_key, alive=True, content_hash="supplied-h",
+                               lineage_snapshot=["other"]),
+    )
+
+    with pytest.raises(UnresolvedInputError) as ei:
+        resolve_for_entry(
+            identity,
+            entity="src/foo.py:bar",
+            entity_sei="loomweave:eid:supplied",
+        )
+
+    assert "does not match" in ei.value.cause
+    assert "entity" in ei.value.fix
 
 
 def test_resolve_for_entry_unresolvable_sei_raises_and_records_nothing():
@@ -165,8 +186,7 @@ def test_resolve_for_entry_sei_without_resolver_raises_unresolved():
 def test_submit_override_with_entity_sei_records_on_the_sei(tmp_path):
     sei_key = EntityKey.from_sei("loomweave:eid:abc")
     identity = _FakeIdentity(
-        _FakeResult(EntityKey.from_locator("loc"), alive=None,
-                    content_hash=None, lineage_snapshot=None),
+        _FakeResult(sei_key, alive=True, content_hash="h", lineage_snapshot=[]),
         sei_result=_FakeResult(sei_key, alive=True, content_hash="h", lineage_snapshot=[]),
     )
     engine = EnforcementEngine(AuditStore(f"sqlite:///{tmp_path / 'gov.db'}"), SystemClock())

@@ -14,6 +14,7 @@ import time
 
 import pytest
 
+from legis.enforcement import signing as enf_signing
 from legis.posture import session as session_mod
 from legis.posture.records import KIND_SESSION_OPENED
 
@@ -28,11 +29,24 @@ def session_path(tmp_path, monkeypatch):
     return target
 
 
+class _MemSigner:
+    def __init__(self, key: bytes = b"k" * 32):
+        self._key = key
+
+    def sign(self, fields: dict) -> str:
+        return enf_signing.sign(fields, self._key, version="v3")
+
+
+def _open_session(**kwargs):
+    kwargs.setdefault("signer", _MemSigner())
+    return session_mod.open_session(**kwargs)
+
+
 # -- Task 3.1: persisted session-file model ----------------------------------
 
 
 def test_enable_writes_session_file(session_path):
-    session_mod.open_session(
+    _open_session(
         ttl=300,
         operator_id="alice",
         backend_id="keychain",
@@ -46,10 +60,11 @@ def test_enable_writes_session_file(session_path):
         "operator_id",
         "opened_at",
         "ttl",
-        "expires_at",
-        "backend_id",
-        "unlock_ref",
-    }
+            "expires_at",
+            "backend_id",
+            "unlock_ref",
+            "session_sig",
+        }
     assert "key" not in data
     assert "passphrase" not in data
     # No raw blob plaintext smuggled into any value.
@@ -60,7 +75,7 @@ def test_enable_writes_session_file(session_path):
 def test_age_backend_unlock_ref_is_none(session_path):
     # D5: re-prompt is the unlock mechanism for age-file; only keychain stores
     # a non-null item id.
-    session_mod.open_session(
+    _open_session(
         ttl=300,
         operator_id="alice",
         backend_id="age-file",
@@ -72,7 +87,7 @@ def test_age_backend_unlock_ref_is_none(session_path):
 
 
 def test_session_active_within_ttl(session_path):
-    session_mod.open_session(
+    _open_session(
         ttl=300, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
     loaded = session_mod.load_session()
@@ -81,7 +96,7 @@ def test_session_active_within_ttl(session_path):
 
 
 def test_session_expired_after_ttl(session_path):
-    session_mod.open_session(
+    _open_session(
         ttl=1, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
     # Force the file's expiry into the past without sleeping.
@@ -94,7 +109,7 @@ def test_session_expired_after_ttl(session_path):
 
 
 def test_load_session_double_expire_is_safe(session_path):
-    session_mod.open_session(
+    _open_session(
         ttl=1, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
     data = json.loads(session_path.read_text(encoding="utf-8"))
@@ -106,7 +121,7 @@ def test_load_session_double_expire_is_safe(session_path):
 
 
 def test_disable_ends_early(session_path):
-    session_mod.open_session(
+    _open_session(
         ttl=300, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
     assert session_path.exists()
@@ -117,20 +132,20 @@ def test_disable_ends_early(session_path):
 
 
 def test_unique_session_id(session_path):
-    s1 = session_mod.open_session(
+    s1 = _open_session(
         ttl=300, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
-    s2 = session_mod.open_session(
+    s2 = _open_session(
         ttl=300, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
     assert s1.session_id != s2.session_id
 
 
 def test_second_enable_replaces_first(session_path):
-    s1 = session_mod.open_session(
+    s1 = _open_session(
         ttl=300, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
-    s2 = session_mod.open_session(
+    s2 = _open_session(
         ttl=300, operator_id="bob", backend_id="keychain", unlock_ref="kc-1"
     )
     # Exactly one authoritative session file — the second overwrites the first.
@@ -157,6 +172,26 @@ def test_load_missing_required_key_is_none(session_path):
     assert session_mod.load_session() is None
 
 
+def test_load_wrong_typed_required_field_is_none(session_path):
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session_path.write_text(
+        json.dumps(
+            {
+                "session_id": "x",
+                "operator_id": "alice",
+                "opened_at": 1000.0,
+                "ttl": 300,
+                "expires_at": "not-a-number",
+                "backend_id": "age-file",
+                "unlock_ref": None,
+                "session_sig": "bogus",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert session_mod.load_session(now=1001.0) is None
+
+
 def test_load_missing_file_is_none(session_path):
     # No file at all -> None.
     assert session_mod.load_session() is None
@@ -164,14 +199,14 @@ def test_load_missing_file_is_none(session_path):
 
 def test_is_active_module_helper(session_path):
     assert session_mod.is_active() is False
-    session_mod.open_session(
+    _open_session(
         ttl=300, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
     assert session_mod.is_active() is True
 
 
 def test_session_is_active_explicit_now(session_path):
-    s = session_mod.open_session(
+    s = _open_session(
         ttl=300, operator_id="alice", backend_id="age-file", unlock_ref=None
     )
     assert s.is_active(now=s.opened_at + 100) is True

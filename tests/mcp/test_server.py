@@ -50,6 +50,25 @@ class _ScriptedJudge:
 KEY = b"protected-key-1"
 
 
+def _chill_posture_ledger(tmp_path):
+    import hashlib
+    import uuid
+
+    from legis.posture.ledger import PostureLedger
+
+    ledger = PostureLedger(
+        f"sqlite:///{tmp_path / f'posture-{uuid.uuid4().hex}.db'}",
+        initialize=True,
+    )
+    key = b"k" * 32
+    ledger.genesis(
+        key_fingerprint=hashlib.sha256(key).hexdigest(),
+        agent_id="installer",
+        recorded_at="t0",
+    )
+    return ledger
+
+
 def _runtime(
     tmp_path,
     *,
@@ -68,6 +87,7 @@ def _runtime(
         initialized=True,
         engine=engine,
         check_surface=check_surface,
+        posture_ledger=_chill_posture_ledger(tmp_path),
     ), store
 
 
@@ -122,6 +142,17 @@ def test_cli_has_mcp_subcommand_with_launch_bound_agent_id():
     assert args.agent_id == "agent-1"
 
 
+def test_mcp_runtime_positional_constructor_preserves_identity_slot():
+    from legis.mcp import McpRuntime
+
+    identity = object()
+
+    runtime = McpRuntime("agent-1", False, None, None, identity)
+
+    assert runtime.identity is identity
+    assert runtime.coached_engine is None
+
+
 def test_build_runtime_wires_env_configured_openrouter_judge(tmp_path, monkeypatch):
     from legis.enforcement.llm_client import OpenRouterLLMClient
     from legis.mcp import build_runtime
@@ -134,7 +165,11 @@ def test_build_runtime_wires_env_configured_openrouter_judge(tmp_path, monkeypat
     monkeypatch.setenv("OPENROUTER_API_KEY", "secret-key")
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov-env.db'}")
     monkeypatch.setattr(OpenRouterLLMClient, "__init__", fake_init)
-    monkeypatch.setattr(OpenRouterLLMClient, "complete", lambda self, prompt: "ACCEPTED\nok")
+    monkeypatch.setattr(
+        OpenRouterLLMClient,
+        "complete",
+        lambda self, prompt: '{"verdict":"ACCEPTED","rationale":"ok"}',
+    )
 
     runtime = build_runtime("agent-launch")
 
@@ -148,6 +183,84 @@ def test_build_runtime_wires_env_configured_openrouter_judge(tmp_path, monkeypat
         ast_path="ap",
     )
     assert result.judge_model == "openrouter:test-model"
+
+
+def test_build_runtime_wires_env_judge_for_simple_coached_override(tmp_path, monkeypatch):
+    from legis.enforcement.llm_client import OpenRouterLLMClient
+    from legis.mcp import build_runtime
+
+    def fake_init(self, config, *, fetch=None):
+        self.model_id = "openrouter:test-model"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov-env.db'}")
+    monkeypatch.setenv("LEGIS_JUDGE_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret")
+    monkeypatch.setattr(OpenRouterLLMClient, "__init__", fake_init)
+    monkeypatch.setattr(
+        OpenRouterLLMClient,
+        "complete",
+        lambda self, prompt: '{"verdict":"ACCEPTED","rationale":"ok"}',
+    )
+    runtime = build_runtime("agent-launch")
+    runtime.initialized = True
+    runtime.cell_registry = PolicyCellRegistry(default_cell="coached")
+    runtime.posture_ledger = _chill_posture_ledger(tmp_path)
+
+    call = {
+        "jsonrpc": "2.0",
+        "method": "tools/call",
+        "params": {
+            "name": "override_submit",
+            "arguments": {
+                "policy": "review.rationale",
+                "entity": "src/x.py:f",
+                "rationale": "specific rationale",
+                "idempotency_key": "coached-retry-1",
+            },
+        },
+    }
+    responses = _run(
+        _messages(
+            {**call, "id": 1},
+            {**call, "id": 2},
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_rate_get",
+                    "arguments": {},
+                },
+            },
+        ),
+        runtime,
+    )
+
+    result = responses[0]["result"]["structuredContent"]
+    retried = responses[1]["result"]["structuredContent"]
+    rate = responses[2]["result"]["structuredContent"]
+
+    assert result["outcome"] == "ACCEPTED_BY_JUDGE"
+    assert result["cell"] == "coached"
+    assert result["judge_model"] == "openrouter:test-model"
+    assert retried["seq"] == result["seq"]
+    assert rate["sample_size"] == 1
+
+    fresh_runtime = build_runtime("agent-fresh")
+    fresh_runtime.initialized = True
+    fresh_rate = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "override_rate_get", "arguments": {}},
+            }
+        ),
+        fresh_runtime,
+    )[0]["result"]["structuredContent"]
+    assert fresh_rate["sample_size"] == 1
 
 
 def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
@@ -532,7 +645,7 @@ def test_override_submit_entity_sei_binds_on_the_sei(tmp_path):
                     "arguments": {
                         "policy": "ordinary.policy",
                         "entity": "src/x.py:f",
-                        "entity_sei": "loomweave:eid:supplied",
+                        "entity_sei": "loomweave:eid:abc123",
                         "rationale": "generated file; lint is not applicable",
                     },
                 },
@@ -546,10 +659,45 @@ def test_override_submit_entity_sei_binds_on_the_sei(tmp_path):
     assert result["structuredContent"]["outcome"] == "ACCEPTED_SELF"
     recorded = store.read_all()[0].payload
     assert recorded["entity_key"] == {
-        "value": "loomweave:eid:supplied",
+        "value": "loomweave:eid:abc123",
         "identity_stable": True,
     }
     assert recorded["identity_stable"] is True
+
+
+def test_override_submit_rejects_entity_sei_for_unrelated_locator(tmp_path):
+    # Both identities are live, but they do not bind to the same entity. The
+    # authoring surface must reject instead of recording under the wrong SEI.
+    from legis.identity.resolver import IdentityResolver
+
+    runtime, store = _runtime(tmp_path, agent_id="agent-launch")
+    runtime.cell_registry = PolicyCellRegistry(default_cell="chill")
+    runtime.identity = IdentityResolver(_FakeLoomweave(alive=True))
+
+    responses = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_submit",
+                    "arguments": {
+                        "policy": "ordinary.policy",
+                        "entity": "src/x.py:f",
+                        "entity_sei": "loomweave:eid:attacker",
+                        "rationale": "anything",
+                    },
+                },
+            }
+        ),
+        runtime,
+    )
+
+    result = responses[0]["result"]
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "UNRESOLVED_INPUT"
+    assert store.read_all() == []
 
 
 def test_override_submit_unresolvable_entity_sei_records_nothing_with_weft_reason(tmp_path):
@@ -596,15 +744,26 @@ def test_n3_acceptance_chill_is_reachable_keyless_via_build_runtime(tmp_path, mo
     # configured non-secret governance surface. Pins the claim our errors/docs
     # assert as fact — chill/coached are reachable WITHOUT LEGIS_HMAC_KEY — end to
     # end through the real launch path (build_runtime + the lazy keyless _engine),
-    # not via an injected engine. A future change making _engine need a key would
-    # fail HERE instead of silently falsifying the "reachable keyless" promise.
+    # not via an injected engine. The chill posture is explicit signed state here:
+    # a missing posture ledger fails closed to structured.
+    import hashlib
+
     from legis.mcp import build_runtime, call_tool
+    from legis.posture.ledger import PostureLedger
 
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
     monkeypatch.delenv("LEGIS_POLICY_CELLS", raising=False)
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))  # no policy/cells.toml here
     monkeypatch.setenv("LEGIS_DEV_DEFAULT_CELLS", "1")  # operator dev posture -> chill
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov.db'}")
+    posture_db = tmp_path / "posture.db"
+    monkeypatch.setenv("LEGIS_POSTURE_DB", f"sqlite:///{posture_db}")
+    key = b"k" * 32
+    PostureLedger(f"sqlite:///{posture_db}", initialize=True).genesis(
+        key_fingerprint=hashlib.sha256(key).hexdigest(),
+        agent_id="installer",
+        recorded_at="t0",
+    )
     runtime = build_runtime("agent-1")
     assert runtime.protected_gate is None  # genuinely keyless launch
 

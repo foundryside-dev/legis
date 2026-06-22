@@ -24,8 +24,12 @@ class FailClosedJudge:
         )
 
 
-def build_judge_from_env(surface: str, *, fetch: Fetch | None = None) -> LLMJudge | FailClosedJudge:
+def configured_judge_from_env(surface: str, *, fetch: Fetch | None = None) -> LLMJudge | None:
     cfg = llm_client_config_from_env()
     if cfg is None:
-        return FailClosedJudge(surface)
+        return None
     return LLMJudge(OpenRouterLLMClient(cfg, fetch=fetch))
+
+
+def build_judge_from_env(surface: str, *, fetch: Fetch | None = None) -> LLMJudge | FailClosedJudge:
+    return configured_judge_from_env(surface, fetch=fetch) or FailClosedJudge(surface)

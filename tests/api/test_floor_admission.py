@@ -34,11 +34,14 @@ def _mem_signer():
     from legis.enforcement import signing as enf_signing
 
     class _MemSigner:
+        def __init__(self):
+            self._key = KEY
+
         def fingerprint(self):
             return _fp()
 
         def sign(self, fields):
-            return enf_signing.sign(fields, KEY, version="v3")
+            return enf_signing.sign(fields, self._key, version="v3")
 
     return _MemSigner()
 
@@ -97,14 +100,14 @@ def test_floor_read_per_request(tmp_path):
 
 
 def test_missing_ledger_floor_structured(tmp_path):
-    # No genesis written: read_floor() is None -> floored_registry falls back to
-    # the registry's own default. With a fail-closed default that is structured.
+    # No genesis written: read_floor() is None -> the effective floor is
+    # structured even when the underlying registry would otherwise self-clear.
     url = f"sqlite:///{tmp_path / 'absent-posture.db'}"
     absent = PostureLedger(url, initialize=False)
     c = _app(
         tmp_path,
         posture_ledger=absent,
-        registry=PolicyCellRegistry(default_cell="structured"),
+        registry=PolicyCellRegistry(default_cell="chill"),
     )
     resp = c.post("/overrides", json=BODY)
     assert resp.status_code == 202

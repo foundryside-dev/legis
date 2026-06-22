@@ -64,6 +64,14 @@ def coached_client(tmp_path, opinion):
     ))
 
 
+def coached_without_judge_client(tmp_path):
+    store = AuditStore(f"sqlite:///{tmp_path / 'gov.db'}")
+    eng = EnforcementEngine(store, FixedClock("2026-06-02T12:00:00+00:00"))
+    return TestClient(create_app(
+        enforcement=eng, cell_registry=_registry(), posture_ledger=_genesis_ledger(tmp_path),
+    ))
+
+
 CHILL_BODY = {
     "policy": "no-broad-except",
     "entity": "src/app.py:handler",
@@ -116,6 +124,16 @@ def test_coached_blocked_post_returns_409_with_judge_reasoning(tmp_path):
     assert len(c.get("/overrides").json()) == 1
 
 
+def test_coached_without_judge_returns_not_enabled_without_write(tmp_path):
+    c = coached_without_judge_client(tmp_path)
+    resp = c.post("/overrides", json=COACHED_BODY)
+    assert resp.status_code == 404
+    detail = resp.json()["detail"].lower()
+    assert "coached" in detail
+    assert "not enabled" in detail
+    assert c.get("/overrides").json() == []
+
+
 def test_coached_accepted_post_returns_201(tmp_path):
     c = coached_client(
         tmp_path, JudgeOpinion(Verdict.ACCEPTED, "judge@1", "specific and correct")
@@ -127,3 +145,29 @@ def test_coached_accepted_post_returns_201(tmp_path):
     assert body["cell"] == "coached"
     assert body["verdict"] == "ACCEPTED"
     assert body["judge_model"] == "judge@1"
+
+
+def test_default_api_runtime_uses_env_judge_for_coached_cell(tmp_path, monkeypatch):
+    from legis.enforcement.llm_client import OpenRouterLLMClient
+
+    def fake_init(self, config, *, fetch=None):
+        self.model_id = "openrouter:test-model"
+
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov-env.db'}")
+    monkeypatch.setenv("LEGIS_JUDGE_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret")
+    monkeypatch.setattr(OpenRouterLLMClient, "__init__", fake_init)
+    monkeypatch.setattr(
+        OpenRouterLLMClient,
+        "complete",
+        lambda self, prompt: '{"verdict":"ACCEPTED","rationale":"ok"}',
+    )
+
+    client = TestClient(create_app(cell_registry=_registry(), posture_ledger=_genesis_ledger(tmp_path)))
+
+    resp = client.post("/overrides", json=COACHED_BODY)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["cell"] == "coached"
+    assert body["verdict"] == "ACCEPTED"
+    assert body["judge_model"] == "openrouter:test-model"

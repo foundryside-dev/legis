@@ -60,6 +60,40 @@ def test_operator_enable_opens_session(posture_env, monkeypatch, capsys):
     assert "300" in out or "5m" in out
 
 
+def test_operator_enable_refuses_without_current_epoch(posture_env, monkeypatch, capsys):
+    # A broad install may leave an initialized-but-empty posture DB when custody
+    # is deferred. Enabling an operator session before GENESIS would create a
+    # metadata-only ledger that later blocks explicit posture install recovery.
+    PostureLedger(posture_db_url(), initialize=True)
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", "ab" * 32)
+
+    with pytest.warns(InsecureEnvKeyWarning):
+        rc = main(["operator", "enable", "--insecure-key-in-env"])
+
+    assert rc == 1
+    assert not operator_session_path().exists()
+    assert PostureLedger(posture_db_url(), initialize=False).store.read_all() == []
+    err = capsys.readouterr().err.lower()
+    assert "epoch" in err or "genesis" in err
+
+
+def test_operator_enable_refuses_key_that_does_not_match_epoch(
+    posture_env, monkeypatch, capsys
+):
+    _genesis(bytes.fromhex("ab" * 32))
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", "cd" * 32)
+
+    with pytest.warns(InsecureEnvKeyWarning):
+        rc = main(["operator", "enable", "--insecure-key-in-env"])
+
+    assert rc == 1
+    assert not operator_session_path().exists()
+    records = PostureLedger(posture_db_url(), initialize=False).store.read_all()
+    assert [rec.payload["kind"] for rec in records] == ["GENESIS"]
+    err = capsys.readouterr().err.lower()
+    assert "fingerprint" in err or "epoch" in err
+
+
 def test_operator_disable_ends_session(posture_env, monkeypatch):
     key_hex = "ab" * 32
     _genesis(bytes.fromhex(key_hex))

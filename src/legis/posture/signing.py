@@ -5,10 +5,12 @@ backend; from then on the agent process never sees the key bytes. The change
 gate (Phase 5) hands a signer canonical record fields and receives an
 ``operator_sig``; the signer holds the key and signs internally.
 
-**The key never lands in the caller's hands.** Every backend exposes exactly
-two methods — :meth:`fingerprint` (sha256 of the held key, safe to surface) and
-:meth:`sign` (a v3 HMAC over the caller's fields). No backend exposes a ``key``
-attribute or returns key bytes from any public method (test-pinned).
+**The key never lands in the caller's hands.** Every backend exposes
+:meth:`fingerprint` (sha256 of the held key, safe to surface), :meth:`sign` (a
+v3 HMAC over the caller's fields), and may expose :meth:`verify` to prove a
+signature against backend-owned key material without returning it. No backend
+exposes a ``key`` attribute or returns key bytes from any public method
+(test-pinned).
 
 **``chain_seq`` is mandatory in the signed fields.** The caller folds the
 record's chain position (``chain_seq=seq``) into the fields it hands ``sign``;
@@ -86,6 +88,18 @@ class PostureSigner(Protocol):
     def sign(self, fields: dict) -> str: ...
 
 
+@runtime_checkable
+class PostureVerifier(PostureSigner, Protocol):
+    """Optional custody-backend verifier contract.
+
+    Non-extractable backends can verify signatures internally without exposing
+    raw key material to the caller. Legacy/raw test signers that lack this
+    method still go through the local fallback below.
+    """
+
+    def verify(self, fields: dict, signature: str) -> bool: ...
+
+
 def _sign_with_key(fields: dict, key_hex: str) -> str:
     """v3-sign ``fields`` with a hex key, discarding the bytes on return.
 
@@ -117,6 +131,9 @@ class _RawKeySigner:
 
     def sign(self, fields: dict) -> str:
         return _sign_with_key(fields, self._key_hex)
+
+    def verify(self, fields: dict, signature: str) -> bool:
+        return _enf_signing.verify(fields, signature, bytes.fromhex(self._key_hex))
 
 
 # -- env escape hatch --------------------------------------------------------
@@ -234,6 +251,9 @@ class AgeFileSigner:
     def sign(self, fields: dict) -> str:
         return _sign_with_key(fields, self._key())
 
+    def verify(self, fields: dict, signature: str) -> bool:
+        return _enf_signing.verify(fields, signature, bytes.fromhex(self._key()))
+
 
 class _KeychainStore(Protocol):
     """The OS-keychain seam: get a stored secret by item id (injectable)."""
@@ -263,6 +283,55 @@ class KeychainSigner:
 
     def sign(self, fields: dict) -> str:
         return _sign_with_key(fields, self._key())
+
+    def verify(self, fields: dict, signature: str) -> bool:
+        return _enf_signing.verify(fields, signature, bytes.fromhex(self._key()))
+
+
+def _verification_key_hex(signer: PostureSigner) -> str:
+    """Extract the held key from supported custody signers for local verification.
+
+    This compatibility fallback stays inside the posture module boundary:
+    callers still receive only a signer object, while older local/test signers
+    that lack ``verify()`` can still prove the produced signature verifies under
+    key material whose fingerprint matches the standing epoch.
+    """
+    if isinstance(signer, _RawKeySigner):
+        return signer._key_hex
+    if isinstance(signer, (AgeFileSigner, KeychainSigner)):
+        return signer._key()
+    key = getattr(signer, "_key", None)
+    if isinstance(key, bytes):
+        return key.hex()
+    if isinstance(key, str):
+        return key
+    raise TypeError("unsupported posture signer backend")
+
+
+def verify_signer_signature(
+    signer: PostureSigner,
+    fields: dict,
+    signature: str,
+    *,
+    expected_fingerprint: str,
+) -> bool:
+    """True iff *signature* verifies under the signer's actual held key.
+
+    A self-attested ``fingerprint()`` is not enough: the key material used for
+    verification must hash to the epoch fingerprint and must validate the HMAC.
+    """
+    try:
+        if signer.fingerprint() != expected_fingerprint:
+            return False
+        verifier = getattr(signer, "verify", None)
+        if callable(verifier):
+            return bool(verifier(fields, signature))
+        key_hex = _verification_key_hex(signer)
+        if key_fingerprint(key_hex) != expected_fingerprint:
+            return False
+        return _enf_signing.verify(fields, signature, bytes.fromhex(key_hex))
+    except Exception:  # noqa: BLE001 - custody faults fail closed
+        return False
 
 
 # -- backend selection -------------------------------------------------------

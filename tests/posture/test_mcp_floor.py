@@ -51,11 +51,14 @@ def _posture_ledger(tmp_path, floor=None):
     if floor is not None and floor != "chill":
 
         class _MemSigner:
+            def __init__(self, held_key=key):
+                self._key = held_key
+
             def fingerprint(self):
                 return fp
 
             def sign(self, fields):
-                return enf_signing.sign(fields, key, version="v3")
+                return enf_signing.sign(fields, self._key, version="v3")
 
         ledger.transition(
             floor,
@@ -164,11 +167,14 @@ def test_mcp_floor_read_per_invocation(tmp_path):
     fp = hashlib.sha256(key).hexdigest()
 
     class _MemSigner:
+        def __init__(self, held_key=key):
+            self._key = held_key
+
         def fingerprint(self):
             return fp
 
         def sign(self, fields):
-            return enf_signing.sign(fields, key, version="v3")
+            return enf_signing.sign(fields, self._key, version="v3")
 
     runtime.posture_ledger.transition(
         "structured",
@@ -207,11 +213,14 @@ def test_idempotent_replay_is_floor_exempt(tmp_path):
     fp = hashlib.sha256(key).hexdigest()
 
     class _MemSigner:
+        def __init__(self, held_key=key):
+            self._key = held_key
+
         def fingerprint(self):
             return fp
 
         def sign(self, fields):
-            return enf_signing.sign(fields, key, version="v3")
+            return enf_signing.sign(fields, self._key, version="v3")
 
     runtime.posture_ledger.transition(
         "structured",

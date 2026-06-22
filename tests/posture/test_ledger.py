@@ -15,7 +15,7 @@ import pytest
 
 from legis.enforcement import signing as enf_signing
 from legis.posture.ledger import PostureLedger
-from legis.posture.records import KIND_KEY_RESET
+from legis.posture.records import KIND_KEY_RESET, KIND_SESSION_OPENED
 
 
 def _url(tmp_path):
@@ -69,6 +69,62 @@ def test_read_floor_is_last_record(tmp_path):
     assert ledger.read_floor() == "structured"
 
 
+def test_read_floor_skips_non_floor_tail(tmp_path):
+    ledger = PostureLedger(_url(tmp_path), initialize=True)
+    key = b"k" * 32
+    fp = hashlib.sha256(key).hexdigest()
+    ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
+    ledger.transition(
+        "protected",
+        signer=_MemSigner(key),
+        session_id="sess-1",
+        key_fingerprint=fp,
+        agent_id="op",
+        rationale="tighten",
+        recorded_at="t1",
+    )
+    ledger.session_opened(
+        operator_id="alice",
+        enabled_at="t2",
+        ttl=300,
+        keychain_auth_ref=None,
+        session_id="sess-2",
+    )
+
+    assert ledger.store.read_all()[-1].payload["kind"] == KIND_SESSION_OPENED
+    assert ledger.read_floor() == "protected"
+
+
+def test_read_floor_ignores_metadata_floor_field(tmp_path):
+    ledger = PostureLedger(_url(tmp_path), initialize=True)
+    key = b"k" * 32
+    fp = hashlib.sha256(key).hexdigest()
+    ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
+    ledger.transition(
+        "protected",
+        signer=_MemSigner(key),
+        session_id="sess-1",
+        key_fingerprint=fp,
+        agent_id="op",
+        rationale="tighten",
+        recorded_at="t1",
+    )
+    ledger.store.append(
+        {
+            "kind": KIND_SESSION_OPENED,
+            "floor": "structured",
+            "operator_id": "alice",
+            "enabled_at": "t2",
+            "ttl": 300,
+            "keychain_auth_ref": None,
+            "session_id": "sess-2",
+            "operator_sig": None,
+        }
+    )
+
+    assert ledger.read_floor() == "protected"
+
+
 def test_read_floor_uses_tail_read(tmp_path, monkeypatch):
     ledger = PostureLedger(_url(tmp_path), initialize=True)
     ledger.genesis(key_fingerprint="ab" * 32, agent_id="installer", recorded_at="t0")
@@ -78,6 +134,36 @@ def test_read_floor_uses_tail_read(tmp_path, monkeypatch):
 
     monkeypatch.setattr(ledger.store, "read_all", _boom)
     assert ledger.read_floor() == "chill"
+
+
+def test_read_floor_does_not_point_read_each_metadata_tail(tmp_path, monkeypatch):
+    ledger = PostureLedger(_url(tmp_path), initialize=True)
+    key = b"k" * 32
+    fp = hashlib.sha256(key).hexdigest()
+    ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
+    ledger.transition(
+        "protected",
+        signer=_MemSigner(key),
+        session_id="sess-1",
+        key_fingerprint=fp,
+        agent_id="op",
+        rationale="tighten",
+        recorded_at="t1",
+    )
+    for idx in range(3):
+        ledger.session_opened(
+            operator_id="alice",
+            enabled_at=f"t{idx + 2}",
+            ttl=300,
+            keychain_auth_ref=None,
+            session_id=f"sess-meta-{idx}",
+        )
+
+    def _boom(seq):
+        raise AssertionError("read_floor must not point-read each metadata tail")
+
+    monkeypatch.setattr(ledger.store, "read_by_seq", _boom)
+    assert ledger.read_floor() == "protected"
 
 
 def test_chain_integrity(tmp_path):

@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import stat
+import sys
 
 import pytest
 
@@ -905,13 +906,19 @@ def _touch_exe(path):
     return path
 
 
-def _write_legis_mcp_entry(tmp_path, command, env=None, agent_id="claude-code"):
+def _write_legis_mcp_entry(
+    tmp_path,
+    command,
+    env=None,
+    agent_id="claude-code",
+    args=None,
+):
     (tmp_path / ".mcp.json").write_text(
         json.dumps(
             {
                 "mcpServers": {
                     "legis": {
-                        "args": ["mcp", "--agent-id", agent_id],
+                        "args": args or ["mcp", "--agent-id", agent_id],
                         "command": str(command),
                         "env": dict(env or {}),
                         "type": "stdio",
@@ -1005,6 +1012,78 @@ def test_register_mcp_json_keeps_usable_command(tmp_path, monkeypatch):
     assert ok
     assert "already" in msg
     assert _read_legis_mcp_entry(tmp_path)["command"] == str(exe)
+
+
+def test_register_mcp_json_rewrites_non_legis_executable(tmp_path, monkeypatch):
+    from legis.install import register_mcp_json
+
+    fake = _touch_exe(tmp_path.parent / f"{tmp_path.name}-external" / "fake-runner")
+    safe_legis = "/opt/bin/legis"
+    _write_legis_mcp_entry(tmp_path, fake, env={"LEGIS_WARDLINE_CELL": "surface_override"})
+    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: [safe_legis])
+
+    ok, msg = register_mcp_json(tmp_path)
+
+    assert ok
+    assert "Registered" in msg
+    entry = _read_legis_mcp_entry(tmp_path)
+    assert entry["command"] == safe_legis
+    assert entry["env"] == {"LEGIS_WARDLINE_CELL": "surface_override"}
+
+
+def test_register_mcp_json_rewrites_python_module_without_safe_path(
+    tmp_path,
+    monkeypatch,
+):
+    from legis.install import register_mcp_json
+
+    _write_legis_mcp_entry(
+        tmp_path,
+        sys.executable,
+        env={"LEGIS_WARDLINE_CELL": "surface_override"},
+        args=["-m", "legis", "mcp", "--agent-id", "claude-code"],
+    )
+    monkeypatch.setattr(
+        install,
+        "_find_legis_command",
+        lambda *_a, **_k: ["/usr/bin/python3", "-P", "-m", "legis"],
+    )
+
+    ok, _ = register_mcp_json(tmp_path)
+
+    assert ok
+    entry = _read_legis_mcp_entry(tmp_path)
+    assert entry["command"] == "/usr/bin/python3"
+    assert entry["args"] == ["-P", "-m", "legis", "mcp", "--agent-id", "claude-code"]
+    assert entry["env"] == {"LEGIS_WARDLINE_CELL": "surface_override"}
+
+
+def test_register_mcp_json_rewrites_fake_python_prefixed_executable(
+    tmp_path,
+    monkeypatch,
+):
+    from legis.install import register_mcp_json
+
+    fake = _touch_exe(tmp_path.parent / f"{tmp_path.name}-external" / "python3-fake")
+    _write_legis_mcp_entry(
+        tmp_path,
+        fake,
+        env={"LEGIS_WARDLINE_CELL": "surface_override"},
+        args=["-P", "-m", "legis", "mcp", "--agent-id", "claude-code"],
+    )
+    monkeypatch.setattr(
+        install,
+        "_find_legis_command",
+        lambda *_a, **_k: ["/usr/bin/python3", "-P", "-m", "legis"],
+    )
+
+    ok, _ = register_mcp_json(tmp_path)
+
+    assert ok
+    entry = _read_legis_mcp_entry(tmp_path)
+    assert entry["command"] == "/usr/bin/python3"
+    assert entry["args"] == ["-P", "-m", "legis", "mcp", "--agent-id", "claude-code"]
+    assert entry["env"] == {"LEGIS_WARDLINE_CELL": "surface_override"}
 
 
 def test_register_mcp_json_refreshes_dead_command_but_keeps_env(tmp_path, monkeypatch):

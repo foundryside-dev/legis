@@ -99,7 +99,8 @@ Fail-closed rule for this phase: **absent ledger → `read_floor()` reports "no 
   - `test_genesis_writes_chill_floor` — fresh DB; `ledger.genesis(...)` appends one `kind=GENESIS, floor="chill"`; `read_floor()` returns `"chill"`.
   - `test_read_floor_missing_ledger_returns_none` — no DB file; `read_floor()` returns `None`; assert it does NOT return `"chill"`.
   - `test_read_floor_is_last_record` — after genesis then a transition to `structured`, `read_floor()` returns `"structured"`.
-  - `test_read_floor_uses_tail_read` — instrument/spy that `read_floor()` does **not** call `read_all()`; it uses `get_latest_sequence_and_hash()` + `read_by_seq`. **(addresses Architecture medium: per-request hot path)**
+  - `test_read_floor_uses_tail_read` — instrument/spy that `read_floor()` does **not** call `read_all()`; it uses a tail-oriented query for the latest authoritative floor record. **(addresses Architecture medium: per-request hot path)**
+  - `test_read_floor_does_not_point_read_each_metadata_tail` — metadata records after the floor do not force a repeated `read_by_seq()` loop over the tail.
   - `test_chain_integrity` — `store.verify_integrity()` True after genesis + transition.
   - `test_idempotent_open` — opening the ledger twice over an existing DB does NOT append a second GENESIS.
   - `test_genesis_blocked_after_key_reset` — `genesis()` on a ledger whose tail is a `KEY_RESET` (non-empty, no `GENESIS` re-needed) returns without appending. **(addresses Quality high)**
@@ -108,7 +109,7 @@ Fail-closed rule for this phase: **absent ledger → `read_floor()` reports "no 
 - **Implementation:**
   - `PostureLedger.__init__(self, url, *, initialize=True)` constructs `AuditStore(url, initialize=initialize)` like `audit_store.py:116`.
   - `genesis(key_fingerprint, agent_id, recorded_at)` → keyless `PostureRecord(kind=GENESIS, floor="chill", ...)`, `store.append(record.to_payload())` (`audit_store.py:285`). **Guard:** return early if `store.read_all()` is non-empty (covers both an existing GENESIS and a KEY_RESET tail).
-  - `read_floor() -> str | None`: if DB/file absent → `None`. Else `seq, _ = store.get_latest_sequence_and_hash()`; if no records → `None`; else `return store.read_by_seq(seq).payload["floor"]` (two O(1) SQLite queries, no JSON-decode loop). `read_all()` is reserved for `verify_integrity()` in doctor.
+  - `read_floor() -> str | None`: if DB/file absent → `None`; otherwise issue one descending SQLite query over `audit_log.payload`, skip metadata records, and return the newest authoritative `floor` from `GENESIS`, `TRANSITION`, or `KEY_RESET`. `read_all()` is reserved for `verify_integrity()` in doctor, and metadata tails must not create a repeated `read_by_seq()` loop.
   - `transition(new_cell, *, signer, session_id, key_fingerprint, agent_id, rationale, recorded_at)`: **resolve current-epoch `key_fingerprint` via a tail read BEFORE `append_signed`** (never inside the build callback). Then `append_signed(build_payload)` (`audit_store.py:296`); inside `build(seq, prev_hash)`: assemble signing fields including `chain_seq=seq`, verify `signer.fingerprint() == key_fingerprint` first, then `signer.sign(fields)`; embed `operator_sig`/`session_id`. **Fail-closed:** signer raise or fingerprint mismatch → raise before persist (no half-write).
   - `rekey(...)` and `session_opened(...)` are signatures here, implemented in Phase 11 / Phase 3.2.
 - **Verify:** `pytest tests/posture/test_ledger.py -q`.
@@ -160,7 +161,7 @@ Fail-closed rule: **no open session, or expired session → `posture set` / `tra
 
 - **Create:** `src/legis/posture/session.py`. Includes a local `_atomic_write_json(path, obj)` helper (temp file + `os.replace`) — **`_atomic_write_text` does NOT exist in `install.py`; do not import it.** **(addresses reality-grounding critical)**
 - **Test first:** `tests/posture/test_session.py`:
-  - `test_enable_writes_session_file` — `open_session(ttl=300, operator_id=..., backend_id=..., unlock_ref=...)` writes `.weft/legis/operator_session.json` containing only `session_id, operator_id, opened_at, ttl, expires_at, backend_id, unlock_ref` — assert NO `key`, NO passphrase, NO raw blob plaintext.
+  - `test_enable_writes_session_file` — `open_session(ttl=300, operator_id=..., backend_id=..., unlock_ref=..., signer=...)` writes `.weft/legis/operator_session.json` containing only `session_id, operator_id, opened_at, ttl, expires_at, backend_id, unlock_ref, session_sig` — assert NO `key`, NO passphrase, NO raw blob plaintext.
   - `test_age_backend_unlock_ref_is_none` — for an age-file session, `unlock_ref is None` (per D5: re-prompt is the unlock; only keychain stores an item id). **(addresses Architecture medium)**
   - `test_session_active_within_ttl` / `test_session_expired_after_ttl` — `is_active` honors TTL; `load_session()` past TTL returns `None` AND deletes the file.
   - `test_load_session_double_expire_is_safe` — calling `load_session()` twice past TTL returns `None` both times without raising; the self-delete catches `FileNotFoundError`. **(addresses Quality medium)**
@@ -168,7 +169,7 @@ Fail-closed rule: **no open session, or expired session → `posture set` / `tra
   - `test_unique_session_id` — two `open_session` calls produce distinct `session_id`.
   - `test_second_enable_replaces_first` — a second `operator enable` **replaces** the session file atomically (only one active session at a time). This resolves the concurrent-session ambiguity: there is exactly one authoritative `operator_session.json`. **(addresses Quality critical: concurrent-session race)**
 - **Implementation:**
-  - `open_session(...)` writes the JSON atomically via the local `_atomic_write_json`. Generates `session_id = secrets.token_hex(...)`. A second `open_session` overwrites the prior file (single active session).
+  - `open_session(...)` writes the JSON atomically via the local `_atomic_write_json`. Generates `session_id = secrets.token_hex(...)`, signs the session metadata with the operator signer, and stores that HMAC as `session_sig`. A second `open_session` overwrites the prior file (single active session).
   - `load_session() -> Session | None`: reads file; if `now > expires_at` → delete (catching `FileNotFoundError`), return `None`.
   - `end_session()` deletes file (idempotent).
   - `unlock_ref` per D5: keychain → item id; age-file → `None`; env → `None`.
@@ -296,7 +297,7 @@ Fail-closed/idempotent: **second install over an existing ledger leaves floor + 
   - `test_operator_disable_ends_session` — deletes the session file.
   - `test_enable_default_ttl_5m` — no `--ttl` → 300s.
   - `test_ci_env_backend_opens_session_with_id` — with `LEGIS_OPERATOR_KEY` set, no keychain, `legis operator enable --insecure-key-in-env`: emits the plaintext warning, writes a session file with `backend_id="env"`, and a subsequent `posture set` produces a `TRANSITION` carrying a **non-null `session_id`** (env path still goes through a session, per D3). **(addresses systems high: CI bootstrap + session accountability)**
-- **Implementation:** `operator` subparser with `enable [--ttl] [--insecure-key-in-env]`, `disable`. `_run_operator`: `enable` → keychain/age unlock (or env opt-in) → `open_session(...)` + `ledger.session_opened(...)`. `disable` → `end_session()`. **CI bootstrap sequence (documented in the CLI help and `docs/`):** set `LEGIS_OPERATOR_KEY`, run `legis operator enable --insecure-key-in-env`, then `legis posture set <cell>`. The env path NEVER signs without an open session — there is no second auth path that bypasses session accountability.
+- **Implementation:** `operator` subparser with `enable [--ttl] [--insecure-key-in-env]`, `disable`. `_run_operator`: `enable` → keychain/age unlock (or env opt-in) → `open_session(..., signer=signer)` + `ledger.session_opened(...)`. `disable` → `end_session()`. **CI bootstrap sequence (documented in the CLI help and `docs/`):** set `LEGIS_OPERATOR_KEY`, run `legis operator enable --insecure-key-in-env`, then `legis posture set <cell>`. The env path NEVER signs without an open session — there is no second auth path that bypasses session accountability.
 - **Verify:** `pytest tests/cli/test_operator_cli.py -q`.
 
 ---
@@ -426,19 +427,19 @@ Fail-closed: **`doctor` exits non-zero on an unacknowledged `KEY_RESET`** (spec 
 
 ## PHASE 11 — Rekey / lost-key path
 
-Fail-closed/loud: **rekey resets to chill, needs no old key, preserves history, writes `KEY_RESET`, doctor flags it** (spec §8).
+Fail-closed/loud: **rekey preserves the standing floor, needs no old key, preserves history, writes `KEY_RESET`, doctor flags it** (spec §8).
 
 ### Task 11.1 — `posture rekey`
 
 - **Modify:** `src/legis/posture/ledger.py` (`rekey()`), `src/legis/cli.py` (`posture rekey`).
 - **Test first:** `tests/posture/test_rekey.py`:
-  - `test_rekey_resets_to_chill` — `read_floor()` == `"chill"` after rekey.
+  - `test_rekey_preserves_existing_floor` — `read_floor()` remains at the standing floor after rekey.
   - `test_rekey_mints_new_epoch` — new `key_fingerprint` != prior; new key handed to backend.
   - `test_rekey_preserves_history` — all prior records present; `verify_integrity()` True; `KEY_RESET` chained onto existing history (not a fresh DB).
   - `test_rekey_needs_no_old_key` — succeeds with no open session / no prior key available.
-  - `test_rekey_writes_key_reset_record` — exactly one `KEY_RESET` with `kind=KEY_RESET, floor=chill, key_fingerprint=<new>, agent_id, recorded_at`.
+  - `test_rekey_writes_key_reset_record` — exactly one `KEY_RESET` with `kind=KEY_RESET, floor=<standing-floor>, key_fingerprint=<new>, agent_id, recorded_at`.
   - `test_doctor_flags_rekey` — after rekey, `legis doctor` exits non-zero until an acknowledging signed transition verifying against the new epoch (ties to 10.2).
-- **Implementation:** `rekey(*, agent_id, recorded_at)`: `mint_key()` → backend; compute new fingerprint; `store.append(PostureRecord(kind=KEY_RESET, floor="chill", key_fingerprint=new_fp, ...).to_payload())` (keyless, chained onto existing chain — `append`, not `append_signed`). CLI `_run_posture` dispatches `rekey`.
+- **Implementation:** `rekey(*, agent_id, recorded_at)`: read the standing floor (missing/empty ledger -> `structured`), `mint_key()` → backend; compute new fingerprint; `store.append(PostureRecord(kind=KEY_RESET, floor=<standing-floor>, key_fingerprint=new_fp, ...).to_payload())` (keyless, chained onto existing chain — `append`, not `append_signed`). CLI `_run_posture` dispatches `rekey`.
 - **Verify:** `pytest tests/posture/test_rekey.py -q`.
 
 ---
@@ -449,7 +450,7 @@ Create `tests/posture/test_security_honesty.py` asserting the spec's honesty gua
 
 - **`test_tty_session_expiry`** — past TTL, `load_session()` returns `None` and deletes the file; a `posture set` after expiry is refused.
 - **`test_key_never_returned_to_caller`** — no backend exposes raw key bytes; `sign()` returns only a prefixed signature; `fingerprint()` returns a hash. Behavioral (per Quality medium): assert the returned signature does not contain the key hex, and no public method/attr value equals the key.
-- **`test_rekey_resets_to_chill`** — (cross-ref Phase 11) rekey can never land above chill.
+- **`test_rekey_preserves_existing_floor`** — (cross-ref Phase 11) rekey cannot downgrade an elevated floor.
 - **`test_every_signature_carries_session_id`** — every `TRANSITION` in a window has `session_id` == the open session's id; a no-session transition is refused. Includes the **env-backend path** (D3): an `EnvSigner` transition still carries `session_id`.
 - **`test_env_escape_hatch_warns`** — `EnvSigner` requires explicit `--insecure-key-in-env` and emits an honest warning.
 - **`test_age_file_passphrase_required`** — age-file unlock with wrong/absent passphrase fails closed (no signature).
@@ -460,7 +461,7 @@ Create `tests/posture/test_security_honesty.py` asserting the spec's honesty gua
 ### Task 12.1 — Published honesty-statement update **(NEW — addresses systems low)**
 
 - **Modify:** `README.md` "Known security limitations" (and align spec §9).
-- **Implementation:** add the operator-session-file residual to the published honesty statement: *"A process with read access to `.weft/legis/operator_session.json` can read the keychain item id and, if it also has keychain access, produce arbitrary signatures during the window. This is the same tier as raw-DB-write access. The mitigation is OS keychain access control (item accessible only to the legis process user), not file encryption of the session file."* Consistent with the existing tamper-evident-not-tamper-proof stance.
+- **Implementation:** add the operator-session-file residual to the published honesty statement: *"A process with read access to `.weft/legis/operator_session.json` can read the keychain item id and session HMAC; if it also has keychain access, it can produce arbitrary signatures during the window. This is the same tier as raw-DB-write access. The mitigation is OS keychain access control (item accessible only to the legis process user), not file encryption of the session file."* Consistent with the existing tamper-evident-not-tamper-proof stance.
 - **Verify:** manual doc read; no test (documentation honesty item).
 
 ---

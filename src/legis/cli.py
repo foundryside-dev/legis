@@ -214,9 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     prekey = posture_sub.add_parser(
         "rekey",
         help=(
-            "Lost-key recovery: mint a new operator key epoch, reset the floor "
-            "to chill, and chain a loud KEY_RESET (doctor stays non-zero until "
-            "you re-raise the floor with a signed `posture set` under the new key)"
+            "Lost-key recovery: mint a new operator key epoch while preserving "
+            "the standing floor, and chain a loud KEY_RESET (doctor stays "
+            "non-zero until you acknowledge the reset with a signed "
+            "`posture set` under the new key)"
         ),
     )
     prekey.add_argument(
@@ -453,16 +454,24 @@ def _run_posture(args) -> int:
         return 0
 
     if command == "rekey":
-        # Lost-key recovery (Phase 11 / design §8): mint a fresh key epoch, reset
-        # the floor to chill, and chain a loud KEY_RESET. Needs NO open session
-        # and NO old key — a lost key cannot sign, so the indelible, doctor-flagged
-        # record IS the accountability. The new key bytes reach ONLY custody via
-        # the install key-sink; the ledger stores the fingerprint alone.
-        from legis.install import _default_key_sink, choose_install_backend
+        # Lost-key recovery (Phase 11 / design §8): mint a fresh key epoch while
+        # preserving the standing floor, and chain a loud KEY_RESET. Needs NO
+        # open session and NO old key — a lost key cannot sign, so the indelible,
+        # doctor-flagged record IS the accountability. The new key bytes reach
+        # ONLY custody via the install key-sink; the ledger stores the fingerprint
+        # alone.
+        from legis.install import OperatorKeyCustodyError, _default_key_sink, choose_install_backend
 
         backend = args.backend
         if backend is None:
             backend = choose_install_backend(insecure_env=False)
+        if backend == "env":
+            print(
+                "posture rekey: refused — env custody cannot persist the freshly "
+                "minted rekey key from this child process; use age-file or keychain.",
+                file=sys.stderr,
+            )
+            return 1
         ledger = PostureLedger(posture_db_url(), initialize=True)
         try:
             new_fp = ledger.rekey(
@@ -471,13 +480,14 @@ def _run_posture(args) -> int:
                 key_sink=_default_key_sink,
                 backend=backend,
             )
-        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+        except (OperatorKeyCustodyError, RuntimeError, ValueError) as exc:
             print(f"posture rekey: refused — {exc}", file=sys.stderr)
             return 1
         print(
             f"posture rekey: new key epoch {new_fp[:12]}… minted (backend={backend}); "
-            f"floor reset to chill. Re-raise it with a signed `legis posture set` "
-            f"under the new key — `legis doctor` stays non-zero until you do."
+            f"floor preserved as {ledger.read_floor() or 'structured'}. Acknowledge "
+            f"the reset with a signed `legis posture set` under the new key — "
+            f"`legis doctor` stays non-zero until you do."
         )
         return 0
 
@@ -493,6 +503,7 @@ def _run_operator(args) -> int:
         PostureLedger,
         end_session,
         open_session,
+        persist_session,
     )
 
     command = getattr(args, "operator_command", None)
@@ -532,6 +543,28 @@ def _run_operator(args) -> int:
             print(f"operator enable: refused — {exc}", file=sys.stderr)
             return 1
 
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        epoch_fp = ledger.current_epoch_fingerprint()
+        if epoch_fp is None:
+            print(
+                "operator enable: refused — no posture key epoch exists yet; run "
+                "`legis install --posture` after configuring key custody.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            signer_fp = signer.fingerprint()
+        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+            print(f"operator enable: refused — cannot read signer fingerprint: {exc}", file=sys.stderr)
+            return 1
+        if signer_fp != epoch_fp:
+            print(
+                "operator enable: refused — signer fingerprint does not match the "
+                "current posture key epoch.",
+                file=sys.stderr,
+            )
+            return 1
+
         # The keychain item id is the only non-null unlock_ref (D5); env/age-file
         # carry None (re-prompt / resident plaintext is the unlock).
         unlock_ref = getattr(signer, "_item_id", None)
@@ -542,11 +575,14 @@ def _run_operator(args) -> int:
             operator_id=operator_id,
             backend_id=backend_id,
             unlock_ref=unlock_ref,
+            signer=signer,
+            persist=False,
         )
         # The env path STILL opens a session (D3): every TRANSITION it later
         # produces carries this session_id, so there is no auth path that
-        # bypasses session accountability.
-        ledger = PostureLedger(posture_db_url(), initialize=False)
+        # bypasses session accountability. Append the audit event before writing
+        # the session file; a ledger failure must not leave a usable unaudited
+        # elevation window behind.
         ledger.session_opened(
             operator_id=operator_id,
             enabled_at=clock.now_iso(),
@@ -554,6 +590,7 @@ def _run_operator(args) -> int:
             keychain_auth_ref=unlock_ref,
             session_id=session.session_id,
         )
+        persist_session(session)
         if insecure_env:
             print(
                 "WARNING: --insecure-key-in-env uses the plaintext LEGIS_OPERATOR_KEY "
@@ -602,11 +639,11 @@ def _run_install(args) -> int:
         try:
             fp = install_posture(project_root, backend=backend)
         except OperatorKeyCustodyError as exc:
-            # Fail-closed but non-fatal to the broader install: NO genesis was
-            # written (the sink runs before the append), so the ledger never
-            # carries a fingerprint the operator cannot sign against. Tell the
-            # operator how to complete custody and re-run --posture.
-            return True, (
+            # NO genesis was written (the sink runs before the append), so the
+            # ledger never carries a fingerprint the operator cannot sign
+            # against. A broad install may defer posture setup, but an explicit
+            # posture install is a readiness check and must fail closed.
+            return not args.posture, (
                 f"deferred: {exc} "
                 f"(re-run `legis install --posture` once custody is configured)"
             )

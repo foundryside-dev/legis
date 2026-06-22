@@ -80,10 +80,12 @@ def resolve_for_entry(
 
     * ``entity_sei`` (L1, inline bind) — the agent already holds a stable SEI and
       binds it at the point of entry. legis verifies it is alive through the
-      Loomweave ``resolve_sei`` transport and keys directly on it. A non-resolving
-      SEI raises :class:`UnresolvedInputError` (weft-reason ``unresolved_input``)
-      and the caller records NOTHING — never a locator-keyed record masquerading
-      as a stable bind.
+      Loomweave ``resolve_sei`` transport, resolves the submitted ``entity``
+      locator, and records only when both resolve to the same live SEI. A
+      non-resolving or unbound SEI raises :class:`UnresolvedInputError`
+      (weft-reason ``unresolved_input``) and the caller records NOTHING — never
+      a locator-keyed record masquerading as a stable bind or evidence on an
+      unrelated stable identity.
     * ``entity`` alone (L2, locator/symbol) — the pre-existing path: legis resolves
       the locator to an SEI when it can and degrades to a locator key otherwise
       (:func:`resolve_for_record`). Unchanged for every existing caller.
@@ -121,16 +123,34 @@ def resolve_for_entry(
                 "locator/symbol (entity) for legis to resolve."
             ),
         )
+    locator_resolution = identity.resolve(entity)
+    if (
+        locator_resolution.alive is not True
+        or not locator_resolution.entity_key.identity_stable
+        or locator_resolution.entity_key != resolution.entity_key
+    ):
+        locator_value = locator_resolution.entity_key.value
+        raise UnresolvedInputError(
+            cause=(
+                f"entity_sei {entity_sei!r} resolved live but does not match "
+                f"entity {entity!r}; entity resolved to {locator_value!r}"
+            ),
+            fix=(
+                "Submit the SEI that Loomweave resolves for the supplied entity, "
+                "or omit entity_sei and submit the entity as a locator/symbol so "
+                "legis can bind it itself."
+            ),
+        )
     ext: dict = {}
-    if resolution.alive is not None:
+    if locator_resolution.alive is not None:
         ext["loomweave"] = {
-            "alive": resolution.alive,
-            "content_hash": resolution.content_hash,
-            "lineage_snapshot": resolution.lineage_snapshot,
-            "identity_resolution_status": resolution.identity_resolution_status,
-            "lineage_snapshot_status": resolution.lineage_snapshot_status,
+            "alive": locator_resolution.alive,
+            "content_hash": locator_resolution.content_hash,
+            "lineage_snapshot": locator_resolution.lineage_snapshot,
+            "identity_resolution_status": locator_resolution.identity_resolution_status,
+            "lineage_snapshot_status": locator_resolution.lineage_snapshot_status,
         }
-    return resolution.entity_key, ext
+    return locator_resolution.entity_key, ext
 
 
 def verified_records(

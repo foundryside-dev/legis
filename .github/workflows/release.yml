@@ -26,8 +26,26 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Run lint
+        run: uv run ruff check src
+
       - name: Test gate (never publish a red build)
-        run: uv run pytest -q
+        run: uv run pytest --cov=legis --cov-report=term-missing --cov-report=json --cov-fail-under=88
+
+      - name: Enforce per-package coverage floors
+        run: uv run python scripts/check_coverage_floors.py
+
+      - name: Run SEI conformance oracle
+        run: uv run pytest tests/conformance/test_sei_oracle.py
+
+      - name: Run type check
+        run: uv run mypy src/legis
+
+      - name: Run policy-boundary honesty gate
+        run: uv run legis policy-boundary-check --root src --repo-root .
 
       - name: Verify release tag matches project version
         env:
@@ -61,17 +79,33 @@ jobs:
     env:
       LOOMWEAVE_URL: ${{ vars.LOOMWEAVE_URL }}
       LOOMWEAVE_LIVE_ORACLE_LOCATOR: ${{ vars.LOOMWEAVE_LIVE_ORACLE_LOCATOR }}
-      LEGIS_LOOMWEAVE_HMAC_KEY: ${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}
     steps:
       - uses: actions/checkout@v4
 
-      # Skip-not-fail: when the release environment is not provisioned with the
-      # live oracle config, this job passes as a fast no-op so it never blocks
-      # the PyPI publish (the rc4 blocker f95036b removed — do not reintroduce
-      # it). When the config IS present, the oracle runs for real and a
-      # conformance failure blocks publish — the gate still bites where it can.
-      - name: Detect live oracle configuration
-        id: oracle_config
+      - name: Require live oracle configuration
+        run: |
+          missing=()
+          for name in LOOMWEAVE_URL LOOMWEAVE_LIVE_ORACLE_LOCATOR; do
+            if [ -z "${!name}" ]; then
+              missing+=("${name}")
+            fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            joined="$(IFS=', '; echo "${missing[*]}")"
+            echo "::error::Missing required release conformance environment: ${joined}"
+            exit 1
+          fi
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run live Loomweave oracle
+        env:
+          LEGIS_LOOMWEAVE_HMAC_KEY: ${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}
         run: |
           missing=()
           for name in LOOMWEAVE_URL LOOMWEAVE_LIVE_ORACLE_LOCATOR LEGIS_LOOMWEAVE_HMAC_KEY; do
@@ -81,24 +115,10 @@ jobs:
           done
           if [ "${#missing[@]}" -ne 0 ]; then
             joined="$(IFS=', '; echo "${missing[*]}")"
-            echo "::notice::Live Loomweave oracle not provisioned (${joined} unset) — skipping conformance, not blocking publish."
-            echo "configured=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "configured=true" >> "$GITHUB_OUTPUT"
+            echo "::error::Missing required release conformance environment: ${joined}"
+            exit 1
           fi
-
-      - uses: astral-sh/setup-uv@v5
-        if: steps.oracle_config.outputs.configured == 'true'
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        if: steps.oracle_config.outputs.configured == 'true'
-        run: uv sync --dev
-
-      - name: Run live Loomweave oracle
-        if: steps.oracle_config.outputs.configured == 'true'
-        run: uv run pytest tests/conformance/test_live_loomweave_oracle.py
+          uv run pytest tests/conformance/test_live_loomweave_oracle.py
 
   publish:
     name: Publish to PyPI

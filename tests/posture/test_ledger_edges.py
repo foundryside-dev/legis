@@ -97,14 +97,21 @@ def test_session_opened_implemented_in_phase3(tmp_path):
 
 
 def test_rekey_implemented_in_phase11(tmp_path):
-    # Phase 11 supersedes the Phase 1 stub: rekey() mints a fresh epoch, resets
-    # the floor to chill, and chains a keyless KEY_RESET onto preserved history
+    # Phase 11 supersedes the Phase 1 stub: rekey() mints a fresh epoch, keeps
+    # the standing floor, and chains a keyless KEY_RESET onto preserved history
     # (full coverage in test_rekey.py).
     ledger = PostureLedger(f"sqlite:///{tmp_path}/posture.db", initialize=True)
     ledger.genesis(
         key_fingerprint="ab" * 32, agent_id="installer", recorded_at="t0"
     )
-    new_fp = ledger.rekey(agent_id="op", recorded_at="t1")
+    handed: list[tuple[str, str]] = []
+    new_fp = ledger.rekey(
+        agent_id="op",
+        recorded_at="t1",
+        key_sink=lambda key_hex, backend: handed.append((key_hex, backend)),
+        backend="age-file",
+    )
     assert ledger.read_floor() == "chill"
     assert ledger.store.read_all()[-1].payload["kind"] == "KEY_RESET"
     assert new_fp == ledger.current_epoch_fingerprint() != "ab" * 32
+    assert len(handed) == 1

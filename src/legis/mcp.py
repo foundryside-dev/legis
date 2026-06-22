@@ -175,6 +175,7 @@ class McpRuntime:
     # site via _floored_registry. None on a runtime built without posture wiring,
     # which _floored_registry treats fail-closed as a missing ledger (structured).
     posture_ledger: Any | None = None
+    coached_engine: EnforcementEngine | None = None
 
 
 def _load_policy_cell_registry() -> PolicyCellRegistry:
@@ -605,12 +606,14 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "a locator/symbol for legis to resolve (L2, degrades to a "
                 "locator key if Loomweave can't resolve it), OR pass entity_sei "
                 "to bind a SEI you already hold at the point of entry (L1) — "
-                "legis verifies it is alive and keys the governance record "
-                "directly on it. A non-resolving entity_sei returns "
-                "UNRESOLVED_INPUT (weft-reason unresolved_input) and records "
-                "NOTHING, never a locator-keyed record masquerading as a stable "
-                "bind. entity is still required (it carries the source-path used "
-                "for the protected-cell fingerprint binding)."
+                "legis verifies the SEI is alive and that entity resolves live "
+                "to the same SEI before keying the governance record on it. A "
+                "non-resolving or unbound entity_sei returns UNRESOLVED_INPUT "
+                "(weft-reason unresolved_input) and records NOTHING, never a "
+                "locator-keyed record masquerading as a stable bind or evidence "
+                "on an unrelated stable identity. entity is still required (it "
+                "carries the source-path used for the protected-cell fingerprint "
+                "binding)."
             ),
             "inputSchema": _schema(
                 ["policy", "entity", "rationale"],
@@ -1235,18 +1238,20 @@ def _recovery_for(code: str) -> dict[str, Any]:
         ),
         "CELL_NOT_ENABLED": (
             "Two enablement tiers, by cell — both operator-enabled, out-of-band. "
-            "Simple tier (chill/coached) is reachable WITHOUT a key: the operator "
-            "maps the policy to a cell via policy/cells.toml or LEGIS_POLICY_CELLS "
+            "Simple tier is reachable WITHOUT a signing key: the operator maps "
+            "the policy to a cell via policy/cells.toml or LEGIS_POLICY_CELLS "
             "(LEGIS_DEV_DEFAULT_CELLS=1 selects the chill dev default), then "
-            "relaunches. Complex tier (structured/protected and the binding "
-            "ledger) additionally needs LEGIS_HMAC_KEY set by the operator "
-            "out-of-band, then a relaunch. The error message names which cell is "
-            "unenabled."
+            "relaunches; coached also needs LEGIS_JUDGE_PROVIDER and its "
+            "provider credentials set out-of-band. Complex tier "
+            "(structured/protected and the binding ledger) additionally needs "
+            "LEGIS_HMAC_KEY set by the operator out-of-band, then a relaunch. "
+            "The error message names which cell is unenabled."
         ),
         "UNRESOLVED_INPUT": (
-            "The inline entity_sei did not resolve to a live, stable identity, so "
-            "nothing was recorded (weft SEI-on-entry fail-closed). See the "
-            "weft_reason.fix: confirm the SEI is alive in Loomweave, or drop "
+            "The inline entity_sei did not resolve to a live, stable identity, "
+            "or it was not bound to the submitted entity, so nothing was recorded "
+            "(weft SEI-on-entry fail-closed). See the weft_reason.fix: confirm "
+            "the SEI is alive and matches the entity in Loomweave, or drop "
             "entity_sei and submit the entity as a locator/symbol for legis to "
             "resolve."
         ),
@@ -1518,6 +1523,27 @@ def _engine(runtime: McpRuntime) -> EnforcementEngine:
     return runtime.engine
 
 
+def _coached_engine(runtime: McpRuntime) -> EnforcementEngine | None:
+    if runtime.coached_engine is not None:
+        return runtime.coached_engine
+    if runtime.engine is not None and runtime.engine.has_judge:
+        return runtime.engine
+    from legis.config import governance_db_url
+    from legis.enforcement.judge_factory import configured_judge_from_env
+
+    judge = configured_judge_from_env("MCP")
+    if judge is None:
+        return None
+    runtime.coached_engine = EnforcementEngine(
+        AuditStore(governance_db_url()), SystemClock(), judge
+    )
+    return runtime.coached_engine
+
+
+def _simple_engine_for_cell(runtime: McpRuntime, cell: str) -> EnforcementEngine | None:
+    return _coached_engine(runtime) if cell == "coached" else _engine(runtime)
+
+
 def _checks(runtime: McpRuntime) -> CheckSurface:
     if runtime.check_surface is None:
         from legis.config import check_db_url
@@ -1674,6 +1700,32 @@ def _signoff_signed_record(
     return None
 
 
+def _dedupe_records(records: list[Any]) -> list[Any]:
+    deduped = []
+    seen = set()
+    for rec in records:
+        key = (
+            getattr(rec, "seq", None),
+            getattr(rec, "content_hash", None),
+            getattr(rec, "chain_hash", None),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(rec)
+    return deduped
+
+
+def _simple_engine_records(runtime: McpRuntime) -> list[Any]:
+    records = []
+    for engine in (runtime.engine, runtime.coached_engine):
+        if engine is not None:
+            records.extend(engine.records())
+    if records or runtime.engine is not None or runtime.coached_engine is not None:
+        return _dedupe_records(records)
+    return _engine(runtime).records()
+
+
 def _verified_records(runtime: McpRuntime) -> list[Any]:
     if runtime.protected_gate is not None:
         return service_verified_records(
@@ -1696,19 +1748,20 @@ def _verified_records(runtime: McpRuntime) -> list[Any]:
             except TamperError as exc:
                 raise AuditIntegrityError(f"audit integrity failure: {exc}") from exc
         return records
-    if runtime.engine is None:
-        return []
-    return runtime.engine.records()
+    return _simple_engine_records(runtime)
 
 
 def _tool_policy_explain(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
     # D0: explain through the FlooredRegistry — explain_policy floors
     # transparently because FlooredRegistry IS-A PolicyCellRegistry (D1).
+    policy = _require(args, "policy")
+    registry = _floored_registry(runtime)
+    cell = registry.cell_for(policy)
     explanation = explain_policy(
-        _floored_registry(runtime),
-        policy=_require(args, "policy"),
+        registry,
+        policy=policy,
         entity=_require(args, "entity"),
-        engine=runtime.engine,
+        engine=_simple_engine_for_cell(runtime, cell) if cell in ("chill", "coached") else None,
         protected_gate=runtime.protected_gate,
         signoff_gate=runtime.signoff_gate,
     )
@@ -1732,7 +1785,7 @@ def _tool_policy_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, An
         # reports enabled:false without LEGIS_HMAC_KEY (no false-green).
         explanation = explain_cell(
             cell,
-            engine=runtime.engine,
+            engine=_simple_engine_for_cell(runtime, cell) if cell in ("chill", "coached") else None,
             protected_gate=runtime.protected_gate,
             signoff_gate=runtime.signoff_gate,
         )
@@ -1778,9 +1831,9 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     # genuine retry returns the original outcome (with a floor_warning below).
     raw_cell = _registry(runtime).cell_for(policy)
     simple_engine = (
-        _engine(runtime)
+        _simple_engine_for_cell(runtime, dispatch_cell)
         if dispatch_cell in ("chill", "coached")
-        else runtime.engine
+        else None
     )
     explanation = explain_policy(
         registry,
@@ -1849,8 +1902,9 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
                 )
             return _tool_result(response)
     if explanation.cell in ("chill", "coached"):
+        assert simple_engine is not None
         override_result = submit_override(
-            _engine(runtime),
+            simple_engine,
             identity=runtime.identity,
             policy=policy,
             entity=entity,
@@ -2340,10 +2394,8 @@ def _tool_posture_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, An
     # D0/D2: read the floor FRESH off the held ledger handle (never cached). The
     # posture REPORT is fail-closed at the posture layer (cross-cutting checklist
     # #1): an absent/empty ledger reports the floor as 'structured', never chill
-    # — independent of the dev registry default. (That is distinct from the
-    # FlooredRegistry chokepoint, where a None floor is the identity no-op so it
-    # does not force-raise a dev default; here we are reporting the POSTURE, not
-    # routing through the registry.)
+    # — independent of the dev registry default. The FlooredRegistry routing
+    # chokepoint uses the same None -> structured fallback.
     ledger = runtime.posture_ledger
     raw_floor = ledger.read_floor() if ledger is not None else None
     floor = "structured" if raw_floor is None else raw_floor

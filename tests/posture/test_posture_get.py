@@ -66,11 +66,14 @@ def _seeded_ledger(tmp_path, floor=None, *, genesis=True):
     if floor is not None and floor != "chill":
 
         class _MemSigner:
+            def __init__(self, held_key=key):
+                self._key = held_key
+
             def fingerprint(self):
                 return fp
 
             def sign(self, fields):
-                return enf_signing.sign(fields, key, version="v3")
+                return enf_signing.sign(fields, self._key, version="v3")
 
         ledger.transition(
             floor,
@@ -174,13 +177,14 @@ def test_posture_get_indicates_unacknowledged_key_reset(tmp_path):
     # A KEY_RESET with no follow-on signed transition -> the agent sees the same
     # pending-operator-action signal doctor surfaces (Quality medium).
     ledger, _key, fp = _seeded_ledger(tmp_path, floor="structured")
-    # Append a KEY_RESET directly (rekey() lands in Phase 11); it resets to chill
-    # and opens a new epoch, with no acknowledging transition after it.
+    # Append a KEY_RESET directly (rekey() lands in Phase 11); it preserves the
+    # standing floor while opening a new epoch, with no acknowledging transition
+    # after it.
     new_fp = hashlib.sha256(b"n" * 32).hexdigest()
     ledger.store.append(
         PostureRecord(
             kind=KIND_KEY_RESET,
-            floor="chill",
+            floor="structured",
             key_fingerprint=new_fp,
             agent_id="op",
             recorded_at="t2",
@@ -192,8 +196,8 @@ def test_posture_get_indicates_unacknowledged_key_reset(tmp_path):
     runtime = _runtime(tmp_path, ledger=ledger)
     sc = _call(runtime, "posture_get", {})["structuredContent"]
     assert sc["epoch_reset_unacknowledged"] is True
-    # The floor itself reads back as the KEY_RESET's chill reset.
-    assert sc["floor"] == "chill"
+    # The floor itself reads back as the KEY_RESET's preserved standing floor.
+    assert sc["floor"] == "structured"
 
 
 def test_no_posture_set_over_mcp(tmp_path):
