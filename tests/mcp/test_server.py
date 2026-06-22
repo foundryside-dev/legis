@@ -247,6 +247,21 @@ def test_build_runtime_wires_env_judge_for_simple_coached_override(tmp_path, mon
     assert retried["seq"] == result["seq"]
     assert rate["sample_size"] == 1
 
+    fresh_runtime = build_runtime("agent-fresh")
+    fresh_runtime.initialized = True
+    fresh_rate = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {"name": "override_rate_get", "arguments": {}},
+            }
+        ),
+        fresh_runtime,
+    )[0]["result"]["structuredContent"]
+    assert fresh_rate["sample_size"] == 1
+
 
 def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
     runtime, _store = _runtime(tmp_path)

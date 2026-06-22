@@ -1721,7 +1721,9 @@ def _simple_engine_records(runtime: McpRuntime) -> list[Any]:
     for engine in (runtime.engine, runtime.coached_engine):
         if engine is not None:
             records.extend(engine.records())
-    return _dedupe_records(records)
+    if records or runtime.engine is not None or runtime.coached_engine is not None:
+        return _dedupe_records(records)
+    return _engine(runtime).records()
 
 
 def _verified_records(runtime: McpRuntime) -> list[Any]:
