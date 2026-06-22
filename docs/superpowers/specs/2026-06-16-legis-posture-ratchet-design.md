@@ -64,7 +64,7 @@ v1 closes this by **routing the API by policy, exactly like MCP**, rather than b
 
 ## 4. The posture ledger
 
-A new small append-only, hash-chained ledger at **`.weft/legis/posture.db`** (sibling to the existing audit stores; consistent with `weft-store-consolidation`). It reuses `src/legis/store/audit_store.py` machinery rather than introducing a new crypto/storage stack. The **current floor is the last record.**
+A new small append-only, hash-chained ledger at **`.weft/legis/legis-posture.db`** (sibling to the existing audit stores; consistent with `weft-store-consolidation`). It reuses `src/legis/store/audit_store.py` machinery rather than introducing a new crypto/storage stack. The **current floor is the newest authoritative floor record** (`GENESIS`, `TRANSITION`, or `KEY_RESET`); metadata tails such as `OPERATOR_SESSION_OPENED` are skipped and cannot lower the effective floor.
 
 Record shape:
 
@@ -82,12 +82,12 @@ Canonicalization reuses the existing `canonical.py` contract (the byte-for-byte 
 
 ### Precedence / source-of-truth
 - The **signed ledger floor is authoritative.** The `cells.toml`/env registry is layered *above* it via the `max(...)` rule and can never lower the effective cell below the floor.
-- **Absent/empty ledger** (genuinely uninstalled, or deleted store) → the floor is a **no-op (identity floor `chill`)**, deferring to the registry's own default. That default is itself fail-closed (`fail_closed_policy_cells()` → `structured`) **in production**, so a deleted/uninstalled ledger still yields `structured` there and can never silently mean "do nothing"; only under the explicit `LEGIS_DEV_DEFAULT_CELLS` dev opt-in does it stay `chill` (preserving the N3 keyless-chill acceptance). The floor only ever **raises** the effective cell, once an operator has written a `GENESIS`/`TRANSITION`. *(Reconciled 2026-06-17 during implementation: forcing `structured` over an absent ledger broke the dev opt-in, the N3 acceptance, and the `build_runtime` no-local-state invariant; deferring to the already-fail-closed registry default preserves all three while staying fail-closed in production. `build_runtime` also opens the ledger `initialize=False` so launching the server never creates the store.)*
+- **Absent/empty ledger** (genuinely uninstalled, deleted store, or initialized without `GENESIS`) → the floor is **`structured`**, fail-closed. `LEGIS_DEV_DEFAULT_CELLS=1` can still make the raw registry default `chill`, but the posture floor is authoritative and a missing ledger raises the effective cell to `structured`, never self-clear. The floor only ever **raises** the effective cell, once an operator has written a `GENESIS`/`TRANSITION`/`KEY_RESET`. `build_runtime` still opens the ledger `initialize=False` so launching the server never creates the store.
 
 ## 5. Install behavior
 
 `legis install` with no prior posture ledger:
-1. Creates `.weft/legis/posture.db` and writes the **`GENESIS` record: `floor = chill`**.
+1. Creates `.weft/legis/legis-posture.db` and writes the **`GENESIS` record: `floor = chill`**.
 2. **Mints the operator key** — `secrets.token_hex(32)`. This is net-new behaviour: `src/legis/config.py:31` currently states Legis touches no key material, and this design **explicitly amends that doctrine** for this one operator-authority key.
 3. Hands the key to the **chosen custody backend** (§6). What lands in the ledger is the key **fingerprint + backend id**, never the key.
 

@@ -1311,9 +1311,11 @@ def install_posture(
     url = posture_db_url_for_install()
     ledger = PostureLedger(url, initialize=True)
 
-    # Idempotency guard (spec §5): an existing GENESIS or KEY_RESET tail means
-    # the epoch is already established — re-mint nothing, append nothing.
-    if ledger.store.get_latest_sequence_and_hash()[0] != 0:
+    # Idempotency guard (spec §5): an existing GENESIS or KEY_RESET means the
+    # epoch is already established — re-mint nothing, append nothing. A
+    # metadata-only ledger has no epoch and remains recoverable: append GENESIS
+    # below rather than treating OPERATOR_SESSION_OPENED as install completion.
+    if ledger.current_epoch_fingerprint() is not None:
         return ledger.current_epoch_fingerprint()
 
     # The env escape hatch SIGNS with LEGIS_OPERATOR_KEY (EnvSigner), so GENESIS

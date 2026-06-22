@@ -154,7 +154,11 @@ def test_build_runtime_wires_env_configured_openrouter_judge(tmp_path, monkeypat
     monkeypatch.setenv("OPENROUTER_API_KEY", "secret-key")
     monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov-env.db'}")
     monkeypatch.setattr(OpenRouterLLMClient, "__init__", fake_init)
-    monkeypatch.setattr(OpenRouterLLMClient, "complete", lambda self, prompt: "ACCEPTED\nok")
+    monkeypatch.setattr(
+        OpenRouterLLMClient,
+        "complete",
+        lambda self, prompt: '{"verdict":"ACCEPTED","rationale":"ok"}',
+    )
 
     runtime = build_runtime("agent-launch")
 
@@ -168,6 +172,52 @@ def test_build_runtime_wires_env_configured_openrouter_judge(tmp_path, monkeypat
         ast_path="ap",
     )
     assert result.judge_model == "openrouter:test-model"
+
+
+def test_build_runtime_wires_env_judge_for_simple_coached_override(tmp_path, monkeypatch):
+    from legis.enforcement.llm_client import OpenRouterLLMClient
+    from legis.mcp import build_runtime
+
+    def fake_init(self, config, *, fetch=None):
+        self.model_id = "openrouter:test-model"
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov-env.db'}")
+    monkeypatch.setenv("LEGIS_JUDGE_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret")
+    monkeypatch.setattr(OpenRouterLLMClient, "__init__", fake_init)
+    monkeypatch.setattr(
+        OpenRouterLLMClient,
+        "complete",
+        lambda self, prompt: '{"verdict":"ACCEPTED","rationale":"ok"}',
+    )
+    runtime = build_runtime("agent-launch")
+    runtime.initialized = True
+    runtime.cell_registry = PolicyCellRegistry(default_cell="coached")
+    runtime.posture_ledger = _chill_posture_ledger(tmp_path)
+
+    result = _run(
+        _messages(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "override_submit",
+                    "arguments": {
+                        "policy": "review.rationale",
+                        "entity": "src/x.py:f",
+                        "rationale": "specific rationale",
+                    },
+                },
+            }
+        ),
+        runtime,
+    )[0]["result"]["structuredContent"]
+
+    assert result["outcome"] == "ACCEPTED_BY_JUDGE"
+    assert result["cell"] == "coached"
+    assert result["judge_model"] == "openrouter:test-model"
 
 
 def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):

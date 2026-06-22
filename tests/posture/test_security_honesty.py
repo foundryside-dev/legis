@@ -91,6 +91,24 @@ def _open_session(*, backend_id: str = "keychain", unlock_ref=None, signer):
     )
 
 
+def _open_recorded_session(
+    ledger: PostureLedger,
+    *,
+    backend_id: str = "keychain",
+    unlock_ref=None,
+    signer,
+):
+    sess = _open_session(backend_id=backend_id, unlock_ref=unlock_ref, signer=signer)
+    ledger.session_opened(
+        operator_id=sess.operator_id,
+        enabled_at="t-session",
+        ttl=sess.ttl,
+        keychain_auth_ref=sess.unlock_ref,
+        session_id=sess.session_id,
+    )
+    return sess
+
+
 def _all_backends(key_hex: str):
     """Construct one of each custody backend over the SAME known key.
 
@@ -125,7 +143,7 @@ def test_tty_session_expiry(tmp_path):
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
     sess_path = session_mod.operator_session_path()
 
-    _open_session(signer=_MemSigner(key_bytes))
+    _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
     # Force the window's expiry into the past without sleeping.
     data = json.loads(sess_path.read_text(encoding="utf-8"))
     data["expires_at"] = time.time() - 10
@@ -146,7 +164,7 @@ def test_tty_session_expiry(tmp_path):
     )
     assert result.accepted is False
     assert result.reason == REFUSED_NO_SESSION
-    assert len(ledger.store.read_all()) == 1  # only GENESIS
+    assert len(ledger.store.read_all()) == 2  # GENESIS + recorded expired session
     assert ledger.read_floor() == "chill"
 
 
@@ -196,7 +214,7 @@ def test_rekey_preserves_existing_floor(tmp_path):
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
 
     # Elevate the floor first so a reset-downgrade regression is visible.
-    _open_session(signer=_MemSigner(key_bytes))
+    _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
     set_floor(
         "protected",
         ledger=ledger,
@@ -229,7 +247,7 @@ def test_every_signature_carries_session_id(tmp_path):
     key_bytes = bytes.fromhex(key_hex)
     ledger, _ = _genesis(tmp_path, key_hex=key_hex)
 
-    sess = _open_session(signer=_MemSigner(key_bytes))
+    sess = _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
     set_floor(
         "structured",
         ledger=ledger,
@@ -264,7 +282,7 @@ def test_every_signature_carries_session_id(tmp_path):
     try:
         with pytest.warns(InsecureEnvKeyWarning):
             env_signer = EnvSigner(insecure_env=True)
-        env_sess = _open_session(backend_id="env", signer=env_signer)
+        env_sess = _open_recorded_session(ledger, backend_id="env", signer=env_signer)
         env_result = set_floor(
             "structured",
             ledger=ledger,

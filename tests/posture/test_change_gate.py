@@ -134,6 +134,24 @@ def _open_session(*, backend_id: str = "keychain", unlock_ref=None, signer=None)
     )
 
 
+def _open_recorded_session(
+    ledger: PostureLedger,
+    *,
+    backend_id: str = "keychain",
+    unlock_ref=None,
+    signer=None,
+):
+    sess = _open_session(backend_id=backend_id, unlock_ref=unlock_ref, signer=signer)
+    ledger.session_opened(
+        operator_id=sess.operator_id,
+        enabled_at="t-session",
+        ttl=sess.ttl,
+        keychain_auth_ref=sess.unlock_ref,
+        session_id=sess.session_id,
+    )
+    return sess
+
+
 def test_set_refused_without_session(tmp_path):
     key = b"k" * 32
     ledger, fp = _genesis(tmp_path, key)
@@ -187,7 +205,7 @@ def test_set_refused_with_forged_session_file(tmp_path, _session_dir):
 def test_set_refused_when_signer_self_attests_fingerprint(tmp_path):
     key = b"k" * 32
     ledger, fp = _genesis(tmp_path, key)
-    _open_session()
+    _open_recorded_session(ledger, signer=_FakeFingerprintSigner(fp))
 
     result = set_floor(
         "structured",
@@ -199,14 +217,14 @@ def test_set_refused_when_signer_self_attests_fingerprint(tmp_path):
     )
 
     assert result.accepted is False
-    assert len(ledger.store.read_all()) == 1
+    assert len(ledger.store.read_all()) == 2
     assert ledger.read_floor() == "chill"
 
 
 def test_set_refused_fingerprint_mismatch(tmp_path):
     key = b"k" * 32
     ledger, fp = _genesis(tmp_path, key)
-    _open_session()
+    _open_recorded_session(ledger)
     # Signer for a DIFFERENT key than the ledger's current epoch.
     other = _MemSigner(b"other-key-bytes-................")
     result = set_floor(
@@ -218,14 +236,14 @@ def test_set_refused_fingerprint_mismatch(tmp_path):
         clock=FixedClock("t1"),
     )
     assert result.accepted is False
-    assert len(ledger.store.read_all()) == 1  # no record
+    assert len(ledger.store.read_all()) == 2  # no transition
     assert ledger.read_floor() == "chill"
 
 
 def test_set_refused_on_signer_error(tmp_path):
     key = b"k" * 32
     ledger, fp = _genesis(tmp_path, key)
-    _open_session()
+    _open_recorded_session(ledger)
     result = set_floor(
         "structured",
         ledger=ledger,
@@ -236,7 +254,7 @@ def test_set_refused_on_signer_error(tmp_path):
     )
     assert result.accepted is False
     # No half-written record (append_signed not committed).
-    assert len(ledger.store.read_all()) == 1
+    assert len(ledger.store.read_all()) == 2
     assert ledger.read_floor() == "chill"
 
 
@@ -247,7 +265,11 @@ def test_set_refused_on_wrong_passphrase(tmp_path):
     ledger = PostureLedger(_url(tmp_path), initialize=True)
     fp = key_fingerprint(key)
     ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
-    _open_session(backend_id="age-file", signer=_MemSigner(bytes.fromhex(key)))
+    _open_recorded_session(
+        ledger,
+        backend_id="age-file",
+        signer=_MemSigner(bytes.fromhex(key)),
+    )
 
     blob = wrap_key(key, "correct-passphrase")
     signer = AgeFileSigner(blob=blob, passphrase_cb=lambda: "WRONG-passphrase")
@@ -269,7 +291,7 @@ def test_set_refused_on_wrong_passphrase(tmp_path):
 def test_set_accepted_with_valid_session(tmp_path):
     key = b"k" * 32
     ledger, fp = _genesis(tmp_path, key)
-    sess = _open_session()
+    sess = _open_recorded_session(ledger)
     result = set_floor(
         "structured",
         ledger=ledger,
@@ -281,7 +303,7 @@ def test_set_accepted_with_valid_session(tmp_path):
     assert result.accepted is True
     # Exactly one TRANSITION appended.
     records = ledger.store.read_all()
-    assert len(records) == 2
+    assert len(records) == 3
     rec = records[-1]
     assert rec.payload["kind"] == "TRANSITION"
     assert rec.payload["floor"] == "structured"
@@ -296,11 +318,32 @@ def test_set_accepted_with_valid_session(tmp_path):
     assert enf_signing.verify(fields, sig, key) is True
 
 
+def test_set_refused_when_session_file_has_no_ledger_open_record(tmp_path):
+    key = b"k" * 32
+    ledger, fp = _genesis(tmp_path, key)
+    sess = _open_session()
+
+    result = set_floor(
+        "structured",
+        ledger=ledger,
+        signer=_MemSigner(key),
+        agent_id="op",
+        rationale="tighten",
+        clock=FixedClock("t1"),
+    )
+
+    assert result.accepted is False
+    assert result.reason == "session_not_recorded"
+    assert result.session_id == sess.session_id
+    assert len(ledger.store.read_all()) == 1
+    assert ledger.read_floor() == "chill"
+
+
 def test_set_accepts_non_extractable_signer_with_internal_verifier(tmp_path):
     key = b"k" * 32
     ledger, _ = _genesis(tmp_path, key)
     signer = _NonExtractableSigner(key)
-    _open_session(signer=signer)
+    _open_recorded_session(ledger, signer=signer)
 
     result = set_floor(
         "structured",
@@ -318,7 +361,7 @@ def test_set_accepts_non_extractable_signer_with_internal_verifier(tmp_path):
 def test_every_signature_carries_session_id(tmp_path):
     key = b"k" * 32
     ledger, fp = _genesis(tmp_path, key)
-    sess = _open_session()
+    sess = _open_recorded_session(ledger)
     set_floor(
         "coached",
         ledger=ledger,
@@ -327,7 +370,7 @@ def test_every_signature_carries_session_id(tmp_path):
         rationale="r",
         clock=FixedClock("t1"),
     )
-    rec = ledger.store.read_by_seq(2)
+    rec = ledger.store.read_by_seq(3)
     assert rec is not None
     assert rec.payload["session_id"] is not None
     assert rec.payload["session_id"] == sess.session_id
@@ -343,7 +386,7 @@ def test_every_signature_carries_session_id(tmp_path):
         clock=FixedClock("t2"),
     )
     assert result.accepted is False
-    assert len(ledger.store.read_all()) == 2  # still just genesis + one transition
+    assert len(ledger.store.read_all()) == 3  # genesis + session-open + one transition
 
 
 def test_exactly_one_record_per_outcome(tmp_path):
@@ -364,7 +407,7 @@ def test_exactly_one_record_per_outcome(tmp_path):
     assert len(ledger.store.read_all()) == before
 
     # Success adds exactly 1.
-    _open_session()
+    _open_recorded_session(ledger)
     r2 = set_floor(
         "structured",
         ledger=ledger,
@@ -374,7 +417,7 @@ def test_exactly_one_record_per_outcome(tmp_path):
         clock=FixedClock("t2"),
     )
     assert r2.accepted is True
-    assert len(ledger.store.read_all()) == before + 1
+    assert len(ledger.store.read_all()) == before + 2
 
 
 def test_set_refused_fingerprint_checked_against_ledger_epoch(tmp_path):
@@ -385,7 +428,7 @@ def test_set_refused_fingerprint_checked_against_ledger_epoch(tmp_path):
     """
     key = b"k" * 32
     ledger, fp = _genesis(tmp_path, key)
-    _open_session()
+    _open_recorded_session(ledger)
     # Wrong-epoch signer -> refused.
     refused = set_floor(
         "structured",
@@ -396,7 +439,7 @@ def test_set_refused_fingerprint_checked_against_ledger_epoch(tmp_path):
         clock=FixedClock("t1"),
     )
     assert refused.accepted is False
-    assert len(ledger.store.read_all()) == 1
+    assert len(ledger.store.read_all()) == 2
     # Right-epoch signer -> accepted.
     accepted = set_floor(
         "structured",

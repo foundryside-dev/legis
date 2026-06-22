@@ -176,6 +176,30 @@ def test_install_posture_env_backend_opt_in(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / ".weft" / "legis" / "operator.age").exists()
 
 
+def test_install_posture_recovers_metadata_only_ledger(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    from legis.posture import PostureLedger
+
+    ledger = PostureLedger(install.posture_db_url_for_install(), initialize=True)
+    ledger.session_opened(
+        operator_id="alice",
+        enabled_at="t0",
+        ttl=300,
+        keychain_auth_ref=None,
+        session_id="sess-orphan",
+    )
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY", "ab" * 32)
+
+    rc = main(["install", "--posture", "--insecure-key-in-env"])
+
+    assert rc == 0
+    records = PostureLedger(install.posture_db_url_for_install(), initialize=False).store.read_all()
+    assert [record.payload["kind"] for record in records] == [
+        "OPERATOR_SESSION_OPENED",
+        "GENESIS",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # MCP-boot refresh wiring
 # ---------------------------------------------------------------------------

@@ -145,3 +145,29 @@ def test_coached_accepted_post_returns_201(tmp_path):
     assert body["cell"] == "coached"
     assert body["verdict"] == "ACCEPTED"
     assert body["judge_model"] == "judge@1"
+
+
+def test_default_api_runtime_uses_env_judge_for_coached_cell(tmp_path, monkeypatch):
+    from legis.enforcement.llm_client import OpenRouterLLMClient
+
+    def fake_init(self, config, *, fetch=None):
+        self.model_id = "openrouter:test-model"
+
+    monkeypatch.setenv("LEGIS_GOVERNANCE_DB", f"sqlite:///{tmp_path / 'gov-env.db'}")
+    monkeypatch.setenv("LEGIS_JUDGE_PROVIDER", "openrouter")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "secret")
+    monkeypatch.setattr(OpenRouterLLMClient, "__init__", fake_init)
+    monkeypatch.setattr(
+        OpenRouterLLMClient,
+        "complete",
+        lambda self, prompt: '{"verdict":"ACCEPTED","rationale":"ok"}',
+    )
+
+    client = TestClient(create_app(cell_registry=_registry(), posture_ledger=_genesis_ledger(tmp_path)))
+
+    resp = client.post("/overrides", json=COACHED_BODY)
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["cell"] == "coached"
+    assert body["verdict"] == "ACCEPTED"
+    assert body["judge_model"] == "openrouter:test-model"

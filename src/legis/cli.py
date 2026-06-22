@@ -460,11 +460,18 @@ def _run_posture(args) -> int:
         # doctor-flagged record IS the accountability. The new key bytes reach
         # ONLY custody via the install key-sink; the ledger stores the fingerprint
         # alone.
-        from legis.install import _default_key_sink, choose_install_backend
+        from legis.install import OperatorKeyCustodyError, _default_key_sink, choose_install_backend
 
         backend = args.backend
         if backend is None:
             backend = choose_install_backend(insecure_env=False)
+        if backend == "env":
+            print(
+                "posture rekey: refused — env custody cannot persist the freshly "
+                "minted rekey key from this child process; use age-file or keychain.",
+                file=sys.stderr,
+            )
+            return 1
         ledger = PostureLedger(posture_db_url(), initialize=True)
         try:
             new_fp = ledger.rekey(
@@ -473,7 +480,7 @@ def _run_posture(args) -> int:
                 key_sink=_default_key_sink,
                 backend=backend,
             )
-        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+        except (OperatorKeyCustodyError, RuntimeError, ValueError) as exc:
             print(f"posture rekey: refused — {exc}", file=sys.stderr)
             return 1
         print(
@@ -496,6 +503,7 @@ def _run_operator(args) -> int:
         PostureLedger,
         end_session,
         open_session,
+        persist_session,
     )
 
     command = getattr(args, "operator_command", None)
@@ -535,6 +543,28 @@ def _run_operator(args) -> int:
             print(f"operator enable: refused — {exc}", file=sys.stderr)
             return 1
 
+        ledger = PostureLedger(posture_db_url(), initialize=False)
+        epoch_fp = ledger.current_epoch_fingerprint()
+        if epoch_fp is None:
+            print(
+                "operator enable: refused — no posture key epoch exists yet; run "
+                "`legis install --posture` after configuring key custody.",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            signer_fp = signer.fingerprint()
+        except Exception as exc:  # noqa: BLE001 — custody gap is a fail-closed refusal
+            print(f"operator enable: refused — cannot read signer fingerprint: {exc}", file=sys.stderr)
+            return 1
+        if signer_fp != epoch_fp:
+            print(
+                "operator enable: refused — signer fingerprint does not match the "
+                "current posture key epoch.",
+                file=sys.stderr,
+            )
+            return 1
+
         # The keychain item id is the only non-null unlock_ref (D5); env/age-file
         # carry None (re-prompt / resident plaintext is the unlock).
         unlock_ref = getattr(signer, "_item_id", None)
@@ -546,11 +576,13 @@ def _run_operator(args) -> int:
             backend_id=backend_id,
             unlock_ref=unlock_ref,
             signer=signer,
+            persist=False,
         )
         # The env path STILL opens a session (D3): every TRANSITION it later
         # produces carries this session_id, so there is no auth path that
-        # bypasses session accountability.
-        ledger = PostureLedger(posture_db_url(), initialize=False)
+        # bypasses session accountability. Append the audit event before writing
+        # the session file; a ledger failure must not leave a usable unaudited
+        # elevation window behind.
         ledger.session_opened(
             operator_id=operator_id,
             enabled_at=clock.now_iso(),
@@ -558,6 +590,7 @@ def _run_operator(args) -> int:
             keychain_auth_ref=unlock_ref,
             session_id=session.session_id,
         )
+        persist_session(session)
         if insecure_env:
             print(
                 "WARNING: --insecure-key-in-env uses the plaintext LEGIS_OPERATOR_KEY "

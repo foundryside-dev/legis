@@ -65,3 +65,13 @@ def test_release_publish_requires_live_loomweave_conformance():
         "LEGIS_LOOMWEAVE_HMAC_KEY" not in step.get("env", {})
         for step in non_oracle_steps
     )
+
+
+def test_release_workflow_repeats_publication_quality_gates():
+    steps = _release_jobs()["build"]["steps"]
+    commands = "\n".join(str(step.get("run", "")) for step in steps)
+
+    assert "uv run ruff check src" in commands
+    assert "uv run mypy src/legis" in commands
+    assert "uv lock --check" in commands
+    assert "uv run legis policy-boundary-check --root src --repo-root ." in commands

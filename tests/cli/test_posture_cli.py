@@ -17,6 +17,7 @@ import hashlib
 import pytest
 
 from legis.cli import main
+from legis.config import posture_db_url
 from legis.posture import session as session_mod
 from legis.posture.ledger import PostureLedger
 from legis.posture.signing import _RawKeySigner
@@ -74,29 +75,45 @@ def test_posture_set_with_session(posture_env, capsys, monkeypatch):
     # Open an env-backed session and put the matching key in the env so the CLI
     # can build an EnvSigner whose fingerprint matches the ledger epoch.
     monkeypatch.setenv("LEGIS_OPERATOR_KEY", key_hex)
-    session_mod.open_session(
+    sess = session_mod.open_session(
         ttl=300,
         operator_id="operator@example",
         backend_id="env",
         unlock_ref=None,
         signer=_RawKeySigner(key_hex),
     )
+    PostureLedger(posture_db_url(), initialize=False).session_opened(
+        operator_id=sess.operator_id,
+        enabled_at="t-session",
+        ttl=sess.ttl,
+        keychain_auth_ref=sess.unlock_ref,
+        session_id=sess.session_id,
+    )
     from legis.posture import InsecureEnvKeyWarning
 
     with pytest.warns(InsecureEnvKeyWarning):
         rc = main(["posture", "set", "structured"])
     assert rc == 0
-    from legis.config import posture_db_url
 
     assert PostureLedger(posture_db_url(), initialize=False).read_floor() == "structured"
     assert fp  # sanity: a real fingerprint was minted
 
 
-def test_posture_rekey_preserves_existing_floor(posture_env, capsys, monkeypatch):
+def test_posture_rekey_refuses_env_backend(posture_env, capsys):
+    _genesis(b"k" * 32)
+
+    rc = main(["posture", "rekey", "--backend", "env"])
+
+    assert rc == 1
+    err = capsys.readouterr().err.lower()
+    assert "env" in err
+    assert "persist" in err or "custody" in err
+
+
+def test_posture_rekey_preserves_existing_floor_with_age_file(posture_env, capsys, monkeypatch):
     # Phase 11 / Task 11.1 — `legis posture rekey` mints a new epoch while
-    # preserving the standing floor and history. The env backend's sink is a
-    # no-op (the new key goes to LEGIS_OPERATOR_KEY out of band), so no prior key
-    # is needed — rekey is the lost-key recovery path.
+    # preserving the standing floor and history, handing the new key to durable
+    # custody before the KEY_RESET is written.
     from legis.config import posture_db_url
 
     key_hex = "ab" * 32
@@ -104,12 +121,19 @@ def test_posture_rekey_preserves_existing_floor(posture_env, capsys, monkeypatch
     fp0 = _genesis(key)
     # Move the floor up so a reset-downgrade regression is visible.
     monkeypatch.setenv("LEGIS_OPERATOR_KEY", key_hex)
-    session_mod.open_session(
+    sess = session_mod.open_session(
         ttl=300,
         operator_id="op@example",
         backend_id="env",
         unlock_ref=None,
         signer=_RawKeySigner(key_hex),
+    )
+    PostureLedger(posture_db_url(), initialize=False).session_opened(
+        operator_id=sess.operator_id,
+        enabled_at="t-session",
+        ttl=sess.ttl,
+        keychain_auth_ref=sess.unlock_ref,
+        session_id=sess.session_id,
     )
     from legis.posture import InsecureEnvKeyWarning
 
@@ -117,7 +141,8 @@ def test_posture_rekey_preserves_existing_floor(posture_env, capsys, monkeypatch
         assert main(["posture", "set", "structured"]) == 0
     assert PostureLedger(posture_db_url(), initialize=False).read_floor() == "structured"
 
-    rc = main(["posture", "rekey", "--backend", "env"])
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", "correct horse")
+    rc = main(["posture", "rekey", "--backend", "age-file"])
     assert rc == 0
     ledger = PostureLedger(posture_db_url(), initialize=False)
     assert ledger.read_floor() == "structured"
@@ -126,13 +151,14 @@ def test_posture_rekey_preserves_existing_floor(posture_env, capsys, monkeypatch
     assert ledger.store.verify_integrity() is True
 
 
-def test_posture_rekey_needs_no_session(posture_env, capsys):
+def test_posture_rekey_needs_no_session(posture_env, capsys, monkeypatch):
     # Rekey requires NO open elevation session and NO old key — it is the
     # recovery path for a lost custody key.
     from legis.config import posture_db_url
 
     _genesis(b"k" * 32)
-    rc = main(["posture", "rekey", "--backend", "env"])
+    monkeypatch.setenv("LEGIS_OPERATOR_KEY_AGE_PASSPHRASE", "correct horse")
+    rc = main(["posture", "rekey", "--backend", "age-file"])
     assert rc == 0
     assert PostureLedger(posture_db_url(), initialize=False).read_floor() == "chill"
     # Doctor would now flag the unacknowledged reset (Task 10.2); the CLI says so.

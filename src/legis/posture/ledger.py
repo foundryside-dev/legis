@@ -175,12 +175,14 @@ class PostureLedger:
     ) -> None:
         """Write the keyless ``GENESIS`` record (``floor=chill``), once.
 
-        Idempotent / re-key-safe: if the store already has ANY record (an
-        existing GENESIS, or a KEY_RESET tail), this is a no-op — a second
-        install must never append a second GENESIS, and a rekey'd ledger must
-        not be re-genesised.
+        Idempotent / re-key-safe: if the store already has an epoch-opening
+        record (an existing GENESIS, or a KEY_RESET tail), this is a no-op — a
+        second install must never append a second GENESIS, and a rekey'd ledger
+        must not be re-genesised. Metadata-only ledgers from an interrupted old
+        operator-enable path have no epoch and remain recoverable by appending
+        GENESIS.
         """
-        if self.store.get_latest_sequence_and_hash()[0] != 0:
+        if self.current_epoch_fingerprint() is not None:
             return
         record = PostureRecord(
             kind=KIND_GENESIS,
@@ -294,6 +296,16 @@ class PostureLedger:
             }
         )
 
+    def session_opened_recorded(self, session_id: str) -> bool:
+        """True iff a matching session-open audit record exists in the ledger."""
+        for rec in self.store.read_all():
+            if (
+                rec.payload.get("kind") == KIND_SESSION_OPENED
+                and rec.payload.get("session_id") == session_id
+            ):
+                return True
+        return False
+
     def rekey(
         self,
         *,
@@ -356,6 +368,7 @@ class PostureLedger:
 # Refusal reasons (stable discriminants so callers can branch / report).
 REFUSED_NO_SESSION = "no_open_session"
 REFUSED_NO_EPOCH = "no_key_epoch"
+REFUSED_SESSION_NOT_RECORDED = "session_not_recorded"
 REFUSED_SESSION_AUTH_FAILED = "session_auth_failed"
 REFUSED_FINGERPRINT_MISMATCH = "fingerprint_mismatch"
 REFUSED_SIGNER_ERROR = "signer_error"
@@ -420,6 +433,12 @@ def set_floor(
         return PostureSetResult(
             accepted=False,
             reason=REFUSED_NO_EPOCH,
+            session_id=sess.session_id,
+        )
+    if not ledger.session_opened_recorded(sess.session_id):
+        return PostureSetResult(
+            accepted=False,
+            reason=REFUSED_SESSION_NOT_RECORDED,
             session_id=sess.session_id,
         )
     # The signer must hold the current epoch's key. Checking against the LEDGER

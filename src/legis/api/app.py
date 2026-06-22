@@ -393,7 +393,7 @@ def create_app(
     # reconciliation the ledger handle is opened ``initialize=False`` so creating
     # the app never writes posture.db — genesis is an install-time action and a
     # bare ``create_app`` must not create local state (audit H6). A missing/empty
-    # ledger reads ``None`` -> the registry's own (fail-closed) default stands.
+    # ledger reads ``None`` -> the fail-closed structured floor.
     if cell_registry is None:
         from legis.mcp import _load_policy_cell_registry
 
@@ -401,9 +401,11 @@ def create_app(
     if posture_ledger is None:
         posture_ledger = PostureLedger(posture_db_url(), initialize=False)
 
+    injected_enforcement = enforcement is not None
     state: dict[str, Any] = {
         "checks": check_surface,
         "enforcement": enforcement,
+        "coached_enforcement": enforcement if enforcement is not None and enforcement.has_judge else None,
         "grammar": grammar,
         "pulls": pull_surface,
         "cell_registry": cell_registry,
@@ -445,6 +447,26 @@ def create_app(
                 AuditStore(gov_db_url), SystemClock()
             )
         return state["enforcement"]
+
+    def coached_engine() -> EnforcementEngine | None:
+        if state["coached_enforcement"] is not None:
+            return state["coached_enforcement"]
+        if injected_enforcement:
+            return None
+        from legis.clock import SystemClock
+        from legis.enforcement.judge_factory import configured_judge_from_env
+        from legis.store.audit_store import AuditStore
+
+        judge = configured_judge_from_env("API")
+        if judge is None:
+            return None
+        state["coached_enforcement"] = EnforcementEngine(
+            AuditStore(governance_db_url()), SystemClock(), judge
+        )
+        return state["coached_enforcement"]
+
+    def simple_engine_for(cell: str) -> EnforcementEngine | None:
+        return coached_engine() if cell == "coached" else engine()
 
     def grammar_() -> PolicyGrammar:
         if state["grammar"] is None:
@@ -568,7 +590,7 @@ def create_app(
         recorded_actor = _recorded_actor(actor, body.agent_id)
 
         if cell in ("chill", "coached"):
-            simple_engine = engine()
+            simple_engine = simple_engine_for(cell)
             explanation = _explain_policy(
                 registry,
                 policy=body.policy,
@@ -582,6 +604,7 @@ def create_app(
                     status_code=404,
                     detail=f"cell {explanation.cell!r} is not enabled for override submission",
                 )
+            assert simple_engine is not None
             try:
                 result = _submit_override(
                     simple_engine,

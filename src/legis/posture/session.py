@@ -162,6 +162,7 @@ def open_session(
     unlock_ref: str | None,
     signer: _Signer,
     now: float | None = None,
+    persist: bool = True,
 ) -> Session:
     """Open (or atomically replace) the single active elevation session.
 
@@ -183,8 +184,16 @@ def open_session(
     )
     payload = {key: getattr(session, key) for key in _SESSION_SIGNED_KEYS}
     payload["session_sig"] = signer.sign(_session_signature_fields(payload))
+    session = Session(**payload)
+    if persist:
+        persist_session(session)
+    return session
+
+
+def persist_session(session: Session) -> None:
+    """Atomically write a previously signed session to the session file."""
+    payload = {key: getattr(session, key) for key in _SESSION_KEYS}
     _atomic_write_json(operator_session_path(), payload)
-    return Session(**payload)
 
 
 def load_session(*, now: float | None = None) -> Session | None:

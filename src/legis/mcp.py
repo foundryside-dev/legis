@@ -155,6 +155,7 @@ class McpRuntime:
     initialized: bool = False
     protocol_version: str | None = None
     engine: EnforcementEngine | None = None
+    coached_engine: EnforcementEngine | None = None
     identity: Any | None = None
     protected_gate: ProtectedGate | None = None
     trail_verifier: TrailVerifier | None = None
@@ -1237,13 +1238,14 @@ def _recovery_for(code: str) -> dict[str, Any]:
         ),
         "CELL_NOT_ENABLED": (
             "Two enablement tiers, by cell — both operator-enabled, out-of-band. "
-            "Simple tier (chill/coached) is reachable WITHOUT a key: the operator "
-            "maps the policy to a cell via policy/cells.toml or LEGIS_POLICY_CELLS "
+            "Simple tier is reachable WITHOUT a signing key: the operator maps "
+            "the policy to a cell via policy/cells.toml or LEGIS_POLICY_CELLS "
             "(LEGIS_DEV_DEFAULT_CELLS=1 selects the chill dev default), then "
-            "relaunches. Complex tier (structured/protected and the binding "
-            "ledger) additionally needs LEGIS_HMAC_KEY set by the operator "
-            "out-of-band, then a relaunch. The error message names which cell is "
-            "unenabled."
+            "relaunches; coached also needs LEGIS_JUDGE_PROVIDER and its "
+            "provider credentials set out-of-band. Complex tier "
+            "(structured/protected and the binding ledger) additionally needs "
+            "LEGIS_HMAC_KEY set by the operator out-of-band, then a relaunch. "
+            "The error message names which cell is unenabled."
         ),
         "UNRESOLVED_INPUT": (
             "The inline entity_sei did not resolve to a live, stable identity, "
@@ -1521,6 +1523,27 @@ def _engine(runtime: McpRuntime) -> EnforcementEngine:
     return runtime.engine
 
 
+def _coached_engine(runtime: McpRuntime) -> EnforcementEngine | None:
+    if runtime.coached_engine is not None:
+        return runtime.coached_engine
+    if runtime.engine is not None and runtime.engine.has_judge:
+        return runtime.engine
+    from legis.config import governance_db_url
+    from legis.enforcement.judge_factory import configured_judge_from_env
+
+    judge = configured_judge_from_env("MCP")
+    if judge is None:
+        return None
+    runtime.coached_engine = EnforcementEngine(
+        AuditStore(governance_db_url()), SystemClock(), judge
+    )
+    return runtime.coached_engine
+
+
+def _simple_engine_for_cell(runtime: McpRuntime, cell: str) -> EnforcementEngine | None:
+    return _coached_engine(runtime) if cell == "coached" else _engine(runtime)
+
+
 def _checks(runtime: McpRuntime) -> CheckSurface:
     if runtime.check_surface is None:
         from legis.config import check_db_url
@@ -1707,11 +1730,14 @@ def _verified_records(runtime: McpRuntime) -> list[Any]:
 def _tool_policy_explain(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
     # D0: explain through the FlooredRegistry — explain_policy floors
     # transparently because FlooredRegistry IS-A PolicyCellRegistry (D1).
+    policy = _require(args, "policy")
+    registry = _floored_registry(runtime)
+    cell = registry.cell_for(policy)
     explanation = explain_policy(
-        _floored_registry(runtime),
-        policy=_require(args, "policy"),
+        registry,
+        policy=policy,
         entity=_require(args, "entity"),
-        engine=runtime.engine,
+        engine=_simple_engine_for_cell(runtime, cell) if cell in ("chill", "coached") else None,
         protected_gate=runtime.protected_gate,
         signoff_gate=runtime.signoff_gate,
     )
@@ -1735,7 +1761,7 @@ def _tool_policy_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, An
         # reports enabled:false without LEGIS_HMAC_KEY (no false-green).
         explanation = explain_cell(
             cell,
-            engine=runtime.engine,
+            engine=_simple_engine_for_cell(runtime, cell) if cell in ("chill", "coached") else None,
             protected_gate=runtime.protected_gate,
             signoff_gate=runtime.signoff_gate,
         )
@@ -1781,9 +1807,9 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     # genuine retry returns the original outcome (with a floor_warning below).
     raw_cell = _registry(runtime).cell_for(policy)
     simple_engine = (
-        _engine(runtime)
+        _simple_engine_for_cell(runtime, dispatch_cell)
         if dispatch_cell in ("chill", "coached")
-        else runtime.engine
+        else None
     )
     explanation = explain_policy(
         registry,
@@ -1852,8 +1878,9 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
                 )
             return _tool_result(response)
     if explanation.cell in ("chill", "coached"):
+        assert simple_engine is not None
         override_result = submit_override(
-            _engine(runtime),
+            simple_engine,
             identity=runtime.identity,
             policy=policy,
             entity=entity,

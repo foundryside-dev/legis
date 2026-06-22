@@ -26,8 +26,26 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Verify lockfile
+        run: uv lock --check
+
+      - name: Run lint
+        run: uv run ruff check src
+
       - name: Test gate (never publish a red build)
-        run: uv run pytest -q
+        run: uv run pytest --cov=legis --cov-report=term-missing --cov-report=json --cov-fail-under=88
+
+      - name: Enforce per-package coverage floors
+        run: uv run python scripts/check_coverage_floors.py
+
+      - name: Run SEI conformance oracle
+        run: uv run pytest tests/conformance/test_sei_oracle.py
+
+      - name: Run type check
+        run: uv run mypy src/legis
+
+      - name: Run policy-boundary honesty gate
+        run: uv run legis policy-boundary-check --root src --repo-root .
 
       - name: Verify release tag matches project version
         env:
