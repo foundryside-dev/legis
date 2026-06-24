@@ -145,19 +145,30 @@ def test_runtime_warpline_referenced_in_no_verdict_path_function():
     # verdict-path / honesty-read source. NOTE inspect.getsource is a SHALLOW text
     # scan — it sees only these named functions, not helpers they call — so this
     # COMPLEMENTS, never replaces, the byte-identity test above.
+    #
+    # Tool-handler coverage is DERIVED from _TOOL_HANDLERS so that any future
+    # handler is covered by construction.  The single legitimate advisory handler
+    # (_tool_warpline_preflight_get) is excluded by name — any other handler that
+    # starts reading .warpline will cause this test to fail immediately.
     import legis.mcp as mcp
+    from legis.service.governance import read_sei_attestations
 
-    verdict_path_fns = [
-        mcp._tool_policy_evaluate,
+    # --- derived: every tool handler except the one legitimate advisory handler ---
+    _WARPLINE_HANDLER = "_tool_warpline_preflight_get"
+    for name, handler in mcp._TOOL_HANDLERS.items():
+        if handler.__name__ == _WARPLINE_HANDLER:
+            continue
+        src = inspect.getsource(handler)
+        assert ".warpline" not in src, (
+            f"tool handler {handler.__name__!r} (tool={name!r}) references warpline"
+        )
+
+    # --- explicit: non-handler verdict internals not in _TOOL_HANDLERS ---
+    for fn in [
         mcp._engine,
         mcp._coached_engine,
         mcp._governance_trail_records,
-        mcp._tool_identity_gap_list,
-        mcp._tool_lineage_integrity_get,
-        mcp._tool_policy_boundary_check,
-        mcp._tool_signoff_status_get,
-        mcp._tool_override_submit,
-    ]
-    for fn in verdict_path_fns:
+        read_sei_attestations,
+    ]:
         src = inspect.getsource(fn)
         assert ".warpline" not in src, f"{fn.__name__} references warpline"
