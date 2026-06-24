@@ -302,6 +302,8 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
         "doctor_get",
         "policy_boundary_check",
         "posture_get",
+        "warpline_preflight_get",
+        "attestation_get",
     }
     # posture_get is the dedicated read-only posture surface (Phase 8); the
     # change gate (posture set) stays operator/CLI only — no posture_set tool.
@@ -2119,6 +2121,17 @@ def test_c8_no_agent_reachable_enablement_or_signing_surface():
     assert props == {"scan", "cell", "severity_map", "fail_on"}
     for forbidden_arg in ("allow_dirty", "artifact_key", "hmac_key", "agent_id"):
         assert forbidden_arg not in props
+
+
+def test_warpline_tools_introduce_no_new_error_codes(tmp_path):
+    # warpline_preflight_get / attestation_get degrade to success-envelope
+    # status:"unavailable"; their only error path is the pre-existing
+    # AUDIT_INTEGRITY_FAILURE. No new error code => no _recovery_for / pinned-code change.
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+    assert not call_tool(runtime, "warpline_preflight_get", {"base": "x"}).get("isError")
+    assert not call_tool(runtime, "attestation_get", {"sei": "x#1"}).get("isError")
 
 
 def test_git_rename_feed_get_is_listed():
