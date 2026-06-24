@@ -3493,3 +3493,34 @@ def test_attestation_get_tamper_yields_audit_integrity_failure(tmp_path):
     result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
     assert result.get("isError")
     assert result["structuredContent"]["error_code"] == "AUDIT_INTEGRITY_FAILURE"
+
+
+def test_attestation_get_wired_deployment_returns_unavailable_not_false_checked(tmp_path):
+    # KEY-WIRED DEPLOYMENT HONESTY: when BOTH protected_gate AND trail_verifier
+    # are wired (the deployment that actually has real sign-offs/overrides), the
+    # pre-gate passes and read_sei_attestations is called. While the classifier
+    # is BLOCKED (Task 8), this MUST return status='unavailable' with the
+    # classifier-pending reason — NOT status='checked' with an empty attestations
+    # list, which would falsely assert "I checked this SEI and found nothing" on
+    # exactly the deployments that have real governance records.
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+
+    class _OkVerifier:
+        def verify(self, records):
+            return None
+
+    class _FakeProtectedGate:
+        def records(self):
+            return []
+
+    runtime.protected_gate = _FakeProtectedGate()
+    runtime.trail_verifier = _OkVerifier()
+    result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "unavailable"
+    assert sc["sei"] == "mod.fn#1"
+    assert sc["attestations"] == []
+    assert sc["unavailable"] and "pending" in sc["unavailable"][0]["reason"]

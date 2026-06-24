@@ -237,11 +237,20 @@ def read_sei_attestations(verified_runtime_records: list, sei: str) -> dict[str,
     BLOCKED — positive admission classifier (Task 8): which records count as an
     attestation, and the forge-proof discriminator, await owner ratification.
     Until then this surfaces ZERO attestations (fail-closed: omit everything).
+    While the positive-admission classifier is BLOCKED (Task 8), this returns
+    status='unavailable' (reason: classifier pending ratification), NOT an empty
+    status='checked' — an empty 'checked' would falsely assert "I checked this SEI
+    and found no attestation" when the classifier did not actually check (the
+    silent false-green the honesty surface forbids). Unavailable is safe under the
+    asymmetric rule: warpline reverifies.
     """
-    records = list(verified_runtime_records)  # noqa: F841  Task 8 classifier reads this
-    attestations: list[dict[str, Any]] = []
-    # Task 8: classify `records` for `sei` here once the discriminator is ratified.
-    return {"status": "checked", "sei": sei, "attestations": attestations}
+    records = list(verified_runtime_records)  # noqa: F841 - Task 8 classifier will read this
+    return {
+        "status": "unavailable",
+        "sei": sei,
+        "attestations": [],
+        "unavailable": [{"reason": "attestation classifier pending owner ratification (Task 8)"}],
+    }
 
 
 def _requires_protected_verification(payload: dict[str, Any], protected_policies) -> bool:

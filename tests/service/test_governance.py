@@ -500,10 +500,16 @@ def test_source_binding_status_is_bound_into_the_signature(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_read_sei_attestations_returns_checked_shape_on_empty_verified_trail():
+def test_read_sei_attestations_unavailable_while_classifier_blocked():
+    # While the positive-admission classifier (Task 8) is BLOCKED, the function
+    # MUST return status='unavailable' with the classifier-pending reason, NOT
+    # status='checked' with an empty list — an empty 'checked' would falsely
+    # assert "I checked this SEI and found no attestation" when the classifier
+    # did not actually check (the silent false-green the honesty surface forbids).
     from legis.service.governance import read_sei_attestations
 
     out = read_sei_attestations([], "mod.fn#1")
-    assert out["status"] == "checked"
+    assert out["status"] == "unavailable"
     assert out["sei"] == "mod.fn#1"
     assert out["attestations"] == []
+    assert out["unavailable"] and "pending" in out["unavailable"][0]["reason"]
