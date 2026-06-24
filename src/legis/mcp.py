@@ -102,6 +102,7 @@ _AGENT_TOOLS = frozenset(
         "doctor_get",
         "policy_boundary_check",
         "posture_get",
+        "warpline_preflight_get",
     }
 )
 _OVERRIDE_RATE_NOTE = "measures operator force-pasts; not movable by agent retries"
@@ -176,6 +177,7 @@ class McpRuntime:
     # which _floored_registry treats fail-closed as a missing ledger (structured).
     posture_ledger: Any | None = None
     coached_engine: EnforcementEngine | None = None
+    warpline: Any | None = None  # advisory sibling; NEVER read by a verdict path
 
 
 def _load_policy_cell_registry() -> PolicyCellRegistry:
@@ -224,6 +226,20 @@ def build_runtime(agent_id: str) -> McpRuntime:
         from legis.filigree.client import HttpFiligreeClient
 
         filigree = HttpFiligreeClient(filigree_url)
+
+    warpline = None
+    warpline_url = os.environ.get("WARPLINE_API_URL")
+    if warpline_url:
+        from legis.warpline_preflight.client import HttpWarplineClient, WarplineError
+
+        try:
+            warpline = HttpWarplineClient(warpline_url)
+        except WarplineError:
+            logging.getLogger(__name__).warning(
+                "WARPLINE_API_URL is set but invalid; warpline advisory context "
+                "disabled (governance unaffected)."
+            )
+            warpline = None
 
     protected_gate = None
     trail_verifier = None
@@ -288,6 +304,7 @@ def build_runtime(agent_id: str) -> McpRuntime:
         # install-time action (Phase 6) and build_runtime must not create local
         # state (audit H6 / the no-local-state-on-init invariant).
         posture_ledger=PostureLedger(posture_db_url(), initialize=False),
+        warpline=warpline,
     )
 
 
@@ -859,6 +876,40 @@ def tool_definitions() -> list[dict[str, Any]]:
                         },
                     },
                 },
+            ),
+        },
+        {
+            "name": "warpline_preflight_get",
+            "description": (
+                "ADVISORY preflight context from the warpline sibling: impact "
+                "radius + reverify worklist over base..head. Purely advisory — "
+                "NEVER a governance verdict. Discriminated: 'checked' carries the "
+                "advisory facts; 'unavailable' (client unconfigured, transport "
+                "failure, or payload shape mismatch) carries reasons. Never read a "
+                "missing 'checked' as 'nothing impacted'."
+            ),
+            "inputSchema": _schema(["base"], {"base": string, "head": string}),
+            "outputSchema": _one_of(
+                [
+                    _schema(
+                        ["status", "impact_radius", "reverify_worklist"],
+                        {
+                            "status": {"type": "string", "enum": ["checked"]},
+                            "impact_radius": {"type": "object"},
+                            "reverify_worklist": {"type": "object"},
+                        },
+                    ),
+                    _schema(
+                        ["status", "unavailable"],
+                        {
+                            "status": {"type": "string", "enum": ["unavailable"]},
+                            "unavailable": {
+                                "type": "array",
+                                "items": _schema(["reason"], {"reason": string}),
+                            },
+                        },
+                    ),
+                ]
             ),
         },
         {
@@ -2170,6 +2221,18 @@ def _tool_filigree_closure_gate_get(runtime: McpRuntime, args: dict[str, Any]) -
     )
 
 
+def _tool_warpline_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    from legis.service.preflight import read_warpline_preflight
+
+    return _tool_result(
+        read_warpline_preflight(
+            runtime.warpline,
+            base=_require(args, "base"),
+            head=args.get("head", "HEAD"),
+        )
+    )
+
+
 def _governance_trail_records(runtime: McpRuntime) -> list[Any]:
     """The verified governance trail the SEI lineage-honesty reads consume.
 
@@ -2441,6 +2504,7 @@ _TOOL_HANDLERS: dict[str, Callable[["McpRuntime", dict[str, Any]], dict[str, Any
     "doctor_get": _tool_doctor_get,
     "policy_boundary_check": _tool_policy_boundary_check,
     "posture_get": _tool_posture_get,
+    "warpline_preflight_get": _tool_warpline_preflight_get,
 }
 
 

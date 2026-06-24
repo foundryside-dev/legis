@@ -3363,3 +3363,75 @@ def test_check_list_target_type_schema_declares_enum_matching_handler(tmp_path):
     assert rejected["isError"] is True
     for value in _CHECK_TARGET_TYPES:
         assert value in rejected["structuredContent"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Task 3: warpline_preflight_get advisory sibling tool
+# ---------------------------------------------------------------------------
+
+
+def test_build_runtime_wires_warpline_from_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+    from legis.warpline_preflight.client import HttpWarplineClient
+
+    monkeypatch.setenv("WARPLINE_API_URL", "http://localhost:9100")
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)  # engine-only: no protected gate
+    # NOTE: build_runtime(agent_id) takes ONLY agent_id (mcp.py:200); source root
+    # and DBs are env-driven (LEGIS_SOURCE_ROOT, mcp.py:275). There is NO
+    # source_root= kwarg — passing one raises TypeError before any assertion.
+    runtime = build_runtime("agent-x")
+    assert isinstance(runtime.warpline, HttpWarplineClient)
+
+
+def test_build_runtime_leaves_warpline_unwired_without_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+
+    monkeypatch.delenv("WARPLINE_API_URL", raising=False)
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    runtime = build_runtime("agent-x")
+    assert runtime.warpline is None
+
+
+def test_build_runtime_degrades_warpline_to_none_on_bad_url(monkeypatch, tmp_path):
+    # A misconfigured ADVISORY url must NOT crash the sole governance authority
+    # at startup; it degrades to no advisory context (governance unaffected).
+    from legis.mcp import build_runtime
+
+    monkeypatch.setenv("WARPLINE_API_URL", "not-a-valid-url")
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-x")
+    assert runtime.warpline is None
+
+
+def test_warpline_preflight_get_unavailable_when_unwired(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # warpline defaults to None
+    result = call_tool(runtime, "warpline_preflight_get", {"base": "aaa"})
+    assert not result.get("isError")
+    assert result["structuredContent"] == {
+        "status": "unavailable",
+        "unavailable": [{"reason": "warpline client not configured"}],
+    }
+
+
+def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
+    from legis.mcp import call_tool
+
+    class _FakeWarpline:
+        def impact_radius(self, base, head):
+            return {"affected": [{"sei": "S1"}], "count": 1}
+
+        def reverify_worklist(self, base, head):
+            return {"entries": [], "count": 0}
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.warpline = _FakeWarpline()
+    result = call_tool(runtime, "warpline_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "checked"
+    assert sc["impact_radius"] == {"affected": [{"sei": "S1"}], "count": 1}
+    assert sc["reverify_worklist"] == {"entries": [], "count": 0}
