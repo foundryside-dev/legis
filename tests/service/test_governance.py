@@ -494,3 +494,16 @@ def test_source_binding_status_is_bound_into_the_signature(tmp_path):
     payload["extensions"]["source_binding"]["status"] = "verified"
     tampered = signing_fields(payload, seq=rec.seq)
     assert verify(tampered, result.signature, key) is False
+
+
+# Task 5: read_sei_attestations stub
+# ---------------------------------------------------------------------------
+
+
+def test_read_sei_attestations_returns_checked_shape_on_empty_verified_trail():
+    from legis.service.governance import read_sei_attestations
+
+    out = read_sei_attestations([], "mod.fn#1")
+    assert out["status"] == "checked"
+    assert out["sei"] == "mod.fn#1"
+    assert out["attestations"] == []

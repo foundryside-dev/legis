@@ -103,6 +103,7 @@ _AGENT_TOOLS = frozenset(
         "policy_boundary_check",
         "posture_get",
         "warpline_preflight_get",
+        "attestation_get",
     }
 )
 _OVERRIDE_RATE_NOTE = "measures operator force-pasts; not movable by agent retries"
@@ -1260,6 +1261,58 @@ def tool_definitions() -> list[dict[str, Any]]:
                 },
             ),
         },
+        {
+            "name": "attestation_get",
+            "description": (
+                "Per-SEI human-cleared governance attestation FACTS (no proven_good "
+                "verdict). Through the same fail-closed verified-trail path the "
+                "honesty reads use: a tampered trail -> AUDIT_INTEGRITY_FAILURE; an "
+                "engine-only deployment (no protected gate) -> 'unavailable'. Never "
+                "read an empty attestations list under 'unavailable' as 'never "
+                "attested'; a forged attestation is never returned."
+            ),
+            "inputSchema": _schema(["sei"], {"sei": string}),
+            "outputSchema": _one_of(
+                [
+                    _schema(
+                        ["status", "sei", "attestations"],
+                        {
+                            "status": {"type": "string", "enum": ["checked"]},
+                            "sei": string,
+                            "attestations": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "required": ["kind", "content_hash", "recorded_at", "seq"],
+                                    "properties": {
+                                        "kind": {
+                                            "type": "string",
+                                            "enum": ["signoff_cleared", "operator_override"],
+                                        },
+                                        "content_hash": string,
+                                        "recorded_at": string,
+                                        "seq": integer,
+                                        "signoff_seq": integer,
+                                    },
+                                },
+                            },
+                        },
+                    ),
+                    _schema(
+                        ["status", "sei", "attestations", "unavailable"],
+                        {
+                            "status": {"type": "string", "enum": ["unavailable"]},
+                            "sei": string,
+                            "attestations": {"type": "array", "maxItems": 0},
+                            "unavailable": {
+                                "type": "array",
+                                "items": _schema(["reason"], {"reason": string}),
+                            },
+                        },
+                    ),
+                ]
+            ),
+        },
     ]
 
 
@@ -2249,6 +2302,34 @@ def _governance_trail_records(runtime: McpRuntime) -> list[Any]:
     )
 
 
+def _tool_attestation_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    from legis.service.governance import read_sei_attestations
+
+    sei = _require(args, "sei")
+    # FAIL-CLOSED: attestation is only possible when the trail is signature-
+    # verifiable. `verified_records` ONLY runs TrailVerifier.verify when BOTH a
+    # protected trail_owner AND a trail_verifier are wired (governance.py:199-205);
+    # with a protected_gate but no verifier it returns engine records UNVERIFIED.
+    # Gate on BOTH so the invariant holds by construction, not by the convention
+    # that build_runtime co-locates them under one `if hmac_key:` block. Return the
+    # discriminated unavailable (NEVER a silent empty 'checked' that reads as
+    # "never attested", NEVER unverified field values).
+    if runtime.protected_gate is None or runtime.trail_verifier is None:
+        return _tool_result(
+            {
+                "status": "unavailable",
+                "sei": sei,
+                "attestations": [],
+                "unavailable": [
+                    {"reason": "trail not signature-verifiable (no protected gate / verifier)"}
+                ],
+            }
+        )
+    # _governance_trail_records runs verified_records, which raises
+    # AuditIntegrityError (-> AUDIT_INTEGRITY_FAILURE) on a tampered protected trail.
+    return _tool_result(read_sei_attestations(_governance_trail_records(runtime), sei))
+
+
 def _tool_identity_gap_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
     return _tool_result(
         read_identity_gaps(runtime.identity, lambda: _governance_trail_records(runtime))
@@ -2505,6 +2586,7 @@ _TOOL_HANDLERS: dict[str, Callable[["McpRuntime", dict[str, Any]], dict[str, Any
     "policy_boundary_check": _tool_policy_boundary_check,
     "posture_get": _tool_posture_get,
     "warpline_preflight_get": _tool_warpline_preflight_get,
+    "attestation_get": _tool_attestation_get,
 }
 
 

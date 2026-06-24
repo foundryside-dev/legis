@@ -3435,3 +3435,48 @@ def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
     assert sc["status"] == "checked"
     assert sc["impact_radius"] == {"affected": [{"sei": "S1"}], "count": 1}
     assert sc["reverify_worklist"] == {"entries": [], "count": 0}
+
+
+# Task 5: attestation_get fail-closed scaffolding
+# ---------------------------------------------------------------------------
+
+
+def test_attestation_get_unavailable_when_no_protected_gate(tmp_path):
+    # ENGINE-ONLY DEPLOYMENT: no LEGIS_HMAC_KEY -> runtime.protected_gate is None.
+    # The trail is not signature-verifiable, so attestation_get MUST return a
+    # success-envelope unavailable, NOT a silent empty that reads as "never attested".
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # no protected gate wired
+    assert runtime.protected_gate is None
+    result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "unavailable"
+    assert sc["sei"] == "mod.fn#1"
+    assert sc["attestations"] == []
+    assert sc["unavailable"] and "reason" in sc["unavailable"][0]
+
+
+def test_attestation_get_tamper_yields_audit_integrity_failure(tmp_path):
+    # FAIL-CLOSED: a tampered protected trail -> AUDIT_INTEGRITY_FAILURE, nothing
+    # surfaced. Build a protected runtime whose trail verifier raises TamperError.
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+
+    class _TamperVerifier:
+        def verify(self, records):
+            from legis.enforcement.protected import TamperError
+
+            raise TamperError("record 4 hash mismatch")
+
+    class _FakeProtectedGate:
+        def records(self):
+            return ["bad-record"]
+
+    runtime.protected_gate = _FakeProtectedGate()
+    runtime.trail_verifier = _TamperVerifier()
+    result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert result.get("isError")
+    assert result["structuredContent"]["error_code"] == "AUDIT_INTEGRITY_FAILURE"

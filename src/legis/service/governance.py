@@ -219,6 +219,31 @@ def compute_override_rate(records: list):
     )
 
 
+def read_sei_attestations(verified_runtime_records: list, sei: str) -> dict[str, Any]:
+    """Per-SEI human-cleared attestation facts from the VERIFIED governance trail.
+
+    ASYMMETRIC ERROR RULE: a FALSE "attested" lets warpline skip reverify on
+    un-cleared code (security hole); an OMITTED attestation only wastes work
+    (safe). Every ambiguous/failure case therefore resolves toward "not attested"
+    — omit the record, never surface it. ``verified_runtime_records`` MUST already
+    have come through ``verified_records`` — the handler guarantees this via the
+    protected-gate + trail-verifier pre-gate, and a tampered protected trail has
+    already raised AuditIntegrityError before this function is called. The
+    parameter is named for that contract: a future caller passing raw
+    ``_engine(runtime).records`` is then a self-documenting mistake. This function
+    takes a MATERIALIZED list (not a callable) — a bare list cannot carry the
+    verified/unverified distinction, so the gate decision lives in the handler.
+
+    BLOCKED — positive admission classifier (Task 8): which records count as an
+    attestation, and the forge-proof discriminator, await owner ratification.
+    Until then this surfaces ZERO attestations (fail-closed: omit everything).
+    """
+    records = list(verified_runtime_records)  # noqa: F841  Task 8 classifier reads this
+    attestations: list[dict[str, Any]] = []
+    # Task 8: classify `records` for `sei` here once the discriminator is ratified.
+    return {"status": "checked", "sei": sei, "attestations": attestations}
+
+
 def _requires_protected_verification(payload: dict[str, Any], protected_policies) -> bool:
     """Gate-local protected-detection for the KEYLESS branch of the override-rate
     gate: would refusing to score this record be right because it genuinely needs
