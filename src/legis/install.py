@@ -945,6 +945,100 @@ def ensure_gitignore(project_root: Path) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Nested .weft/legis/.gitignore
+# ---------------------------------------------------------------------------
+
+# Idempotency marker — the header line of the shipped nested ignore. A file
+# already carrying it is left untouched; a user-authored .gitignore is appended
+# to (never clobbered).
+LEGIS_DIR_GITIGNORE_MARKER = "managed-by: legis (machine-written runtime state)"
+
+# The shipped nested ignore for legis's own dot-dir. The project-root
+# `ensure_gitignore` already adds a `.weft/legis/` rule; this nested file is the
+# suite-standard safety net (filigree-4ed8152630): it keeps legis runtime state
+# out of every commit even if a consuming repo drops that root rule, and names
+# the runtime files so a reviewer sees by name what is never committed.
+#
+# Unlike filigree (whose filigree.db is durable, committed payload), legis is the
+# sole writer of this subtree and commits NOTHING durable here — every file is
+# regenerated/local or secret-shaped. Enumerate-with-glob (not a bare `*`) to
+# match the sibling tools, leave the nested `.gitignore` itself tracked, and let
+# a hypothetical future durable file stay committable (the safe direction).
+WEFT_LEGIS_GITIGNORE = f"""\
+# .weft/legis/.gitignore — {LEGIS_DIR_GITIGNORE_MARKER}
+#
+# legis is the sole writer of this subtree and commits NOTHING durable here. The
+# project-root .gitignore ignores .weft/ by default; this nested file keeps
+# legis's runtime state out of every commit even if a consuming repo drops that
+# root rule (the suite standard, filigree-4ed8152630).
+#
+# Durable (committed when this dir is tracked): none.
+# Ephemeral / secret (never committed): everything below.
+
+# Governance / posture / pulls / checks / binding SQLite DBs (regenerated/local)
+legis-*.db
+
+# SQLite write-ahead-log sidecars and rollback journals
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Operator-elevation surfaces: encrypted operator key + ephemeral elevation
+# session metadata (both secret-shaped — never commit)
+operator.age
+operator_session.json
+
+# Atomic-write staging temps — mkstemp/temp siblings orphaned in this dir on a
+# failed write (legis._atomic_write_text, the posture session/head-anchor
+# writers, and the operator-key writer all stage here; the operator-key temp is
+# secret-shaped)
+*.tmp
+.operator.age.*
+"""
+
+
+def _ensure_nested_gitignore(target_dir: Path, body: str, label: str) -> tuple[bool, str]:
+    """Idempotently ship a nested ``.gitignore`` (*body*) into *target_dir*.
+
+    A file already carrying :data:`LEGIS_DIR_GITIGNORE_MARKER` is left untouched;
+    a user-authored ``.gitignore`` is appended to rather than clobbered.
+    """
+    try:
+        nested = project_path(target_dir, ".gitignore")
+    except UnsafeInstallPathError as exc:
+        return False, str(exc)
+
+    if nested.exists():
+        content = nested.read_text(encoding="utf-8")
+        if LEGIS_DIR_GITIGNORE_MARKER in content:
+            return True, f"{label} already present"
+        if not content.endswith("\n"):
+            content += "\n"
+        content += "\n" + body
+        _atomic_write_text(nested, content)
+        return True, f"Added legis ephemeral rules to {label}"
+    _atomic_write_text(nested, body)
+    return True, f"Created {label}"
+
+
+def ensure_legis_dir_gitignore(project_root: Path) -> tuple[bool, str]:
+    """Ship ``.weft/legis/.gitignore`` so legis runtime state never commits.
+
+    The project-root ``.gitignore`` ignores ``.weft/legis/`` by default (see
+    :func:`ensure_gitignore`); this nested file is the suite-standard safety net
+    (filigree-4ed8152630) for projects that drop that root rule. It excludes the
+    governance/posture/pulls/checks/binding SQLite DBs, their WAL/SHM/journal
+    sidecars, and the operator-elevation secrets (``operator.age`` /
+    ``operator_session.json``) — legis commits nothing durable here.
+    """
+    try:
+        legis_dir = ensure_project_dir(project_root, ".weft", "legis")
+    except UnsafeInstallPathError as exc:
+        return False, str(exc)
+    return _ensure_nested_gitignore(legis_dir, WEFT_LEGIS_GITIGNORE, ".weft/legis/.gitignore")
+
+
+# ---------------------------------------------------------------------------
 # .mcp.json (agent MCP server registration)
 # ---------------------------------------------------------------------------
 

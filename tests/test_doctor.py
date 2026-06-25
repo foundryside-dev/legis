@@ -221,9 +221,9 @@ def test_cli_doctor_fix_dest_is_fix():
     assert parser.parse_args(["doctor"]).fix is False
 
 
-def test_doctor_json_carries_repairable_per_check_and_true_for_six(tmp_path, capsys):
-    # repairable is always present per check, and True exactly for the six
-    # repair-honoring check functions (which emit eight check ids, since the
+def test_doctor_json_carries_repairable_per_check_and_true_for_seven(tmp_path, capsys):
+    # repairable is always present per check, and True exactly for the seven
+    # repair-honoring check functions (which emit nine check ids, since the
     # instruction-block and skill-pack checks each run for two targets).
     run_doctor(tmp_path, repair=False, fmt="json")
     payload = json.loads(capsys.readouterr().out)
@@ -238,6 +238,7 @@ def test_doctor_json_carries_repairable_per_check_and_true_for_six(tmp_path, cap
         "install.agents_skill",
         "install.hook",
         "install.gitignore",
+        "install.dir_gitignore",
         "install.mcp_json",
         "store.dir",
     }
@@ -483,6 +484,38 @@ def test_gitignore_missing_root_reports_error_instead_of_raising(tmp_path):
     repaired = check_gitignore(missing, repair=True)
     assert repaired.status == "error"
     assert str(missing) in (repaired.message or "")
+
+
+def test_dir_gitignore_absent_dir_is_ok(tmp_path):
+    # No .weft/legis/ yet — created lazily; nothing to protect, so OK
+    # (mirrors check_store_dir's "absent is ok").
+    from legis.doctor import check_dir_gitignore
+
+    assert check_dir_gitignore(tmp_path, repair=False).status == "ok"
+
+
+def test_dir_gitignore_present_dir_missing_nested_is_error_then_repaired(tmp_path):
+    from legis.doctor import check_dir_gitignore
+
+    (tmp_path / ".weft" / "legis").mkdir(parents=True)
+    c = check_dir_gitignore(tmp_path, repair=False)
+    assert c.status == "error" and c.repairable is True
+    fixed = check_dir_gitignore(tmp_path, repair=True)
+    assert fixed.status == "ok" and fixed.fixed is True
+    nested = tmp_path / ".weft" / "legis" / ".gitignore"
+    assert legis_install.LEGIS_DIR_GITIGNORE_MARKER in nested.read_text()
+
+
+def test_dir_gitignore_present_nested_is_ok(tmp_path):
+    from legis.doctor import check_dir_gitignore
+
+    legis_install.ensure_legis_dir_gitignore(tmp_path)
+    assert check_dir_gitignore(tmp_path, repair=False).status == "ok"
+
+
+def test_collect_checks_includes_dir_gitignore(tmp_path):
+    ids = {c.id for c in collect_checks(tmp_path, repair=False)}
+    assert "install.dir_gitignore" in ids
 
 
 def test_skill_pack_absent_is_error(tmp_path):
