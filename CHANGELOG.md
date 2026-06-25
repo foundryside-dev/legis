@@ -9,6 +9,11 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.3.0] — 2026-06-26
+
+Suite-standard dot-dir hygiene, plus the legis-resident halves of six cross-repo
+Weft seam conformance oracles.
+
 ### Added
 
 - **Nested `.weft/legis/.gitignore` shipped at install (suite standard,
@@ -29,6 +34,19 @@ _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 laun
   `install.dir_gitignore` check that flags an existing dot-dir missing the
   nested ignore and ships it on `--repair` (an absent dot-dir is OK — created
   lazily, nothing to protect yet).
+
+### Testing — cross-repo Weft seam conformance oracles
+
+- **Legis-resident halves of six cross-repo Weft seams**, each driving legis's
+  REAL code over a byte-identical golden with a Layer-1 byte-pin (fail-closed in
+  the default suite) plus a skip-clean Layer-2 source recheck: SEI
+  (loomweave→legis), git-renames (legis→loomweave), signoff-binding
+  (legis→filigree), loomweave-HMAC-wire (legis→loomweave, live-gated), the
+  warpline preflight read (legis consumer), and the per-SEI `attestation_get`
+  read (legis producer). Two outstanding peer obligations are recorded rather
+  than papered over — warpline ships no flat HTTP producer for the preflight
+  shape, and warpline's `LegisClient.governance_for_sei` is unwired — with the
+  Layer-2 rechecks armed to fire when each peer lands its half.
 
 ## [1.2.0] — 2026-06-25
 
