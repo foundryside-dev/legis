@@ -1,0 +1,28 @@
+{
+  "impact_radius": {
+    "affected": [
+      {
+        "sei": "loomweave:eid:0123456789abcdef0123456789abcdef",
+        "locator": "python:function:src/pkg/mod.py::fn",
+        "depth": 1
+      },
+      {
+        "sei": "loomweave:eid:fedcba9876543210fedcba9876543210",
+        "locator": "python:function:src/pkg/other.py::helper",
+        "depth": 2
+      }
+    ],
+    "count": 2
+  },
+  "reverify_worklist": {
+    "entries": [
+      {
+        "sei": "loomweave:eid:0123456789abcdef0123456789abcdef",
+        "locator": "python:function:src/pkg/mod.py::fn",
+        "priority": "high",
+        "reason": "changed"
+      }
+    ],
+    "count": 1
+  }
+}

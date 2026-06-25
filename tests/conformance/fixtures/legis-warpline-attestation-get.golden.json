@@ -1,0 +1,19 @@
+{
+  "attestations": [
+    {
+      "content_hash": "blake3:signoff-cleared",
+      "kind": "signoff_cleared",
+      "recorded_at": "2026-06-02T12:00:00+00:00",
+      "seq": 2,
+      "signoff_seq": 1
+    },
+    {
+      "content_hash": "blake3:operator-override",
+      "kind": "operator_override",
+      "recorded_at": "2026-06-02T12:00:00+00:00",
+      "seq": 3
+    }
+  ],
+  "sei": "loomweave:eid:0000000000000000000000000000aaaa",
+  "status": "checked"
+}
