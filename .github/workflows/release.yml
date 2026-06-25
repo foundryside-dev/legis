@@ -82,28 +82,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Require live oracle configuration
-        run: |
-          missing=()
-          for name in LOOMWEAVE_URL LOOMWEAVE_LIVE_ORACLE_LOCATOR; do
-            if [ -z "${!name}" ]; then
-              missing+=("${name}")
-            fi
-          done
-          if [ "${#missing[@]}" -ne 0 ]; then
-            joined="$(IFS=', '; echo "${missing[*]}")"
-            echo "::error::Missing required release conformance environment: ${joined}"
-            exit 1
-          fi
-
-      - uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Install dependencies
-        run: uv sync --dev
-
-      - name: Run live Loomweave oracle
+      # Skip-not-fail: live Loomweave conformance is NOT run in remote CI
+      # (owner decision 2026-06-25 — Legis does not stand up a CI-reachable
+      # Loomweave oracle). When the live oracle config is absent this job passes
+      # as a fast no-op so it never blocks the PyPI publish. When the config IS
+      # present (e.g. a provisioned/self-hosted runner), the oracle runs for
+      # real and a conformance failure blocks publish — the gate still bites
+      # where it can. Do NOT reintroduce a fail-on-missing-config check here
+      # (that was the rc4 publish blocker; re-added in 1.1.1, reverted again
+      # here per the owner decision above).
+      - name: Detect live oracle configuration
+        id: oracle_config
         env:
           LEGIS_LOOMWEAVE_HMAC_KEY: ${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}
         run: |
@@ -115,10 +104,26 @@ jobs:
           done
           if [ "${#missing[@]}" -ne 0 ]; then
             joined="$(IFS=', '; echo "${missing[*]}")"
-            echo "::error::Missing required release conformance environment: ${joined}"
-            exit 1
+            echo "::notice::Live Loomweave oracle not provisioned (${joined} unset) — skipping conformance, not blocking publish."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
           fi
-          uv run pytest tests/conformance/test_live_loomweave_oracle.py
+
+      - uses: astral-sh/setup-uv@v5
+        if: steps.oracle_config.outputs.configured == 'true'
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        if: steps.oracle_config.outputs.configured == 'true'
+        run: uv sync --dev
+
+      - name: Run live Loomweave oracle
+        if: steps.oracle_config.outputs.configured == 'true'
+        env:
+          LEGIS_LOOMWEAVE_HMAC_KEY: ${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}
+        run: uv run pytest tests/conformance/test_live_loomweave_oracle.py
 
   publish:
     name: Publish to PyPI
