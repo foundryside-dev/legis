@@ -302,6 +302,8 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
         "doctor_get",
         "policy_boundary_check",
         "posture_get",
+        "warpline_preflight_get",
+        "attestation_get",
     }
     # posture_get is the dedicated read-only posture surface (Phase 8); the
     # change gate (posture set) stays operator/CLI only — no posture_set tool.
@@ -2121,6 +2123,17 @@ def test_c8_no_agent_reachable_enablement_or_signing_surface():
         assert forbidden_arg not in props
 
 
+def test_warpline_tools_introduce_no_new_error_codes(tmp_path):
+    # warpline_preflight_get / attestation_get degrade to success-envelope
+    # status:"unavailable"; their only error path is the pre-existing
+    # AUDIT_INTEGRITY_FAILURE. No new error code => no _recovery_for / pinned-code change.
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+    assert not call_tool(runtime, "warpline_preflight_get", {"base": "x"}).get("isError")
+    assert not call_tool(runtime, "attestation_get", {"sei": "x#1"}).get("isError")
+
+
 def test_git_rename_feed_get_is_listed():
     from legis.mcp import tool_definitions
 
@@ -3363,3 +3376,185 @@ def test_check_list_target_type_schema_declares_enum_matching_handler(tmp_path):
     assert rejected["isError"] is True
     for value in _CHECK_TARGET_TYPES:
         assert value in rejected["structuredContent"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Task 3: warpline_preflight_get advisory sibling tool
+# ---------------------------------------------------------------------------
+
+
+def test_build_runtime_wires_warpline_from_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+    from legis.warpline_preflight.client import HttpWarplineClient
+
+    monkeypatch.setenv("WARPLINE_API_URL", "http://localhost:9100")
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)  # engine-only: no protected gate
+    # NOTE: build_runtime(agent_id) takes ONLY agent_id (mcp.py:200); source root
+    # and DBs are env-driven (LEGIS_SOURCE_ROOT, mcp.py:275). There is NO
+    # source_root= kwarg — passing one raises TypeError before any assertion.
+    runtime = build_runtime("agent-x")
+    assert isinstance(runtime.warpline, HttpWarplineClient)
+
+
+def test_build_runtime_leaves_warpline_unwired_without_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+
+    monkeypatch.delenv("WARPLINE_API_URL", raising=False)
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    runtime = build_runtime("agent-x")
+    assert runtime.warpline is None
+
+
+def test_build_runtime_degrades_warpline_to_none_on_bad_url(monkeypatch, tmp_path):
+    # A misconfigured ADVISORY url must NOT crash the sole governance authority
+    # at startup; it degrades to no advisory context (governance unaffected).
+    from legis.mcp import build_runtime
+
+    monkeypatch.setenv("WARPLINE_API_URL", "not-a-valid-url")
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-x")
+    assert runtime.warpline is None
+
+
+def test_warpline_preflight_get_unavailable_when_unwired(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # warpline defaults to None
+    result = call_tool(runtime, "warpline_preflight_get", {"base": "aaa"})
+    assert not result.get("isError")
+    assert result["structuredContent"] == {
+        "status": "unavailable",
+        "unavailable": [{"reason": "warpline client not configured"}],
+    }
+
+
+def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
+    from legis.mcp import call_tool
+
+    class _FakeWarpline:
+        def impact_radius(self, base, head):
+            return {"affected": [{"sei": "S1"}], "count": 1}
+
+        def reverify_worklist(self, base, head):
+            return {"entries": [], "count": 0}
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.warpline = _FakeWarpline()
+    result = call_tool(runtime, "warpline_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "checked"
+    assert sc["impact_radius"] == {"affected": [{"sei": "S1"}], "count": 1}
+    assert sc["reverify_worklist"] == {"entries": [], "count": 0}
+
+
+# Task 5: attestation_get fail-closed scaffolding
+# ---------------------------------------------------------------------------
+
+
+def test_attestation_get_unavailable_when_no_protected_gate(tmp_path):
+    # ENGINE-ONLY DEPLOYMENT: no LEGIS_HMAC_KEY -> runtime.protected_gate is None.
+    # The trail is not signature-verifiable, so attestation_get MUST return a
+    # success-envelope unavailable, NOT a silent empty that reads as "never attested".
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # no protected gate wired
+    assert runtime.protected_gate is None
+    result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "unavailable"
+    assert sc["sei"] == "mod.fn#1"
+    assert sc["attestations"] == []
+    assert sc["unavailable"] and "reason" in sc["unavailable"][0]
+
+
+def test_attestation_get_tamper_yields_audit_integrity_failure(tmp_path):
+    # FAIL-CLOSED: a tampered protected trail -> AUDIT_INTEGRITY_FAILURE, nothing
+    # surfaced. Build a protected runtime whose trail verifier raises TamperError.
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+
+    class _TamperVerifier:
+        def verify(self, records):
+            from legis.enforcement.protected import TamperError
+
+            raise TamperError("record 4 hash mismatch")
+
+    class _FakeProtectedGate:
+        def records(self):
+            return ["bad-record"]
+
+    runtime.protected_gate = _FakeProtectedGate()
+    runtime.trail_verifier = _TamperVerifier()
+    result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert result.get("isError")
+    assert result["structuredContent"]["error_code"] == "AUDIT_INTEGRITY_FAILURE"
+
+
+def test_attestation_get_wired_deployment_empty_trail_is_checked(tmp_path):
+    # KEY-WIRED DEPLOYMENT (Task 8 shipped): when BOTH protected_gate AND
+    # trail_verifier are wired, the pre-gate passes and the classifier runs over
+    # the VERIFIED trail. An empty verified trail honestly yields status='checked'
+    # with an empty attestations list — the trail WAS checked and the SEI simply
+    # has no human clearance. (Unavailable is reserved for the no-key pre-gate.)
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)
+
+    class _OkVerifier:
+        def verify(self, records):
+            return None
+
+    class _FakeProtectedGate:
+        def records(self):
+            return []
+
+    runtime.protected_gate = _FakeProtectedGate()
+    runtime.trail_verifier = _OkVerifier()
+    result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "checked"
+    assert sc["sei"] == "mod.fn#1"
+    assert sc["attestations"] == []
+
+
+def test_attestation_get_wired_deployment_admits_genuine_signoff(tmp_path):
+    # END-TO-END (Task 8): a real signed sign-off through the MCP handler surfaces
+    # as a signoff_cleared attestation under the queried SEI.
+    from legis.clock import FixedClock
+    from legis.enforcement.signoff import SignoffGate
+    from legis.mcp import call_tool
+
+    runtime, store = _runtime(tmp_path)
+    key = b"signoff-key"
+    gate = SignoffGate(store, FixedClock("2026-06-02T12:00:00+00:00"), signer=True, key=key)
+    req = gate.request(
+        policy="protected.x",
+        entity_key=EntityKey(value="loomweave:eid:cleared", identity_stable=True),
+        rationale="review",
+        agent_id="agent-1",
+        extensions={"loomweave": {"content_hash": "ch:e2e"}},
+    )
+    cleared = gate.sign_off(request_seq=req.seq, operator_id="op-1", rationale="ok")
+
+    runtime.protected_gate = gate
+    runtime.trail_verifier = TrailVerifier(key, frozenset({"protected.x"}))
+
+    result = call_tool(runtime, "attestation_get", {"sei": "loomweave:eid:cleared"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "checked"
+    assert sc["attestations"] == [
+        {
+            "kind": "signoff_cleared",
+            "content_hash": "ch:e2e",
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "seq": cleared.seq,
+            "signoff_seq": req.seq,
+        }
+    ]

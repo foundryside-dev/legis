@@ -20,6 +20,7 @@ from legis.enforcement.protected import (
     TrailVerifier,
 )
 from legis.enforcement.signoff import SignoffGate, SignoffResult
+from legis.enforcement.verdict import SignoffState, Verdict
 from legis.governance import params
 from legis.identity.entity_key import EntityKey
 from legis.identity.resolver import IdentityResolver
@@ -217,6 +218,136 @@ def compute_override_rate(records: list):
         window=params.OVERRIDE_RATE_WINDOW,
         min_sample=params.OVERRIDE_RATE_MIN_SAMPLE,
     )
+
+
+def read_sei_attestations(verified_runtime_records: list, sei: str) -> dict[str, Any]:
+    """Per-SEI human-cleared attestation facts from the VERIFIED governance trail.
+
+    ASYMMETRIC ERROR RULE: a FALSE "attested" lets warpline skip reverify on
+    un-cleared code (security hole); an OMITTED attestation only wastes work
+    (safe). Every ambiguous/failure case therefore resolves toward "not attested"
+    — omit the record, never surface it. ``verified_runtime_records`` MUST already
+    have come through ``verified_records`` — the handler guarantees this via the
+    protected-gate + trail-verifier pre-gate, and a tampered protected trail has
+    already raised AuditIntegrityError before this function is called. The
+    parameter is named for that contract: a future caller passing raw
+    ``_engine(runtime).records`` is then a self-documenting mistake. This function
+    takes a MATERIALIZED list (not a callable) — a bare list cannot carry the
+    verified/unverified distinction, so the gate decision lives in the handler.
+
+    THE FORGE-PROOF DISCRIMINATOR (Task 8, owner-ratified). Two kinds are admitted,
+    and ONLY when every distinguishing/content field is COVERED BY A SIGNATURE — so
+    membership in the verified set actually proves the field is authentic:
+
+    * ``operator_override`` — a protected operator-override verdict. Admit only when
+      ``judge_metadata_signature`` is present on the candidate (the marker that
+      proves THIS record was in the verified selection — a marker-less injected
+      record rides through ``_requires_verification`` UNVERIFIED, so keying on the
+      bare ``judge_verdict`` is forgeable), ``judge_verdict == OVERRIDDEN_BY_OPERATOR``
+      (signed at signing_fields["verdict"], protected.py — FORGE-A is closed:
+      mutating it breaks the signature and fails closed upstream), ``protected_cell
+      is True`` (signed), the inline ``loomweave.content_hash`` is non-empty
+      (signed), and entity_key.value == sei AND entity_key.identity_stable
+      (the SIGNED entity dict — never the unsigned top-level identity_stable dup).
+    * ``signoff_cleared`` — a SIGNED_OFF record carrying a ``signoff_signature``
+      (the verified-selection marker), whose joined PENDING request (by the signed
+      ``request_seq``) is INTEGRITY-BOUND: recompute ``content_hash`` over the FULL
+      stored PENDING payload and require it == the signed ``request_payload_hash``
+      (FORGE-B: a pointer is not integrity; mutating the PENDING's content_hash
+      breaks this match). The surfaced content_hash is the PENDING's
+      ``loomweave.content_hash`` (the SIGNED_OFF carries none of its own), required
+      non-empty, and the entity is read from the SIGNED entity dict == sei AND
+      identity_stable.
+
+    OMITTED: chill/coached self-clears, unsigned/procedural sign-offs, BLOCKED
+    verdicts, empty content_hash, cross-SEI, identity_stable False. WHEN IN DOUBT,
+    OMIT. The classifier never re-verifies signatures (the pre-gate already did);
+    it ONLY keys off fields inside signing_fields/signoff_signing_fields and
+    independently integrity-checks the sign-off join (which crosses a signature
+    boundary the SIGNED_OFF's own signature covers only via request_payload_hash).
+
+    Returns status='checked' with the admitted attestations (possibly empty — an
+    empty result here is HONEST: the trail WAS verified, the SEI simply has no
+    human clearance). The handler owns the status='unavailable' pre-gate for the
+    no-key / engine-only case (an unverifiable trail must not be read here).
+    """
+    from legis.canonical import content_hash as _content_hash
+
+    records = list(verified_runtime_records)
+    attestations: list[dict[str, Any]] = []
+
+    for rec in records:
+        payload = rec.payload
+        ext = payload.get("extensions", {}) or {}
+
+        # Entity must be the SIGNED entity_key dict (value + identity_stable both
+        # inside signing_fields["entity"]); the top-level payload["identity_stable"]
+        # is an unsigned duplicate — never read it.
+        entity = payload.get("entity_key")
+        if not isinstance(entity, dict):
+            continue
+        if entity.get("value") != sei or entity.get("identity_stable") is not True:
+            continue
+
+        # --- operator_override -------------------------------------------------
+        # PRECONDITION 1: the signature marker proves this record verified.
+        if "judge_metadata_signature" in ext and "signoff_state" not in ext:
+            if ext.get("judge_verdict") != Verdict.OVERRIDDEN_BY_OPERATOR.value:
+                continue  # BLOCKED / ACCEPTED protected verdicts are not clearances
+            if ext.get("protected_cell") is not True:
+                continue
+            content = (ext.get("loomweave", {}) or {}).get("content_hash") or ""
+            if not content:
+                continue
+            attestations.append(
+                {
+                    "kind": "operator_override",
+                    "content_hash": content,
+                    "recorded_at": payload.get("recorded_at"),
+                    "seq": rec.seq,
+                }
+            )
+            continue
+
+        # --- signoff_cleared ---------------------------------------------------
+        # PRECONDITION 1: signoff_signature marker proves this record verified.
+        if "signoff_signature" in ext and ext.get("signoff_state") == SignoffState.SIGNED_OFF.value:
+            request_seq = ext.get("request_seq")
+            signed_request_hash = ext.get("request_payload_hash")
+            if request_seq is None or not signed_request_hash:
+                continue
+            # FORGE-B: join the PENDING by its seq COLUMN, then recompute the hash
+            # over the FULL stored PENDING payload and require it == the signed
+            # request_payload_hash. A pointer alone is not integrity.
+            pending_payload = None
+            for cand in records:
+                cand_ext = cand.payload.get("extensions", {}) or {}
+                if (
+                    cand.seq == request_seq
+                    and cand_ext.get("signoff_state") == SignoffState.PENDING.value
+                ):
+                    pending_payload = cand.payload
+                    break
+            if pending_payload is None:
+                continue
+            if _content_hash(pending_payload) != signed_request_hash:
+                continue  # PENDING content_hash mutated -> hash no longer matches
+            content = (
+                (pending_payload.get("extensions", {}) or {}).get("loomweave", {}) or {}
+            ).get("content_hash") or ""
+            if not content:
+                continue
+            attestations.append(
+                {
+                    "kind": "signoff_cleared",
+                    "content_hash": content,
+                    "recorded_at": payload.get("recorded_at"),
+                    "seq": rec.seq,
+                    "signoff_seq": request_seq,
+                }
+            )
+
+    return {"status": "checked", "sei": sei, "attestations": attestations}
 
 
 def _requires_protected_verification(payload: dict[str, Any], protected_policies) -> bool:

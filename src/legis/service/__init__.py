@@ -23,6 +23,7 @@ from legis.service.governance import (
     evaluate_policy,
     read_identity_gaps,
     read_lineage_integrity,
+    read_sei_attestations,
     request_signoff,
     resolve_for_record,
     submit_override,
@@ -30,6 +31,7 @@ from legis.service.governance import (
     submit_protected_override,
     verified_records,
 )
+from legis.service.preflight import read_warpline_preflight
 from legis.service.wardline import route_wardline_scan
 
 __all__ = [
@@ -47,6 +49,7 @@ __all__ = [
     "compute_override_rate",
     "read_identity_gaps",
     "read_lineage_integrity",
+    "read_sei_attestations",
     "evaluate_policy",
     "explain_policy",
     "request_signoff",
@@ -54,6 +57,7 @@ __all__ = [
     "submit_override",
     "submit_operator_override",
     "submit_protected_override",
+    "read_warpline_preflight",
     "route_wardline_scan",
     "verified_records",
 ]

@@ -622,3 +622,52 @@ def test_policy_boundary_check_no_root_instead_of_vacuous_pass(tmp_path):
     scanned = _conformant(runtime, "policy_boundary_check", {"root": "specimen"})
     assert scanned["outcome"] == "PASS"
     assert scanned["scanned_root"].endswith("specimen")
+
+
+def test_warpline_preflight_get_unavailable_conforms(tmp_path):
+    runtime, _store = _runtime(tmp_path)  # warpline None
+    payload = _conformant(runtime, "warpline_preflight_get", {"base": "aaa"})
+    assert payload["status"] == "unavailable"
+
+
+def test_warpline_preflight_get_checked_conforms(tmp_path):
+    class _FakeWarpline:
+        def impact_radius(self, base, head):
+            return {"affected": [], "count": 0}
+
+        def reverify_worklist(self, base, head):
+            return {"entries": [], "count": 0}
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.warpline = _FakeWarpline()
+    payload = _conformant(runtime, "warpline_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert payload["status"] == "checked"
+
+
+def test_attestation_get_unavailable_conforms(tmp_path):
+    runtime, _store = _runtime(tmp_path)  # no protected gate
+    payload = _conformant(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert payload["status"] == "unavailable"
+
+
+def test_attestation_get_tamper_error_conforms_to_envelope(tmp_path):
+    from legis.mcp import ERROR_ENVELOPE_SCHEMA, call_tool
+    from jsonschema import Draft202012Validator
+
+    runtime, _store = _runtime(tmp_path)
+
+    class _TamperVerifier:
+        def verify(self, records):
+            from legis.enforcement.protected import TamperError
+
+            raise TamperError("mismatch")
+
+    class _FakeProtectedGate:
+        def records(self):
+            return ["bad"]
+
+    runtime.protected_gate = _FakeProtectedGate()
+    runtime.trail_verifier = _TamperVerifier()
+    result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
+    assert result.get("isError")
+    Draft202012Validator(ERROR_ENVELOPE_SCHEMA).validate(result["structuredContent"])
