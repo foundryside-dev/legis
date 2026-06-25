@@ -696,6 +696,44 @@ def test_read_sei_attestations_chill_self_clear_stuffing_override_omitted(tmp_pa
     assert out["attestations"] == []
 
 
+def test_chill_stuffing_with_non_verifying_signature_caught_by_pre_gate(tmp_path):
+    # The asymmetric twin of the no-marker case: a chill/coached self-clear that
+    # STUFFS operator-override extensions AND a garbage judge_metadata_signature
+    # marker. The classifier trusts marker presence BY DESIGN (marker == "this was
+    # in the verified selection"), so a direct classifier call would admit it. The
+    # defense is the pre-gate: a record carrying the marker IS selected by
+    # _requires_verification, and its signature does NOT verify -> TrailVerifier
+    # raises TamperError (-> AUDIT_INTEGRITY_FAILURE) BEFORE the classifier runs.
+    # Same principle as FORGE-A: marker present + signature invalid -> fail-closed.
+    from legis.enforcement.protected import TrailVerifier
+
+    class _Rec:
+        def __init__(self, seq, payload):
+            self.seq = seq
+            self.payload = payload
+
+    stuffed_signed = _Rec(
+        1,
+        {
+            "policy": "ordinary",  # non-protected policy
+            "entity_key": {"value": _ATTEST_SEI, "identity_stable": True},
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "rationale": "self-clear",
+            "agent_id": "agent-1",
+            "extensions": {
+                "judge_metadata_signature": "hmac-sha256:v3:garbage",  # non-verifying
+                "judge_verdict": "OVERRIDDEN_BY_OPERATOR",
+                "protected_cell": True,
+                "loomweave": {"content_hash": "ch:stuffed"},
+            },
+        },
+    )
+
+    verifier = TrailVerifier(b"k", frozenset())
+    with pytest.raises(TamperError):
+        verifier.verify([stuffed_signed])
+
+
 def test_read_sei_attestations_unsigned_procedural_signoff_omitted(tmp_path):
     # A structured (procedural) sign-off built with no signer -> SIGNED_OFF carries
     # no signoff_signature marker -> omitted.
