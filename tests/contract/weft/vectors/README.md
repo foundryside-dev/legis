@@ -18,6 +18,7 @@ consumer's CI**. A contract fix without its vector just re-creates the drift.
 |---|---|---|---|
 | `wardline_scan_artifact.v1.json` | `weft/wardline-scan-artifact` | Wardline (`core/legis.py`) | legis (`wardline/ingest.py`) |
 | `wardline_dirty_scan_artifact.v1.json` | `weft/wardline-dirty-scan-artifact` | Wardline (`core/legis.py`) | legis (`wardline/ingest.py`) |
+| `git_renames.v1.json` | `weft/legis-git-renames` | legis (`GET /git/renames`) | Loomweave (`loomweave-cli/src/sei_git.rs::parse_legis_rename_json`) |
 
 ## How each side loads it
 
@@ -63,3 +64,50 @@ CI fails on that side. When the contract changes, bump the `version`, regenerate
 - `invalid[]` — `{name, description, artifact, reject_match}`. Each must raise a
   `WardlinePayloadError` whose message matches `reject_match` — never read as zero
   defects under a green status.
+
+## Git-rename golden (`git_renames.v1.json`)
+
+This golden is a **raw `GET /git/renames` response** — a flat top-level JSON array
+of `RenameEvidence` objects, NOT the wrapped `{contract, version, valid[]}`
+envelope the Wardline vectors use. It cannot be wrapped: Loomweave's consumer
+(`parse_legis_rename_json`) calls `serde_json::Value::as_array()` and treats any
+object as a `NonArrayEnvelope` → zero renames. Provenance and anchors therefore
+live here in the README, not inside the file.
+
+The two oracles:
+
+- **legis (producer)** — `tests/contract/weft/test_git_rename_wire_conformance.py`
+  drives the REAL `GET /git/renames` over a fabricated rename and asserts its
+  projected `(old_path, new_path)` pairs *contain* the golden's real rename
+  (membership, because `commit_sha`/blobs are nondeterministic per fabrication
+  and the skip item is synthetic). It also recomputes the golden's git blob sha1
+  in-process and pins it to `VENDORED_BLOB_SHA`.
+- **Loomweave (consumer)** — an in-module `#[test]` in
+  `crates/loomweave-cli/src/sei_git.rs` (`vendored_golden_*`) drives the REAL
+  `parse_legis_rename_json` over the byte-identical vendored copy at
+  `crates/loomweave-cli/tests/fixtures/weft/git_renames.v1.json` (loaded with
+  `include_bytes!`), asserts the projected pairs, and pins the SAME blob sha1.
+  The test lives next to the parser, not under `tests/`, because the parser is
+  private to a binary crate with no `lib.rs` and is unreachable from integration
+  tests.
+
+### Honest freeze provenance
+
+The array's items are NOT all live-captured — only the real rename is:
+
+- **Item 1 (captured live):** `auth.py → authn.py`, frozen verbatim from legis's
+  actual `GET /git/renames` output (FastAPI `TestClient` over a fabricated git
+  rename), then `commit_sha`/`old_blob`/`new_blob` redacted to fixed
+  placeholders so the FROZEN file is reproducible (the consumer ignores all
+  three; the producer oracle compares projected pairs, never `commit_sha`). This
+  item simultaneously satisfies "≥1 real rename" and "extra ignored fields" — it
+  carries `commit_sha`, `similarity`, `old_blob`, `new_blob`, all dropped by the
+  consumer.
+- **Item 2 (synthetic, appended by hand):** an empty-`new_path` item
+  (`ghost.py → ""`). Git/legis never emit an empty `new_path`, so it cannot be
+  captured live; it is the skip case the consumer must drop, appended explicitly.
+
+If legis's real output and Loomweave's real parser ever DISAGREE on these bytes,
+that disagreement is the seam's value — re-freeze from the real endpoint and fix
+the parser, never hand-mint the golden to hide it. Both oracles run UNMARKED (by
+default); re-pin the sha1 only by re-freezing and updating BOTH repos.
