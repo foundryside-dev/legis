@@ -3495,14 +3495,12 @@ def test_attestation_get_tamper_yields_audit_integrity_failure(tmp_path):
     assert result["structuredContent"]["error_code"] == "AUDIT_INTEGRITY_FAILURE"
 
 
-def test_attestation_get_wired_deployment_returns_unavailable_not_false_checked(tmp_path):
-    # KEY-WIRED DEPLOYMENT HONESTY: when BOTH protected_gate AND trail_verifier
-    # are wired (the deployment that actually has real sign-offs/overrides), the
-    # pre-gate passes and read_sei_attestations is called. While the classifier
-    # is BLOCKED (Task 8), this MUST return status='unavailable' with the
-    # classifier-pending reason — NOT status='checked' with an empty attestations
-    # list, which would falsely assert "I checked this SEI and found nothing" on
-    # exactly the deployments that have real governance records.
+def test_attestation_get_wired_deployment_empty_trail_is_checked(tmp_path):
+    # KEY-WIRED DEPLOYMENT (Task 8 shipped): when BOTH protected_gate AND
+    # trail_verifier are wired, the pre-gate passes and the classifier runs over
+    # the VERIFIED trail. An empty verified trail honestly yields status='checked'
+    # with an empty attestations list — the trail WAS checked and the SEI simply
+    # has no human clearance. (Unavailable is reserved for the no-key pre-gate.)
     from legis.mcp import call_tool
 
     runtime, _store = _runtime(tmp_path)
@@ -3520,7 +3518,43 @@ def test_attestation_get_wired_deployment_returns_unavailable_not_false_checked(
     result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
     assert not result.get("isError")
     sc = result["structuredContent"]
-    assert sc["status"] == "unavailable"
+    assert sc["status"] == "checked"
     assert sc["sei"] == "mod.fn#1"
     assert sc["attestations"] == []
-    assert sc["unavailable"] and "pending" in sc["unavailable"][0]["reason"]
+
+
+def test_attestation_get_wired_deployment_admits_genuine_signoff(tmp_path):
+    # END-TO-END (Task 8): a real signed sign-off through the MCP handler surfaces
+    # as a signoff_cleared attestation under the queried SEI.
+    from legis.clock import FixedClock
+    from legis.enforcement.signoff import SignoffGate
+    from legis.mcp import call_tool
+
+    runtime, store = _runtime(tmp_path)
+    key = b"signoff-key"
+    gate = SignoffGate(store, FixedClock("2026-06-02T12:00:00+00:00"), signer=True, key=key)
+    req = gate.request(
+        policy="protected.x",
+        entity_key=EntityKey(value="loomweave:eid:cleared", identity_stable=True),
+        rationale="review",
+        agent_id="agent-1",
+        extensions={"loomweave": {"content_hash": "ch:e2e"}},
+    )
+    cleared = gate.sign_off(request_seq=req.seq, operator_id="op-1", rationale="ok")
+
+    runtime.protected_gate = gate
+    runtime.trail_verifier = TrailVerifier(key, frozenset({"protected.x"}))
+
+    result = call_tool(runtime, "attestation_get", {"sei": "loomweave:eid:cleared"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "checked"
+    assert sc["attestations"] == [
+        {
+            "kind": "signoff_cleared",
+            "content_hash": "ch:e2e",
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "seq": cleared.seq,
+            "signoff_seq": req.seq,
+        }
+    ]

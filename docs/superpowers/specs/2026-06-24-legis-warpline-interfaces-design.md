@@ -89,7 +89,7 @@ and held on `McpRuntime` as `warpline: Any | None = None`.
 ### 4.1 Tool: `attestation_get`
 
 - **Input:** `{sei: string (required)}`. Legis does **not** accept a commit. Warpline resolves the SEI's content_hash at commit X via Loomweave (which it already queries for `timeline` / `changed`) and matches it against the `content_hash` Legis returns. The match — and the "skip reverify" decision — is warpline's Rung-2 call, not Legis's.
-- **Service function `read_sei_attestations(runtime_records, sei)`** in `service/governance.py` (next to the other honesty reads). It consumes the **verified governance trail** via the existing `verified_records` / `_governance_trail_records` path, so a tampered trail raises `AuditIntegrityError → AUDIT_INTEGRITY_FAILURE` — a forged "attested" is never returned.
+- **Service function `read_sei_attestations(runtime_records, sei)`** in `service/governance.py` (next to the other honesty reads). It is reached **only when the trail is signature-verifiable** — the handler pre-gate requires BOTH a protected gate AND a `trail_verifier` (governance.py `verified_records` runs `TrailVerifier.verify` only when both are wired; with neither, it would return engine records UNVERIFIED). When verifiable, a tampered/forged record raises `AuditIntegrityError → AUDIT_INTEGRITY_FAILURE` upstream of the classifier, OR — for a forge the chain signature cannot catch, e.g. a mutated **unsigned** PENDING-request `content_hash` (FORGE-B) — the classifier itself omits it. The classifier admits a record only when every field it keys on is **covered by a signature** (`signing_fields` / `signoff_signing_fields`); a forged "attested" is therefore never returned when the trail is verifiable.
 - **Honest discriminated output:**
 
   `status: "checked"`:
@@ -99,7 +99,7 @@ and held on `McpRuntime` as `warpline: Any | None = None`.
     {"kind": "operator_override", "content_hash": "...", "recorded_at": "...", "seq": 19}
   ]}
   ```
-  `status: "unavailable"` (no governance trail wired — no `LEGIS_HMAC_KEY`, so no protected/sign-off gate):
+  `status: "unavailable"` (trail not signature-verifiable — no protected gate / no `trail_verifier`; a no-key deployment still HAS a trail — chill overrides, unsigned procedural sign-offs — it is UNVERIFIABLE, not absent, and reading unverified records would be a false-green):
   ```json
   {"status": "unavailable", "sei": "<sei>", "attestations": [], "unavailable": [{"reason": "..."}]}
   ```
@@ -108,12 +108,14 @@ and held on `McpRuntime` as `warpline: Any | None = None`.
 
 Only governance records that represent a **human clearance** for the SEI count — the strongest "governed-good" signal warpline can safely skip reverification on:
 
-1. **Cleared sign-offs** — a `SIGNED_OFF` record (`extensions.signoff_state == "signed_off"`) whose `entity_key` is the queried SEI and `identity_stable` is true. Its `content_hash` is joined from the matching `PENDING` request via `extensions.request_seq` (the cleared record itself carries no loomweave content_hash; the request does, at `extensions.loomweave.content_hash`). `kind: "signoff_cleared"`, `signoff_seq` = the request seq.
-2. **Protected operator-overrides** — an operator-override verdict record for the SEI (content_hash inline at `extensions.loomweave.content_hash`). `kind: "operator_override"`.
+1. **Cleared sign-offs** — a `SIGNED_OFF` record (`extensions.signoff_state == SignoffState.SIGNED_OFF.value == "SIGNED_OFF"`, UPPERCASE — `verdict.py`) carrying a `signoff_signature` (the verified-selection marker), whose `entity_key` is the queried SEI and `identity_stable` is true. Its `content_hash` is joined from the matching `PENDING` request via the **signed** `extensions.request_seq` (the cleared record carries no loomweave content_hash of its own; the request does, at `extensions.loomweave.content_hash`). The join is **integrity-checked, not trusted** (FORGE-B): the classifier recomputes `legis.canonical.content_hash` over the FULL stored PENDING payload and requires it == the SIGNED_OFF record's signed `extensions.request_payload_hash`. `kind: "signoff_cleared"`, `seq` = the SIGNED_OFF record seq, `signoff_seq` = the request seq. Absent/empty content_hash → omit.
+2. **Protected operator-overrides** — a record carrying a `judge_metadata_signature` (the verified-selection marker) with the **signed** `extensions.judge_verdict == Verdict.OVERRIDDEN_BY_OPERATOR.value` (`signing_fields["verdict"]` — FORGE-A is closed: mutating it breaks the signature and fails closed upstream), `extensions.protected_cell is True` (signed), entity == SEI with `identity_stable` true (read from the SIGNED `entity_key` dict, never the unsigned top-level `identity_stable` duplicate), and a non-empty inline `extensions.loomweave.content_hash` (signed). `kind: "operator_override"`.
 
-**Explicitly excluded:** chill/coached self-clear overrides and `BLOCKED` verdicts — they are not proof of anything warpline should skip reverification on. (The decision is conservative on purpose; broadening the set later is additive.)
+**Discriminator discipline (necessary-but-not-sufficient trap):** admission keys off the **signature MARKER** (`judge_metadata_signature` / `signoff_signature`) present on the candidate, NOT the bare `judge_verdict` / `signoff_state` value — a marker-less injected record can ride through `TrailVerifier._requires_verification` UNVERIFIED, so marker presence is what proves THIS record was in the verified selection. The classifier never re-verifies signatures (the pre-gate did); it only keys off fields inside `signing_fields` / `signoff_signing_fields` and independently integrity-checks the sign-off join. Never key off `judge_advisory_verdict` or the simple-tier engine `judge_verdict` (both unsigned).
 
-The exact record discriminators (the operator-override marker, the SEI/`identity_stable` filter, the request-join) are pinned against the real record shapes in `enforcement/signoff.py` and `enforcement/protected.py` during implementation and covered by unit tests.
+**Explicitly excluded (omitted):** chill/coached self-clear overrides, unsigned/procedural sign-offs (no `signoff_signature`), `BLOCKED` verdicts, empty content_hash, cross-SEI, `identity_stable` false — they are not proof of anything warpline should skip reverification on. WHEN IN DOUBT, OMIT. (The decision is conservative on purpose; broadening the set later is additive.)
+
+**Shipped sound:** BOTH kinds (`operator_override`, `signoff_cleared`) shipped — each distinguishing/content field it keys on is signed (`signing_fields` protected.py / `signoff_signing_fields` signoff.py), so membership in the verified set proves the field authentic and the request-join is integrity-bound via the signed `request_payload_hash`. Neither kind is escalated/blocked. Covered by forge-negative unit tests in `tests/service/test_governance.py` and an end-to-end MCP test in `tests/mcp/test_server.py`.
 
 ## 5. Rename feed (part b, item 1) — confirm, don't rebuild
 
@@ -132,7 +134,7 @@ Shape validation is **minimal and tolerant**: the client requires each response 
 
 - **No silent empties.** Both new reads discriminate `checked` from `unavailable`. An unreachable/unconfigured warpline → `unavailable` with a reason, never an empty affected-set that reads as "nothing impacted". An unwired governance trail → `unavailable`, never an empty attestations list that reads as "never attested".
 - **Advisory failure is contained.** A `WarplineError` is caught in the service layer and mapped to `unavailable`; it never becomes `INTERNAL_ERROR` and never perturbs a governance read (different tool, different call).
-- **Attestation reads are fail-closed.** Tamper → `AUDIT_INTEGRITY_FAILURE` via the shared `verified_records` path. No forged attestation is ever returned.
+- **Attestation reads are fail-closed.** A trail that is **not signature-verifiable** (no protected gate / no `trail_verifier` — e.g. no `LEGIS_HMAC_KEY`) → `unavailable`, reading no unverified record (NOT an empty `checked` that reads as "never attested"). When the trail IS verifiable: tamper → `AUDIT_INTEGRITY_FAILURE` via the shared `verified_records` path, and any forge the chain signature cannot catch (a mutated unsigned PENDING `content_hash`, FORGE-B) is omitted by the classifier's integrity-join. The classifier admits only signature-covered fields, so no forged attestation is returned **when the trail is verifiable**.
 - **Insecure transport is opt-in.** `http` to non-loopback warpline is rejected unless `LEGIS_ALLOW_INSECURE_REMOTE_HTTP=1`, with the same warning Filigree logs.
 
 ## 8. Testing

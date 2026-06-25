@@ -496,20 +496,320 @@ def test_source_binding_status_is_bound_into_the_signature(tmp_path):
     assert verify(tampered, result.signature, key) is False
 
 
-# Task 5: read_sei_attestations stub
+# Task 8: read_sei_attestations forge-proof classifier
 # ---------------------------------------------------------------------------
 
 
-def test_read_sei_attestations_unavailable_while_classifier_blocked():
-    # While the positive-admission classifier (Task 8) is BLOCKED, the function
-    # MUST return status='unavailable' with the classifier-pending reason, NOT
-    # status='checked' with an empty list — an empty 'checked' would falsely
-    # assert "I checked this SEI and found no attestation" when the classifier
-    # did not actually check (the silent false-green the honesty surface forbids).
+def test_read_sei_attestations_empty_trail_is_checked_not_unavailable():
+    # The function now ALWAYS returns status='checked' — it only ever sees a
+    # signature-verified trail (the handler owns the unavailable pre-gate). An
+    # empty verified trail was genuinely checked and honestly has no attestation.
     from legis.service.governance import read_sei_attestations
 
     out = read_sei_attestations([], "mod.fn#1")
-    assert out["status"] == "unavailable"
+    assert out["status"] == "checked"
     assert out["sei"] == "mod.fn#1"
     assert out["attestations"] == []
-    assert out["unavailable"] and "pending" in out["unavailable"][0]["reason"]
+    assert "unavailable" not in out
+
+
+_ATTEST_SEI = "loomweave:eid:cleared"
+
+
+class _StableJudge:
+    def evaluate(self, record):
+        return JudgeOpinion(verdict=Verdict.ACCEPTED, model="judge@1", rationale="ok")
+
+
+def _signed_signoff_gate(tmp_path):
+    from legis.clock import FixedClock
+    from legis.enforcement.signoff import SignoffGate
+
+    store = AuditStore(f"sqlite:///{tmp_path}/gov.db")
+    gate = SignoffGate(
+        store, FixedClock("2026-06-02T12:00:00+00:00"), signer=True, key=b"signoff-key"
+    )
+    return store, gate
+
+
+def _stable_entity_key(sei=_ATTEST_SEI):
+    return EntityKey(value=sei, identity_stable=True)
+
+
+def _request_and_clear(gate, *, sei=_ATTEST_SEI, content_hash_value="ch:request-1"):
+    req = gate.request(
+        policy="protected.x",
+        entity_key=_stable_entity_key(sei),
+        rationale="please review",
+        agent_id="agent-1",
+        extensions={"loomweave": {"content_hash": content_hash_value}},
+    )
+    cleared = gate.sign_off(
+        request_seq=req.seq, operator_id="operator-1", rationale="approved"
+    )
+    return req, cleared
+
+
+def test_read_sei_attestations_admits_genuine_signed_signoff(tmp_path):
+    # POSITIVE / FORGE-B SOUNDNESS PROOF: a real signed SignoffGate request+sign_off.
+    # If content_hash(stored PENDING) does NOT equal the signed request_payload_hash
+    # this admission would not happen — the test passing IS the soundness proof.
+    from legis.service.governance import read_sei_attestations
+
+    store, gate = _signed_signoff_gate(tmp_path)
+    req, cleared = _request_and_clear(gate, content_hash_value="ch:signoff-content")
+
+    out = read_sei_attestations(store.read_all(), _ATTEST_SEI)
+    assert out["status"] == "checked"
+    assert out["attestations"] == [
+        {
+            "kind": "signoff_cleared",
+            "content_hash": "ch:signoff-content",
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "seq": cleared.seq,
+            "signoff_seq": req.seq,
+        }
+    ]
+
+
+def test_read_sei_attestations_admits_genuine_operator_override(tmp_path):
+    # POSITIVE: a real signed protected operator override surfaces as
+    # operator_override with the inline (signed) content_hash.
+    from legis.clock import FixedClock
+    from legis.service.governance import read_sei_attestations
+
+    store = AuditStore(f"sqlite:///{tmp_path}/gov.db")
+    gate = ProtectedGate(
+        store, FixedClock("2026-06-02T12:00:00+00:00"), judge=_StableJudge(), key=b"k"
+    )
+    result = gate.operator_override(
+        policy="protected.x",
+        entity_key=_stable_entity_key(),
+        rationale="operator clears",
+        operator_id="operator-1",
+        file_fingerprint="sha256:ff",
+        ast_path="ap",
+        extensions={"loomweave": {"content_hash": "ch:override-content"}},
+    )
+
+    out = read_sei_attestations(store.read_all(), _ATTEST_SEI)
+    assert out["status"] == "checked"
+    assert out["attestations"] == [
+        {
+            "kind": "operator_override",
+            "content_hash": "ch:override-content",
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "seq": result.seq,
+        }
+    ]
+
+
+def test_read_sei_attestations_forge_b_mutated_pending_content_hash_omitted(tmp_path):
+    # FORGE-B: real signed SIGNED_OFF; mutate the joined PENDING's content_hash in
+    # the materialized list. The signed request_payload_hash no longer matches the
+    # recomputed content_hash(pending) -> the sign-off MUST be omitted (the
+    # mutated hash is NEVER surfaced). The SIGNED_OFF record is unchanged and still
+    # "verifies"; only the classifier's recompute-and-compare catches the forge.
+    from legis.service.governance import read_sei_attestations
+
+    store, gate = _signed_signoff_gate(tmp_path)
+    req, _cleared = _request_and_clear(gate, content_hash_value="ch:original")
+
+    records = store.read_all()
+    for rec in records:
+        if rec.seq == req.seq:
+            rec.payload["extensions"]["loomweave"]["content_hash"] = "ch:FORGED"
+
+    out = read_sei_attestations(records, _ATTEST_SEI)
+    assert out["status"] == "checked"
+    assert out["attestations"] == []
+
+
+def test_read_sei_attestations_forge_a_mutated_verdict_breaks_signature(tmp_path):
+    # FORGE-A coverage proof: a real signed BLOCKED protected record whose
+    # judge_verdict is mutated to OVERRIDDEN_BY_OPERATOR. Because judge_verdict is
+    # SIGNED (signing_fields["verdict"]), the mutation breaks the v3 signature, so
+    # TrailVerifier.verify RAISES before the classifier ever runs — the forged
+    # override never reaches read_sei_attestations.
+    from legis.clock import FixedClock
+    from legis.enforcement.protected import TrailVerifier
+    from legis.enforcement.verdict import JudgeOpinion
+
+    class _BlockingJudge:
+        def evaluate(self, record):
+            return JudgeOpinion(verdict=Verdict.BLOCKED, model="judge@1", rationale="no")
+
+    store = AuditStore(f"sqlite:///{tmp_path}/gov.db")
+    key = b"k"
+    gate = ProtectedGate(
+        store, FixedClock("2026-06-02T12:00:00+00:00"), judge=_BlockingJudge(), key=key
+    )
+    gate.submit(
+        policy="protected.x",
+        entity_key=_stable_entity_key(),
+        rationale="x",
+        agent_id="agent-1",
+        file_fingerprint="sha256:ff",
+        ast_path="ap",
+        extensions={"loomweave": {"content_hash": "ch:blocked"}},
+    )
+
+    records = store.read_all()
+    assert records[0].payload["extensions"]["judge_verdict"] == "BLOCKED"
+    records[0].payload["extensions"]["judge_verdict"] = "OVERRIDDEN_BY_OPERATOR"
+
+    verifier = TrailVerifier(key, frozenset({"protected.x"}))
+    with pytest.raises(TamperError):
+        verifier.verify(records)
+
+
+def test_read_sei_attestations_chill_self_clear_stuffing_override_omitted(tmp_path):
+    # A chill/coached self-clear that STUFFS operator-override extensions. With NO
+    # signature marker it must be omitted (keying on bare judge_verdict would admit
+    # an unsigned forgery). Even WITH a non-verifying judge_metadata_signature it is
+    # omitted unless protected_cell + content_hash are present and signed — but the
+    # marker-present branch is what the verified pre-gate would have rejected; here
+    # we assert the no-marker stuffing is omitted.
+    from legis.service.governance import read_sei_attestations
+
+    class _Rec:
+        def __init__(self, seq, payload):
+            self.seq = seq
+            self.payload = payload
+
+    stuffed = _Rec(
+        1,
+        {
+            "policy": "ordinary",
+            "entity_key": {"value": _ATTEST_SEI, "identity_stable": True},
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "extensions": {
+                # operator-override value but NO judge_metadata_signature marker
+                "judge_verdict": "OVERRIDDEN_BY_OPERATOR",
+                "protected_cell": True,
+                "loomweave": {"content_hash": "ch:stuffed"},
+            },
+        },
+    )
+
+    out = read_sei_attestations([stuffed], _ATTEST_SEI)
+    assert out["attestations"] == []
+
+
+def test_read_sei_attestations_unsigned_procedural_signoff_omitted(tmp_path):
+    # A structured (procedural) sign-off built with no signer -> SIGNED_OFF carries
+    # no signoff_signature marker -> omitted.
+    from legis.clock import FixedClock
+    from legis.enforcement.signoff import SignoffGate
+    from legis.service.governance import read_sei_attestations
+
+    store = AuditStore(f"sqlite:///{tmp_path}/gov.db")
+    gate = SignoffGate(store, FixedClock("2026-06-02T12:00:00+00:00"))  # no signer
+    _request_and_clear(gate)
+
+    out = read_sei_attestations(store.read_all(), _ATTEST_SEI)
+    assert out["status"] == "checked"
+    assert out["attestations"] == []
+
+
+def test_read_sei_attestations_cross_sei_not_surfaced(tmp_path):
+    # A genuine signed sign-off for a DIFFERENT SEI must not surface under the query.
+    from legis.service.governance import read_sei_attestations
+
+    store, gate = _signed_signoff_gate(tmp_path)
+    _request_and_clear(gate, sei="loomweave:eid:other")
+
+    out = read_sei_attestations(store.read_all(), _ATTEST_SEI)
+    assert out["attestations"] == []
+
+
+def test_read_sei_attestations_identity_unstable_omitted(tmp_path):
+    # identity_stable False in the SIGNED entity dict -> omitted.
+    from legis.service.governance import read_sei_attestations
+
+    class _Rec:
+        def __init__(self, seq, payload):
+            self.seq = seq
+            self.payload = payload
+
+    unstable = _Rec(
+        1,
+        {
+            "policy": "protected.x",
+            "entity_key": {"value": _ATTEST_SEI, "identity_stable": False},
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "extensions": {
+                "judge_metadata_signature": "hmac-sha256:v3:deadbeef",
+                "judge_verdict": "OVERRIDDEN_BY_OPERATOR",
+                "protected_cell": True,
+                "loomweave": {"content_hash": "ch:x"},
+            },
+        },
+    )
+
+    out = read_sei_attestations([unstable], _ATTEST_SEI)
+    assert out["attestations"] == []
+
+
+def test_read_sei_attestations_empty_content_hash_omitted(tmp_path):
+    # Empty inline content_hash (operator_override) and empty joined content_hash
+    # (signoff) both omit — never surface content_hash == "".
+    from legis.service.governance import read_sei_attestations
+
+    # operator_override inline-empty
+    class _Rec:
+        def __init__(self, seq, payload):
+            self.seq = seq
+            self.payload = payload
+
+    override_empty = _Rec(
+        1,
+        {
+            "policy": "protected.x",
+            "entity_key": {"value": _ATTEST_SEI, "identity_stable": True},
+            "recorded_at": "2026-06-02T12:00:00+00:00",
+            "extensions": {
+                "judge_metadata_signature": "hmac-sha256:v3:deadbeef",
+                "judge_verdict": "OVERRIDDEN_BY_OPERATOR",
+                "protected_cell": True,
+                "loomweave": {"content_hash": ""},
+            },
+        },
+    )
+    out = read_sei_attestations([override_empty], _ATTEST_SEI)
+    assert out["attestations"] == []
+
+    # signoff join-empty: real signed sign-off whose PENDING has empty content_hash
+    store, gate = _signed_signoff_gate(tmp_path)
+    _request_and_clear(gate, content_hash_value="")
+    out2 = read_sei_attestations(store.read_all(), _ATTEST_SEI)
+    assert out2["attestations"] == []
+
+
+def test_read_sei_attestations_blocked_verdict_omitted(tmp_path):
+    # A genuine signed BLOCKED protected verdict is not a clearance -> omitted.
+    from legis.clock import FixedClock
+    from legis.enforcement.verdict import JudgeOpinion
+    from legis.service.governance import read_sei_attestations
+
+    class _BlockingJudge:
+        def evaluate(self, record):
+            return JudgeOpinion(verdict=Verdict.BLOCKED, model="judge@1", rationale="no")
+
+    store = AuditStore(f"sqlite:///{tmp_path}/gov.db")
+    gate = ProtectedGate(
+        store, FixedClock("2026-06-02T12:00:00+00:00"), judge=_BlockingJudge(), key=b"k"
+    )
+    gate.submit(
+        policy="protected.x",
+        entity_key=_stable_entity_key(),
+        rationale="x",
+        agent_id="agent-1",
+        file_fingerprint="sha256:ff",
+        ast_path="ap",
+        extensions={"loomweave": {"content_hash": "ch:blocked"}},
+    )
+
+    out = read_sei_attestations(store.read_all(), _ATTEST_SEI)
+    assert out["status"] == "checked"
+    assert out["attestations"] == []
