@@ -9,6 +9,36 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.2.0] — 2026-06-25
+
+Warpline federation interfaces: an advisory preflight consumer and a
+forge-proof per-SEI attestation read. The agent MCP surface grows from 22 to
+24 tools.
+
+### Added
+
+- **Advisory Warpline preflight consumer (`warpline_preflight_get`).** A
+  stdlib-only HTTP client (`HttpWarplineClient`) and a `read_warpline_preflight`
+  service read surface Warpline's impact-radius and reverify-worklist hints. The
+  consumer is purely advisory and structurally isolated from every governance
+  verdict path — an acceptance test asserts governance output is byte-identical
+  with and without advisory data present, and transport or configuration
+  failures degrade to a discriminated `unavailable` rather than affecting a
+  verdict or raising. The client reuses Legis's SSRF/redirect/size-cap gating
+  (loopback or HTTPS only unless `LEGIS_ALLOW_INSECURE_REMOTE_HTTP=1`), with a
+  clone-parity guard that fails if those primitives drift from the Filigree
+  client.
+- **Forge-proof per-SEI attestation read (`attestation_get`).** A
+  `read_sei_attestations` classifier surfaces the operator-override and
+  cleared-signoff attestations bound to a given SEI. Admission is gated on
+  cryptographic signature markers drawn from the verified-trail selection: a
+  sign-off's joined PENDING record is integrity-bound by recomputing and
+  comparing its content hash against the signed request-payload hash, every
+  surfaced field comes from the signed set, and any ambiguity resolves to
+  omission (a false "attested" is a security hole; a missed attestation only
+  costs wasted reverify work). The adversarial forge phase admitted zero forged
+  records.
+
 ## [1.1.1] — 2026-06-23
 
 Security and release-readiness hardening after the 1.1.0 dogfood release.
