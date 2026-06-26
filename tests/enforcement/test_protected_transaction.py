@@ -109,3 +109,34 @@ def test_protected_transaction_no_overshoot_on_rollback(tmp_path):
     assert len(store.read_all()) == pre_batch_count
     # Anchor still at the pre-batch head -> does not raise.
     anchor.check(store.read_all())
+
+
+def test_raw_store_transaction_bypasses_anchor_advance_documented_residual(tmp_path):
+    """DOCUMENTS the parity limit (not a defense): a protected append inside a RAW
+    store.transaction() — bypassing gate.transaction() — defers the anchor advance
+    (in_batch() is true) and nothing re-advances it, so a truncation back to the
+    pre-batch head is NOT detected. The supported safe path is gate.transaction()
+    (Task 1); a caller that owns a raw batch must advance the anchor itself,
+    identically to SignoffGate. If a future change closes this (e.g. an after-commit
+    hook on AuditStore.transaction), update this test deliberately. legis-0c310712a7.
+    """
+    store, anchor, gate = _anchored_gate(tmp_path)
+    _override(gate, "pre-batch")
+    pre_seq, _ = store.get_latest_sequence_and_hash()
+
+    # RAW batch (NOT gate.transaction()): the append's anchor advance is deferred
+    # and never re-applied.
+    with store.transaction():
+        _override(gate, "in-raw-batch")
+
+    # LANDING ASSERTION: proves the in-raw-batch append actually landed (the
+    # in_batch()-deferred branch was taken). If this fails, the raw batch silently
+    # no-op'd and the residual test cannot be trusted. Do NOT silence by weakening
+    # the assertion.
+    assert store.get_latest_sequence_and_hash()[0] == pre_seq + 1
+
+    # The anchor is STALE at the pre-batch head (the residual).
+    _truncate_to(str(tmp_path / "gov.db"), pre_seq)
+
+    # Stale anchor == truncated DB head -> truncation is NOT detected.
+    anchor.check(store.read_all())  # does not raise: asserts the DOCUMENTED residual
