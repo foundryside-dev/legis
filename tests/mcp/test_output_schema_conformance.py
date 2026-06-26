@@ -632,11 +632,27 @@ def test_warpline_preflight_get_unavailable_conforms(tmp_path):
 
 def test_warpline_preflight_get_checked_conforms(tmp_path):
     class _FakeWarpline:
+        """Returns real-shaped envelopes with a GV-LG-3-valid meta.
+
+        A meta-violating envelope would be refused → unavailable, which would
+        make the ``status == 'checked'`` assertion below fail silently.
+        """
+
         def impact_radius(self, base, head):
-            return {"affected": [], "count": 0}
+            return {
+                "schema": "warpline.impact_radius.v1",
+                "ok": True,
+                "data": {"completeness": "FULL", "affected": []},
+                "meta": {"local_only": True, "peer_side_effects": []},
+            }
 
         def reverify_worklist(self, base, head):
-            return {"entries": [], "count": 0}
+            return {
+                "schema": "warpline.reverify_worklist.v1",
+                "ok": True,
+                "data": {"completeness": "FULL", "items": []},
+                "meta": {"local_only": True, "peer_side_effects": []},
+            }
 
     runtime, _store = _runtime(tmp_path)
     runtime.warpline = _FakeWarpline()

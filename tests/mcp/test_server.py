@@ -3433,12 +3433,25 @@ def test_warpline_preflight_get_unavailable_when_unwired(tmp_path):
 def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
     from legis.mcp import call_tool
 
+    _impact = {
+        "schema": "warpline.impact_radius.v1",
+        "ok": True,
+        "data": {"completeness": "FULL", "affected": [{"sei": "S1", "depth": 1}]},
+        "meta": {"local_only": True, "peer_side_effects": []},
+    }
+    _reverify = {
+        "schema": "warpline.reverify_worklist.v1",
+        "ok": True,
+        "data": {"completeness": "FULL", "items": []},
+        "meta": {"local_only": True, "peer_side_effects": []},
+    }
+
     class _FakeWarpline:
         def impact_radius(self, base, head):
-            return {"affected": [{"sei": "S1"}], "count": 1}
+            return _impact
 
         def reverify_worklist(self, base, head):
-            return {"entries": [], "count": 0}
+            return _reverify
 
     runtime, _store = _runtime(tmp_path)
     runtime.warpline = _FakeWarpline()
@@ -3446,8 +3459,8 @@ def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
     assert not result.get("isError")
     sc = result["structuredContent"]
     assert sc["status"] == "checked"
-    assert sc["impact_radius"] == {"affected": [{"sei": "S1"}], "count": 1}
-    assert sc["reverify_worklist"] == {"entries": [], "count": 0}
+    assert sc["impact_radius"] == _impact
+    assert sc["reverify_worklist"] == _reverify
 
 
 # Task 5: attestation_get fail-closed scaffolding
