@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import stat
+import subprocess
 import sys
 
 import pytest
@@ -706,6 +708,77 @@ def test_ensure_gitignore_idempotent(tmp_path):
     assert ok
     assert "already" in msg
     assert (tmp_path / ".gitignore").read_text() == first
+
+
+# ---------------------------------------------------------------------------
+# Nested .weft/legis/.gitignore (suite standard: filigree-4ed8152630)
+# ---------------------------------------------------------------------------
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+
+
+def test_ensure_legis_dir_gitignore_creates_nested_file(tmp_path):
+    ok, _msg = install.ensure_legis_dir_gitignore(tmp_path)
+    assert ok
+    nested = tmp_path / ".weft" / "legis" / ".gitignore"
+    assert nested.is_file()
+    content = nested.read_text()
+    # durable-vs-ephemeral header + named runtime files (reviewer visibility)
+    assert install.LEGIS_DIR_GITIGNORE_MARKER in content
+    assert "legis-*.db" in content
+    assert "operator.age" in content
+    assert "operator_session.json" in content
+    # atomic-write staging temps (mkstemp orphans) — incl. the secret-shaped one
+    assert "*.tmp" in content
+    assert ".operator.age.*" in content
+
+
+def test_ensure_legis_dir_gitignore_idempotent(tmp_path):
+    install.ensure_legis_dir_gitignore(tmp_path)
+    nested = tmp_path / ".weft" / "legis" / ".gitignore"
+    first = nested.read_text()
+    ok, msg = install.ensure_legis_dir_gitignore(tmp_path)
+    assert ok
+    assert "already" in msg
+    assert nested.read_text() == first
+
+
+def test_ensure_legis_dir_gitignore_appends_to_user_file_without_clobber(tmp_path):
+    legis_dir = tmp_path / ".weft" / "legis"
+    legis_dir.mkdir(parents=True)
+    (legis_dir / ".gitignore").write_text("# my own rule\nscratch/\n")
+    ok, msg = install.ensure_legis_dir_gitignore(tmp_path)
+    assert ok
+    assert "Added" in msg
+    content = (legis_dir / ".gitignore").read_text()
+    assert "scratch/" in content  # user content preserved
+    assert install.LEGIS_DIR_GITIGNORE_MARKER in content  # legis block appended
+
+
+def test_nested_gitignore_hides_runtime_state_without_root_weft_rule(tmp_path):
+    """The standard's actual guarantee: the nested file hides legis runtime
+    state even when the project-root .gitignore has NO .weft/ rule, so the
+    nested file is provably the thing doing the work."""
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    repo = tmp_path
+    _git(repo, "init")
+    # Root .gitignore deliberately has NO .weft/ rule — any ignore of legis
+    # runtime files can therefore only come from the nested file.
+    (repo / ".gitignore").write_text("node_modules/\n")
+    install.ensure_legis_dir_gitignore(repo)
+    legis_dir = repo / ".weft" / "legis"
+    (legis_dir / "legis-pulls.db").write_bytes(b"")
+    (legis_dir / "operator.age").write_bytes(b"")
+    (legis_dir / "operator_session.json5678.tmp").write_bytes(b"")  # mkstemp orphan
+    # DB + secret + staging temp are ignored by the nested file...
+    assert _git(repo, "check-ignore", ".weft/legis/legis-pulls.db").returncode == 0
+    assert _git(repo, "check-ignore", ".weft/legis/operator.age").returncode == 0
+    assert _git(repo, "check-ignore", ".weft/legis/operator_session.json5678.tmp").returncode == 0
+    # ...but the nested .gitignore itself stays tracked (not ignored).
+    assert _git(repo, "check-ignore", ".weft/legis/.gitignore").returncode == 1
 
 
 # ---------------------------------------------------------------------------

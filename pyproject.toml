@@ -1,6 +1,6 @@
 [project]
 name = "legis"
-version = "1.2.0"
+version = "1.3.0"
 description = "Legis — the git/CI + governance layer of the Weft suite"
 readme = "README.md"
 license = "MIT"

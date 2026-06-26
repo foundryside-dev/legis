@@ -1,0 +1,18 @@
+[
+  {
+    "commit_sha": "0000000000000000000000000000000000000000",
+    "new_blob": "",
+    "new_path": "authn.py",
+    "old_blob": "",
+    "old_path": "auth.py",
+    "similarity": 100
+  },
+  {
+    "commit_sha": "0000000000000000000000000000000000000000",
+    "new_blob": "",
+    "new_path": "",
+    "old_blob": "",
+    "old_path": "ghost.py",
+    "similarity": 0
+  }
+]

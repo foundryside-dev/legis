@@ -611,6 +611,7 @@ def _run_install(args) -> int:
         OperatorKeyCustodyError,
         choose_install_backend,
         ensure_gitignore,
+        ensure_legis_dir_gitignore,
         inject_instructions,
         install_claude_code_hooks,
         install_codex_skills,
@@ -658,6 +659,11 @@ def _run_install(args) -> int:
         (install_all or args.codex_skills, "Codex skill", lambda: install_codex_skills(project_root)),
         (install_all or args.hooks, "Claude Code hook", lambda: install_claude_code_hooks(project_root)),
         (install_all or args.gitignore, ".gitignore", lambda: ensure_gitignore(project_root)),
+        (
+            install_all or args.gitignore,
+            ".weft/legis/.gitignore",
+            lambda: ensure_legis_dir_gitignore(project_root),
+        ),
         (install_all or args.mcp, ".mcp.json", lambda: register_mcp_json(project_root, args.agent_id)),
         (install_all or args.posture, "posture ledger", _do_posture),
     ]

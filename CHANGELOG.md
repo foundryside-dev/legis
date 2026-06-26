@@ -9,6 +9,45 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.3.0] — 2026-06-26
+
+Suite-standard dot-dir hygiene, plus the legis-resident halves of six cross-repo
+Weft seam conformance oracles.
+
+### Added
+
+- **Nested `.weft/legis/.gitignore` shipped at install (suite standard,
+  filigree-4ed8152630).** `legis install` (and `legis install --gitignore`) now
+  ships a nested `.weft/legis/.gitignore` alongside the existing project-root
+  `.weft/legis/` rule, so legis's machine-written runtime state stays out of
+  every commit even in a consuming repo that drops the root rule — closing
+  legis's part of the cross-suite "every tool ships a complete nested
+  `.gitignore` for its own dot-dir, with a durable-vs-ephemeral header"
+  standard. Unlike filigree's durable `filigree.db`, legis is the sole writer of
+  this subtree and commits **nothing** durable: the ignore enumerates the
+  governance/posture/pulls/checks/binding SQLite DBs (`legis-*.db`) and their
+  WAL/SHM/journal sidecars, names the operator-elevation secrets
+  (`operator.age`, `operator_session.json`) so a reviewer sees by name what is
+  never committed, and covers the atomic-write staging temps (`*.tmp`,
+  `.operator.age.*`) that `mkstemp` orphans in the dir on a failed write. The writer is marker-guarded and append-not-clobber (a
+  user-authored `.weft/legis/.gitignore` is preserved). `legis doctor` gains an
+  `install.dir_gitignore` check that flags an existing dot-dir missing the
+  nested ignore and ships it on `--repair` (an absent dot-dir is OK — created
+  lazily, nothing to protect yet).
+
+### Testing — cross-repo Weft seam conformance oracles
+
+- **Legis-resident halves of six cross-repo Weft seams**, each driving legis's
+  REAL code over a byte-identical golden with a Layer-1 byte-pin (fail-closed in
+  the default suite) plus a skip-clean Layer-2 source recheck: SEI
+  (loomweave→legis), git-renames (legis→loomweave), signoff-binding
+  (legis→filigree), loomweave-HMAC-wire (legis→loomweave, live-gated), the
+  warpline preflight read (legis consumer), and the per-SEI `attestation_get`
+  read (legis producer). Two outstanding peer obligations are recorded rather
+  than papered over — warpline ships no flat HTTP producer for the preflight
+  shape, and warpline's `LegisClient.governance_for_sei` is unwired — with the
+  Layer-2 rechecks armed to fire when each peer lands its half.
+
 ## [1.2.0] — 2026-06-25
 
 Warpline federation interfaces: an advisory preflight consumer and a

@@ -279,6 +279,43 @@ def check_gitignore(root: Path, *, repair: bool) -> DoctorCheck:
     )
 
 
+def _nested_gitignore_shipped(legis_dir: Path) -> bool:
+    """True iff ``.weft/legis/.gitignore`` carries the legis-managed marker."""
+    nested = legis_dir / ".gitignore"
+    try:
+        return nested.is_file() and _install.LEGIS_DIR_GITIGNORE_MARKER in nested.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
+def check_dir_gitignore(root: Path, *, repair: bool) -> DoctorCheck:
+    """Check that legis's dot-dir ships its nested ``.gitignore`` (suite standard).
+
+    An absent ``.weft/legis/`` is OK — it is created lazily and holds nothing to
+    protect yet (mirrors :func:`check_store_dir`). Once the dir exists, the
+    nested ignore must be present so legis runtime state never commits even if a
+    consuming repo drops the root ``.weft/`` rule (filigree-4ed8152630).
+    """
+    cid = "install.dir_gitignore"
+    legis_dir = _store_dir_for(root)
+    if _nested_gitignore_shipped(legis_dir):
+        return DoctorCheck(cid, "ok", repairable=True)
+    if repair:
+        # Ship it (creating .weft/legis/ if needed) so the protection exists
+        # before any DB is opened — robust against the dir being created lazily
+        # by a later check (e.g. an audit-chain DB open) in the same repair pass.
+        ok, msg = _install.ensure_legis_dir_gitignore(root)
+        if ok and _nested_gitignore_shipped(legis_dir):
+            return DoctorCheck(cid, "ok", fixed=True, repairable=True)
+        return DoctorCheck(cid, "error", message=msg, repairable=True)
+    if not legis_dir.is_dir():
+        # Created lazily; nothing to protect yet (mirrors check_store_dir).
+        return DoctorCheck(cid, "ok", repairable=True)
+    return DoctorCheck(
+        cid, "error", message=".weft/legis/.gitignore missing (run: legis install)", repairable=True
+    )
+
+
 # ---------------------------------------------------------------------------
 # Task 7: config & store checks
 # ---------------------------------------------------------------------------
@@ -937,6 +974,7 @@ def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:
     checks.append(check_skill_pack(root, ".agents", repair=repair))
     checks.append(check_hook(root, repair=repair))
     checks.append(check_gitignore(root, repair=repair))
+    checks.append(check_dir_gitignore(root, repair=repair))
     checks.append(check_mcp_json(root, repair=repair))
     checks.append(check_filigree_binding_scope(root))
     checks.append(check_weft_toml(root))

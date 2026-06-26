@@ -33,6 +33,18 @@ def test_install_selective_gitignore_only(tmp_path, monkeypatch):
     assert not (tmp_path / ".claude").exists()
 
 
+def test_install_gitignore_ships_nested_dir_ignore(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    rc = main(["install", "--gitignore"])
+    assert rc == 0
+    # root rule...
+    assert ".weft/legis/" in (tmp_path / ".gitignore").read_text()
+    # ...and the nested suite-standard ignore (filigree-4ed8152630)
+    nested = tmp_path / ".weft" / "legis" / ".gitignore"
+    assert nested.is_file()
+    assert install.LEGIS_DIR_GITIGNORE_MARKER in nested.read_text()
+
+
 def test_install_claude_md_only(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     rc = main(["install", "--claude-md"])
