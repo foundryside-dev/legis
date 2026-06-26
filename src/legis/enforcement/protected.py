@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -284,10 +285,10 @@ class ProtectedGate:
             return payload
 
         seq = self._store.append_signed(build)
-        # Never read the head mid-batch: it is a batch-forbidden fresh-connection
-        # read (Q-M5). The protected gate is not itself a batch owner, but it
-        # shares the governance store with the sign-off gate, so guard defensively
-        # — the next non-batch append re-advances the anchor (AUD-1 lag contract).
+        # Advance the anchor after the commit (AUD-1) — but never mid-batch: the
+        # head read is a fresh-connection read the batch forbids (Q-M5), and a
+        # per-append advance inside a batch is wasted anyway since only the final
+        # head matters. ``transaction()`` advances it once when the batch commits.
         if self._anchor is not None and not self._store.in_batch():
             self._anchor.update(*self._store.get_latest_sequence_and_hash())
         signature = captured["signature"]
@@ -411,6 +412,29 @@ class ProtectedGate:
             ast_path=ast_path,
             extensions=extensions,
         )
+
+    @contextmanager
+    def transaction(self):
+        """Group this gate's protected appends into one all-or-nothing batch and
+        advance the anchor once after commit — parity with
+        ``SignoffGate.transaction()`` (signoff.py).
+
+        The per-append anchor advance is deferred inside a batch (the head read
+        is batch-forbidden, Q-M5; see the ``in_batch()`` guard in
+        ``_record_signed``). Advance it once here after the batch commits and the
+        write lock is released. An exception inside the batch rolls back and
+        propagates before this runs, so the anchor never advances past a
+        rolled-back head (AUD-1: the anchor only ever lags, never overshoots).
+
+        This method must be the OUTERMOST batch owner for its store; nesting it
+        inside another gate's transaction on the same thread raises RuntimeError
+        (fail-closed, the batch-forbidden read — inherited from the
+        ``SignoffGate`` contract).
+        """
+        with self._store.transaction():
+            yield
+        if self._anchor is not None:
+            self._anchor.update(*self._store.get_latest_sequence_and_hash())
 
     def records(self):
         """The governance trail this gate writes to — for verified reads."""
