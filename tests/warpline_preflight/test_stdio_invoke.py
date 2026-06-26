@@ -74,6 +74,79 @@ def test_replays_a_REAL_captured_session(tmp_path):
     assert env["meta"]["peer_side_effects"] == []
 
 
+def test_replays_a_REAL_reverify_session(tmp_path):
+    """DoD GATE: this fixture is bytes captured from a live `warpline-mcp` session
+    for the `warpline_reverify_worklist_get` tool (see PROVENANCE). A green here means
+    the real message order + result shape were exercised for the reverify tool path.
+
+    PROVENANCE: captured from warpline-mcp 1.2.0 on 2026-06-27 in /home/john/legis.
+    Exit-on-EOF: YES (rc=0). Interleaved I/O: NOT required (batch accepted).
+    Real protocolVersion from server: "2025-03-26".
+    Result shape: structuredContent (dict) present; notifications/initialized
+    returns id:null error (valid JSON, id != 2 -> silently skipped by _read_jsonrpc_result).
+    """
+    fixture = pathlib.Path(__file__).parent / "fixtures" / "warpline-mcp-reverify-session.jsonl"
+    assert fixture.exists(), f"live reverify session fixture missing: {fixture}"
+    stub = tmp_path / "replay.py"
+    stub.write_text(textwrap.dedent(f"""
+        import sys
+        sys.stdin.read()  # consume all stdin to EOF before responding
+        with open({str(fixture)!r}) as fh:
+            for line in fh:
+                line = line.rstrip('\\n')
+                if line:
+                    print(line, flush=True)
+    """))
+    env = StdioMcpInvoke(command=[sys.executable, str(stub)])(
+        "warpline_reverify_worklist_get", {"rev_range": "HEAD~1..HEAD", "repo": "/test"}
+    )
+    # assertions on known fields from the real captured envelope
+    assert env["schema"] == "warpline.reverify_worklist.v1"
+    assert env["ok"] is True
+    assert env["data"]["completeness"] == "NO_SNAPSHOT"
+    assert env["data"]["items"] == []
+    assert env["meta"]["local_only"] is True
+    assert env["meta"]["peer_side_effects"] == []
+
+
+def test_content_text_fallback_parse(tmp_path):
+    """MINOR (c): test the content[0].text fallback parse path.
+    When structuredContent is absent, StdioMcpInvoke must parse the envelope
+    from content[0].text. Both existing replay stubs return structuredContent;
+    this test exercises the fallback branch with a fake server that returns ONLY
+    content:[{type:text,text:<json envelope>}] and NO structuredContent.
+    """
+    import json as _json
+    envelope = {
+        "schema": "warpline.impact_radius.v1",
+        "ok": True,
+        "query": {},
+        "data": {"completeness": "FULL", "affected": [{"sei": "test-sei"}],
+                 "staleness": {"commits_behind": 0}},
+        "warnings": [],
+        "next_actions": {},
+        "enrichment": {},
+        "meta": {"local_only": True, "peer_side_effects": [], "producer": {"tool": "warpline", "version": "0"}},
+    }
+    # Write envelope to a file so the fake server can read it without quoting hell
+    env_file = tmp_path / "envelope.json"
+    env_file.write_text(_json.dumps(envelope), encoding="utf-8")
+    body = f'''
+        import sys, json
+        env_text = open({str(env_file)!r}, encoding="utf-8").read()
+        for line in sys.stdin:
+            m = json.loads(line); mid = m.get("id")
+            if m.get("method") == "initialize":
+                print(json.dumps({{"jsonrpc":"2.0","id":mid,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}},"serverInfo":{{"name":"f","version":"0"}}}}}}), flush=True)
+            elif m.get("method") == "tools/call":
+                print(json.dumps({{"jsonrpc":"2.0","id":mid,"result":{{"content":[{{"type":"text","text":env_text}}],"isError":False}}}}), flush=True)
+    '''
+    env = StdioMcpInvoke(command=_script(tmp_path, body))("warpline_impact_radius_get", {"rev_range": "a..b"})
+    assert env["schema"] == "warpline.impact_radius.v1"
+    assert env["data"]["affected"] == [{"sei": "test-sei"}]
+    assert env["data"]["completeness"] == "FULL"
+
+
 @pytest.mark.parametrize("body,match", [
     ('import sys\n', "no JSON-RPC response"),                                 # empty stdout
     ('print("not json", flush=True)\n', "non-JSON line"),                     # non-JSON line

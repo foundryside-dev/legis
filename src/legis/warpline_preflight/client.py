@@ -107,7 +107,7 @@ class StdioMcpInvoke:
         stdin = ("".join(json.dumps(m) + "\n" for m in msgs)).encode("utf-8")
         try:
             proc = subprocess.run(self._command, input=stdin, capture_output=True,
-                                  timeout=self._timeout, shell=False, check=False)  # text=False -> bytes
+                                  timeout=self._timeout, shell=False, check=False, text=False)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             raise WarplineError(f"warpline-mcp spawn/timeout failed: {exc}") from exc
         if len(proc.stdout) > MAX_RESPONSE_BYTES:

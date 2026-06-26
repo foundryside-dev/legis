@@ -11,6 +11,20 @@ The capture produced `completeness: "NO_SNAPSHOT"` and empty `affected`/`items`
 lists (no Loomweave snapshot in place at capture time).  The meta fields
 `local_only: true, peer_side_effects: []` are present and valid.
 
+## Live-capture transcripts
+
+Both halves of the golden are backed by committed raw MCP session transcripts
+(three JSON-RPC lines each: id=1 initialize response, id=null
+notifications/initialized error, id=2 tools/call response):
+
+  * `warpline-mcp-live-session.jsonl`    — impact_radius session, captured 2026-06-26
+  * `warpline-mcp-reverify-session.jsonl` — reverify_worklist session, captured 2026-06-27
+
+Replay tests in `test_stdio_invoke.py` echo these raw bytes through `StdioMcpInvoke`
+and assert known fields from the capture, so the real message order + result shape
+(structuredContent vs content[].text + protocolVersion) are exercised, not just
+legis-shaped assumptions.
+
 ## Legis conforms to warpline's extant envelope — warpline ships no producer
 
 Per SEAM 4 §4A and GV-LG-3: legis is a CONSUMER of warpline's extant MCP
@@ -27,8 +41,9 @@ skips cleanly and will activate automatically if warpline vendors that fixture.
 ## Re-capturing the golden
 
 Run `warpline-mcp` with stdio JSON-RPC calls for `warpline_impact_radius_get` and
-`warpline_reverify_worklist_get` (see `warpline-mcp-live-session.jsonl` for the
-exact protocol), extract the `structuredContent` from each `id=2` response, build
-the golden as `{"impact_radius": <...>, "reverify_worklist": <...>, "_provenance":
+`warpline_reverify_worklist_get` (see `warpline-mcp-live-session.jsonl` and
+`warpline-mcp-reverify-session.jsonl` for the exact protocol), extract the
+`structuredContent` from each `id=2` response, build the golden as
+`{"impact_radius": <...>, "reverify_worklist": <...>, "_provenance":
 {"source": "live-captured", ...}}`, then re-pin `GOLDEN_BLOB_SHA` in the oracle
 to `git hash-object tests/warpline_preflight/fixtures/warpline-preflight-golden.json`.
