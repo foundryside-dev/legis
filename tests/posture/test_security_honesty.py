@@ -448,3 +448,65 @@ def test_read_floor_fails_closed_on_integrity_break(tmp_path):
     # Pre-fix: the descending scan returns the forged "chill". Post-fix: the
     # broken chain fails verify_integrity, so read_floor fails closed.
     assert ledger.read_floor() is None
+
+
+# -- test_read_floor_recomputed_chain_forgery_is_conceded_residual ------------
+
+
+def test_read_floor_recomputed_chain_forgery_is_conceded_residual(tmp_path):
+    """DOCUMENTS the limit so it is visible in the suite, not implied-closed.
+
+    A file-write attacker who *recomputes* the KEYLESS chain (valid content_hash,
+    prev_hash, chain_hash) on a forged floor-lowering TRANSITION passes
+    verify_integrity() — the keyless hot read CANNOT detect this. On a
+    non-rekeyed ledger it is caught by NEITHER this hot read NOR `doctor`:
+    doctor's operator_sig verification (_transition_acknowledges) runs ONLY on
+    the KEY_RESET-acknowledgment path, and there is no KEY_RESET here. It is the
+    conceded raw-file-write residual (README "Known security limitations",
+    README.md:137). A general per-transition operator_sig audit in doctor would
+    close it operator-side (separate follow-up). If a future change makes
+    read_floor reject this, that is a STRENGTHENING: update this test
+    deliberately — do not let it silently flip for the wrong reason.
+    """
+    from legis.canonical import canonical_json, content_hash
+    # Recompute the chain with the PRODUCTION primitive so the residual is not
+    # undermined by a divergent re-implementation (precedent: test_audit_store.py:10).
+    from legis.store.audit_store import _chain
+
+    key_hex = mint_key()
+    key_bytes = bytes.fromhex(key_hex)
+    ledger, _ = _genesis(tmp_path, key_hex=key_hex)
+    _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
+    set_floor(
+        "protected", ledger=ledger, signer=_MemSigner(key_bytes),
+        agent_id="op", rationale="tighten", clock=FixedClock("t1"),
+    )
+    assert ledger.read_floor() == "protected"
+
+    # Forge a floor-lowering TRANSITION with a CORRECTLY recomputed keyless chain.
+    head_seq, head_chain = ledger.store.get_latest_sequence_and_hash()
+    forged = {
+        "kind": KIND_TRANSITION, "floor": "chill", "operator_sig": "junk",
+        "key_fingerprint": "x", "agent_id": "attacker", "recorded_at": "t9",
+        "rationale": "forged", "session_id": None,
+    }
+    c_hash = content_hash(forged)            # correct keyless content hash
+    chain_hash = _chain(head_chain, c_hash)  # correct keyless chain link
+    conn = sqlite3.connect(str(_sqlite_file(ledger._url)))
+    try:
+        conn.execute(
+            "INSERT INTO audit_log (seq, payload, content_hash, prev_hash, "
+            "chain_hash) VALUES (:seq, :payload, :ch, :ph, :xh)",
+            {
+                "seq": head_seq + 1, "payload": canonical_json(forged),
+                "ch": c_hash, "ph": head_chain, "xh": chain_hash,
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Integrity holds (keyless chain valid) -> the keyless read is fooled.
+    # This asserts the DOCUMENTED RESIDUAL, not a desired guarantee.
+    assert ledger.store.verify_integrity() is True
+    assert ledger.read_floor() == "chill"
