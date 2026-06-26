@@ -9,10 +9,46 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
-## [1.3.0] — 2026-06-26
+## [1.3.0] — 2026-06-27
 
-Suite-standard dot-dir hygiene, plus the legis-resident halves of six cross-repo
-Weft seam conformance oracles.
+Suite-standard dot-dir hygiene and the legis-resident halves of six cross-repo
+Weft seam conformance oracles, plus three security/federation fixes: two
+governance-honesty hardenings on the posture and protected-cell audit paths, and
+a rebuild of the Warpline advisory-preflight seam onto Warpline's real MCP wire.
+
+### Security
+
+- **Posture `read_floor()` fails closed on a chain-integrity break
+  (legis-476ab6f125).** The hot routing read now gates on the keyless
+  `verify_integrity()` chain re-hash before returning the floor, so a
+  raw-DB-written/forged ledger tail can no longer silently set the routing floor:
+  an unverifiable chain resolves to `None` → the fail-closed `structured`
+  default, never the tampered floor. A recomputed-keyless-chain forgery remains
+  the conceded raw-file-write residual (README "Known security limitations"),
+  pinned by a characterization test rather than implied-closed.
+- **Protected-cell batches advance the HeadAnchor (legis-0c310712a7).**
+  `ProtectedGate` gains a `transaction()` context manager — a parity mirror of
+  `SignoffGate.transaction()` — that advances the out-of-band HeadAnchor after a
+  batched protected append commits, so a later tail-truncation back to a stale
+  anchor is detectable. Preventive/parity hardening: production wires no anchor
+  and no caller batches protected appends today.
+
+### Changed — Warpline advisory preflight rebuilt onto the real MCP wire
+
+- **`warpline_preflight_get` now speaks Warpline's actual surface
+  (legis-a53d92507d).** The prior client issued `GET /api/impact-radius` against
+  an HTTP server Warpline never served. It is replaced by a stdlib stdio JSON-RPC
+  client (`WarplineMcpClient` + `StdioMcpInvoke`, no new dependency) that consumes
+  Warpline's **extant** `warpline_impact_radius_get` / `warpline_reverify_worklist_get`
+  MCP tools with a `rev_range`, parses the real `warpline.impact_radius.v1` /
+  `warpline.reverify_worklist.v1` envelope, and verifies the
+  `meta.local_only` / `peer_side_effects` invariant (GV-LG-3), failing closed on
+  every fault. Config moves from `WARPLINE_API_URL` to `WARPLINE_MCP_CMD`. The
+  advisory boundary is unchanged: governance verdicts stay byte-identical with or
+  without Warpline, and any failure degrades to a discriminated `unavailable`.
+  This **reverses** the earlier "Warpline must ship a flat HTTP producer" framing
+  — legis conforms to Warpline's frozen envelope (hub SEAM 4 §4A / GV-LG-3);
+  Warpline builds nothing.
 
 ### Added
 
@@ -42,11 +78,12 @@ Weft seam conformance oracles.
   the default suite) plus a skip-clean Layer-2 source recheck: SEI
   (loomweave→legis), git-renames (legis→loomweave), signoff-binding
   (legis→filigree), loomweave-HMAC-wire (legis→loomweave, live-gated), the
-  warpline preflight read (legis consumer), and the per-SEI `attestation_get`
-  read (legis producer). Two outstanding peer obligations are recorded rather
-  than papered over — warpline ships no flat HTTP producer for the preflight
-  shape, and warpline's `LegisClient.governance_for_sei` is unwired — with the
-  Layer-2 rechecks armed to fire when each peer lands its half.
+  warpline preflight read (legis consumer — now driving Warpline's real
+  `warpline.impact_radius.v1` / `warpline.reverify_worklist.v1` MCP envelope; see
+  *Changed* above), and the per-SEI `attestation_get` read (legis producer). One
+  outstanding peer obligation is recorded rather than papered over — warpline's
+  `LegisClient.governance_for_sei` is unwired — with the Layer-2 recheck armed to
+  fire when warpline lands its half.
 
 ## [1.2.0] — 2026-06-25
 
