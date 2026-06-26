@@ -229,17 +229,20 @@ def build_runtime(agent_id: str) -> McpRuntime:
         filigree = HttpFiligreeClient(filigree_url)
 
     warpline = None
-    warpline_url = os.environ.get("WARPLINE_API_URL")
-    if warpline_url:
-        from legis.warpline_preflight.client import HttpWarplineClient, WarplineError
-
+    warpline_cmd = os.environ.get("WARPLINE_MCP_CMD")
+    if warpline_cmd:
+        import shlex
+        from legis.warpline_preflight.client import StdioMcpInvoke, WarplineError, WarplineMcpClient
         try:
-            warpline = HttpWarplineClient(warpline_url)
-        except WarplineError:
+            argv = shlex.split(warpline_cmd)
+            if not argv:
+                raise WarplineError("WARPLINE_MCP_CMD is blank")
+            from legis.config import project_root
+            warpline = WarplineMcpClient(invoke=StdioMcpInvoke(command=argv), repo=str(project_root()))
+        except (WarplineError, ValueError) as exc:
             logging.getLogger(__name__).warning(
-                "WARPLINE_API_URL is set but invalid; warpline advisory context "
-                "disabled (governance unaffected)."
-            )
+                "WARPLINE_MCP_CMD is set but invalid (%s); warpline advisory context "
+                "disabled (governance unaffected).", exc)
             warpline = None
 
     protected_gate = None

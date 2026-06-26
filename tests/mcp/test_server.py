@@ -3385,33 +3385,33 @@ def test_check_list_target_type_schema_declares_enum_matching_handler(tmp_path):
 
 def test_build_runtime_wires_warpline_from_env(monkeypatch, tmp_path):
     from legis.mcp import build_runtime
-    from legis.warpline_preflight.client import HttpWarplineClient
+    from legis.warpline_preflight.client import WarplineMcpClient
 
-    monkeypatch.setenv("WARPLINE_API_URL", "http://localhost:9100")
+    monkeypatch.setenv("WARPLINE_MCP_CMD", "echo")
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)  # engine-only: no protected gate
     # NOTE: build_runtime(agent_id) takes ONLY agent_id (mcp.py:200); source root
     # and DBs are env-driven (LEGIS_SOURCE_ROOT, mcp.py:275). There is NO
     # source_root= kwarg — passing one raises TypeError before any assertion.
     runtime = build_runtime("agent-x")
-    assert isinstance(runtime.warpline, HttpWarplineClient)
+    assert isinstance(runtime.warpline, WarplineMcpClient)
 
 
 def test_build_runtime_leaves_warpline_unwired_without_env(monkeypatch, tmp_path):
     from legis.mcp import build_runtime
 
-    monkeypatch.delenv("WARPLINE_API_URL", raising=False)
+    monkeypatch.delenv("WARPLINE_MCP_CMD", raising=False)
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     runtime = build_runtime("agent-x")
     assert runtime.warpline is None
 
 
-def test_build_runtime_degrades_warpline_to_none_on_bad_url(monkeypatch, tmp_path):
-    # A misconfigured ADVISORY url must NOT crash the sole governance authority
+def test_build_runtime_degrades_warpline_to_none_on_bad_cmd(monkeypatch, tmp_path):
+    # A misconfigured ADVISORY command must NOT crash the sole governance authority
     # at startup; it degrades to no advisory context (governance unaffected).
     from legis.mcp import build_runtime
 
-    monkeypatch.setenv("WARPLINE_API_URL", "not-a-valid-url")
+    monkeypatch.setenv("WARPLINE_MCP_CMD", "   ")  # blank after shlex.split -> fail-safe None
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
     runtime = build_runtime("agent-x")

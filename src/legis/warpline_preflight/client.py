@@ -37,8 +37,9 @@ class WarplineMcpClient:
     envelope through verbatim (the bare-object MCP output schema makes pass-through
     lossless). Advisory-ONLY; every contract fault fails CLOSED -> WarplineError."""
 
-    def __init__(self, *, invoke: "Invoke") -> None:
+    def __init__(self, *, invoke: "Invoke", repo: str) -> None:
         self._invoke = invoke
+        self._repo = repo
 
     def impact_radius(self, base: str, head: str) -> dict[str, Any]:
         return self._call(*_IMPACT, base, head)
@@ -47,7 +48,7 @@ class WarplineMcpClient:
         return self._call(*_REVERIFY, base, head)
 
     def _call(self, schema: str, tool: str, base: str, head: str) -> dict[str, Any]:
-        env = self._invoke(tool, {"rev_range": f"{base}..{head}"})
+        env = self._invoke(tool, {"repo": self._repo, "rev_range": f"{base}..{head}"})
         if not isinstance(env, dict):
             raise WarplineError(f"{tool} returned {type(env).__name__}, expected an envelope object")
         if env.get("schema") != schema:
