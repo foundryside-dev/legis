@@ -11,11 +11,12 @@ Fail-closed contract (design §4/§5):
     ``None``; callers map that to the fail-closed ``structured`` default, NEVER
     ``chill``. Only an explicit ``GENESIS`` record makes ``chill`` the floor.
   * The current floor is the latest authoritative floor record's ``floor`` field
-    (``GENESIS`` / ``TRANSITION`` / ``KEY_RESET``), found by one descending
-    payload scan from the tail, never the O(N) ``read_all`` loop or a repeated
-    point-read loop over metadata. Metadata records such as
-    ``OPERATOR_SESSION_OPENED`` must not lower the effective floor, even if they
-    carry a stale ``floor`` field.
+    (``GENESIS`` / ``TRANSITION`` / ``KEY_RESET``). An O(N) keyless
+    ``verify_integrity`` walk GATES the read (fail-closed: a chain that does not
+    verify yields ``None`` -> ``structured``); the floor itself is then found by
+    one descending payload scan from the tail, never a repeated point-read loop
+    over metadata. Metadata records such as ``OPERATOR_SESSION_OPENED`` must not
+    lower the effective floor, even if they carry a stale ``floor`` field.
 """
 
 from __future__ import annotations
@@ -92,14 +93,49 @@ class PostureLedger:
     def read_floor(self) -> str | None:
         """The current floor (latest authoritative floor record), or ``None``.
 
-        Single descending table scan, never a ``read_all`` loop and never a
-        point-read loop over metadata tails. A missing DB file or an empty store
-        both report ``None`` (fail-closed: callers map ``None`` -> ``structured``).
-        Metadata records are skipped so an operator session record cannot lower
-        an already-raised floor by becoming the tail.
+        Fail-closed: the floor sets routing, so the ledger must first PROVE its
+        own integrity. ``verify_integrity()`` (an O(N) keyless chain re-hash)
+        gates the read; a chain that does not verify — a raw-write in-place edit,
+        reorder, or seq gap — yields ``None`` (callers map ``None`` -> the
+        fail-closed ``structured`` default), never the tampered floor. A missing
+        DB file or an empty store also report ``None`` (``verify_integrity`` is
+        True on an empty store; the table-absence check returns ``None`` below).
+
+        The O(N) integrity walk runs on EVERY resolution (the floor is never
+        cached, design D2) and is deliberate: it is bounded by operator-action
+        volume (genesis/transition/rekey are operator-gated; session-open churn
+        is bounded by TTL expiry + human-in-the-loop enabling), immaterial at
+        posture-ledger scale on local SQLite, and an *unverified* hot read was
+        the whole bug. The two failure modes are both fail-closed but
+        asymmetric: a DETECTED tamper (a clean walk that does not verify)
+        resolves to ``None`` -> ``structured``; an I/O fault (locked/corrupt DB
+        raising ``OperationalError``) propagates as an exception and aborts the
+        read — neither is a pass. Do NOT wrap the gate in a try/except that
+        downgrades that raise to a permissive default.
+
+        SCOPE (honesty): the chain is keyless SHA, so this proves integrity +
+        tail-kind but NOT operator authorization. A file-write attacker who
+        *recomputes* the keyless chain on a forged floor-lowering ``TRANSITION``
+        passes this gate; on a non-rekeyed ledger that forgery is caught by
+        NEITHER this keyless hot read NOR ``doctor`` today — it is a PURE
+        conceded raw-file-write residual (README "Known security limitations",
+        README.md:137). ``doctor``'s keyed ``operator_sig`` verification
+        (``_transition_acknowledges``, doctor.py:649) covers ONLY the
+        ``KEY_RESET``-acknowledgment path (D6), not a ``TRANSITION`` on a ledger
+        with no reset to acknowledge. A general per-transition ``operator_sig``
+        audit in ``doctor`` would close the residual operator-side, but that is
+        separate follow-up, not this change. See
+        ``test_read_floor_fails_closed_on_integrity_break`` and
+        ``test_read_floor_recomputed_chain_forgery_is_conceded_residual``.
         """
         path = _sqlite_file(self._url)
         if path is not None and not path.exists():
+            return None
+        # Fail closed if the chain cannot prove integrity: a tampered/forged
+        # ledger must not be trusted to set the routing floor. verify_integrity()
+        # returns True on an empty store, so an absent/empty ledger still reads
+        # as None via the table-absence check below, not a spurious failure.
+        if not self.store.verify_integrity():
             return None
         self.store._assert_no_batch_in_progress("read_floor")
         with self.store._engine.begin() as conn:

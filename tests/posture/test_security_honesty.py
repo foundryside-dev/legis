@@ -19,7 +19,9 @@ posture_db_url(); the session file is redirected to a per-test tmp path.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import sqlite3
 
 import pytest
 
@@ -29,6 +31,7 @@ from legis.posture import session as session_mod
 from legis.posture.ledger import (
     REFUSED_NO_SESSION,
     PostureLedger,
+    _sqlite_file,
     set_floor,
 )
 from legis.posture.records import KIND_KEY_RESET, KIND_TRANSITION
@@ -390,3 +393,58 @@ def test_operator_key_never_in_logs(caplog):
             assert key_hex not in caplog.text, backend_id
     finally:
         del os.environ[_OPERATOR_KEY_ENV]
+
+
+# -- test_read_floor_fails_closed_on_integrity_break --------------------------
+
+
+def test_read_floor_fails_closed_on_integrity_break(tmp_path):
+    """A raw-DB tail record that lowers the floor but breaks the keyless hash
+    chain must NOT be trusted: read_floor() fails closed (returns None ->
+    structured), never the forged floor. (legis-476ab6f125; PRD-0005 crit 1.)
+
+    Uses the canonical raw-file-write attacker model (sqlite3.connect, as in
+    tests/store/test_audit_store.py:22,78), not the ORM. In-place-edit / reorder
+    / seq-gap tamper is already pinned for the same gate at
+    tests/store/test_audit_store.py:78 and :246; this test exercises the
+    tail-append vector through read_floor specifically.
+    """
+    key_hex = mint_key()
+    key_bytes = bytes.fromhex(key_hex)
+    ledger, _ = _genesis(tmp_path, key_hex=key_hex)  # GENESIS @ chill
+
+    # Elevate to protected via a signed transition so a downgrade is visible.
+    _open_recorded_session(ledger, signer=_MemSigner(key_bytes))
+    set_floor(
+        "protected", ledger=ledger, signer=_MemSigner(key_bytes),
+        agent_id="op", rationale="tighten", clock=FixedClock("t1"),
+    )
+    assert ledger.read_floor() == "protected"
+
+    # Simulate a raw-file-write attacker: append a tail row claiming
+    # floor="chill" with a BROKEN chain (garbage hashes). INSERT is allowed:
+    # the append-only triggers block only UPDATE/DELETE.
+    head_seq, _ = ledger.store.get_latest_sequence_and_hash()
+    forged = {
+        "kind": KIND_TRANSITION, "floor": "chill", "operator_sig": None,
+        "key_fingerprint": "x", "agent_id": "attacker", "recorded_at": "t9",
+        "rationale": "forged", "session_id": None,
+    }
+    conn = sqlite3.connect(str(_sqlite_file(ledger._url)))
+    try:
+        conn.execute(
+            "INSERT INTO audit_log (seq, payload, content_hash, prev_hash, "
+            "chain_hash) VALUES (:seq, :payload, :ch, :ph, :xh)",
+            {
+                "seq": head_seq + 1, "payload": json.dumps(forged),
+                "ch": "0" * 64,  # does NOT match payload -> verify_integrity fails
+                "ph": "0" * 64, "xh": "0" * 64,
+            },
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Pre-fix: the descending scan returns the forged "chill". Post-fix: the
+    # broken chain fails verify_integrity, so read_floor fails closed.
+    assert ledger.read_floor() is None
