@@ -4,7 +4,6 @@ import pytest
 
 from legis.clock import FixedClock
 from legis.enforcement.protected import ProtectedGate
-from legis.enforcement.verdict import Verdict
 from legis.identity.entity_key import EntityKey
 from legis.store.audit_store import AuditStore
 from legis.store.head_anchor import AnchorError, HeadAnchor
@@ -41,8 +40,8 @@ def _override(gate, rationale):
 def _truncate_to(db_path, keep_seq):
     """Raw out-of-band tail truncation (drops the append-only triggers first).
 
-    # No survivor re-chain needed: AnchorError fires on the head_seq comparison
-    # before chain_hash is checked.
+    No survivor re-chain needed: AnchorError fires on the head_seq comparison
+    before chain_hash is checked.
     """
     con = sqlite3.connect(db_path)
     try:
