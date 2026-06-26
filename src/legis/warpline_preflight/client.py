@@ -9,6 +9,8 @@ contract fault fails CLOSED → WarplineError.
 
 from __future__ import annotations
 
+import json
+import subprocess
 from typing import Any, Callable, Protocol, runtime_checkable
 
 Invoke = Callable[[str, "dict[str, Any]"], "Any"]   # returns the parsed tool result (validated below)
@@ -63,3 +65,65 @@ class WarplineMcpClient:
         if not isinstance(data, dict) or "completeness" not in data:   # degraded -> unavailable, not bare empty 'checked'
             raise WarplineError(f"{tool} envelope data is missing the mandatory 'completeness' field")
         return env
+
+
+def _read_jsonrpc_result(stdout_text: str, response_id: int) -> dict:
+    for line in stdout_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except ValueError as exc:
+            raise WarplineError(f"warpline-mcp emitted a non-JSON line: {exc}") from exc
+        if isinstance(msg, dict) and msg.get("id") == response_id:
+            if "error" in msg:
+                raise WarplineError(f"warpline-mcp returned a JSON-RPC error: {msg['error']}")
+            result = msg.get("result")
+            if not isinstance(result, dict):
+                raise WarplineError(f"warpline-mcp result is {type(result).__name__}, expected an object")
+            return result
+    raise WarplineError(f"warpline-mcp produced no JSON-RPC response for id={response_id}")
+
+
+class StdioMcpInvoke:
+    """Production Invoke: a stdio JSON-RPC call to warpline-mcp. Fail-safe: EVERY
+    fault -> WarplineError. shell=False + list argv (rev_range is a JSON param, never
+    an argv token); explicit command (absolute path recommended; empty rejected);
+    text=False byte-bounded stdout (post-capture; see the cap note); 10s timeout."""
+    def __init__(self, *, command: list[str], timeout: float = 10.0) -> None:
+        self._command = command
+        self._timeout = timeout
+
+    def __call__(self, tool: str, arguments: dict) -> dict:
+        if not self._command:
+            raise WarplineError("warpline-mcp command is empty (WARPLINE_MCP_CMD blank?)")
+        msgs = (
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "legis", "version": "1"}}},
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"name": tool, "arguments": arguments}},
+        )
+        stdin = ("".join(json.dumps(m) + "\n" for m in msgs)).encode("utf-8")
+        try:
+            proc = subprocess.run(self._command, input=stdin, capture_output=True,
+                                  timeout=self._timeout, shell=False, check=False)  # text=False -> bytes
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            raise WarplineError(f"warpline-mcp spawn/timeout failed: {exc}") from exc
+        if len(proc.stdout) > MAX_RESPONSE_BYTES:
+            raise WarplineError("warpline-mcp response too large")
+        err = (proc.stderr or b"")[:400].decode("utf-8", "replace")
+        try:
+            result = _read_jsonrpc_result(proc.stdout.decode("utf-8", "replace"), response_id=2)
+            if result.get("isError"):
+                raise WarplineError(f"warpline tool {tool} returned an error result (rc={proc.returncode}, stderr={err!r})")
+            sc = result.get("structuredContent")
+            if isinstance(sc, dict):
+                return sc
+            for block in result.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    return json.loads(block["text"])
+            raise WarplineError(f"warpline tool {tool} result had no usable envelope (rc={proc.returncode}, stderr={err!r})")
+        except WarplineError:
+            raise
+        except Exception as exc:   # ANY parse fault fails closed
+            raise WarplineError(f"warpline tool {tool} result parse failed: {exc} (rc={proc.returncode}, stderr={err!r})") from exc
