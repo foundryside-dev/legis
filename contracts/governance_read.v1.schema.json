@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://weft.dev/contracts/governance_read.v1.schema.json",
+  "title": "legis governance_read.v1",
+  "description": "Per-SEI VERIFIED GOVERNANCE CLEARANCE facts produced by legis (the governance authority) and consumed advisorily by siblings (e.g. warpline reverify enrichment). v1 reports verified clearances ONLY (operator overrides + cleared structured/protected sign-offs). 'records: []' under status 'checked' = no verified clearance for this SEI on legis's verified trail -- NOT 'ungoverned', and NOT 'unknown SEI' (legis is an SEI consumer, never the SEI authority; it cannot distinguish unknown-from-ungoverned). status 'unavailable' = legis could not produce a signature-verifiable answer (no protected gate / verifier / key); consumers MUST treat it as 'unavailable', NEVER as 'absent'. A TAMPERED trail does not reach this envelope at all -- it fails loud as a transport-level integrity error (MCP AUDIT_INTEGRITY_FAILURE / HTTP 5xx / CLI nonzero exit).",
+  "type": "object",
+  "required": ["status", "sei", "records"],
+  "additionalProperties": false,
+  "properties": {
+    "status": {
+      "description": "Envelope state. 'checked' = the verified trail was read (records may be empty = honest absence of clearance). 'unavailable' = could not produce a signature-verifiable answer.",
+      "enum": ["checked", "unavailable"]
+    },
+    "sei": {
+      "description": "The SEI queried, echoed verbatim. Opaque; never parsed.",
+      "type": "string",
+      "minLength": 1
+    },
+    "records": {
+      "description": "Verified governance clearance records keyed on this SEI. Empty under 'checked' = honest absence. Always [] under 'unavailable'.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/clearance_record" }
+    },
+    "unavailable": {
+      "description": "Present ONLY under status 'unavailable' (and required there): why legis could not produce a verifiable answer. Non-empty.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["reason"],
+        "additionalProperties": false,
+        "properties": { "reason": { "type": "string", "minLength": 1 } }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "unavailable" } }, "required": ["status"] },
+      "then": {
+        "required": ["unavailable"],
+        "properties": { "records": { "maxItems": 0 } }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "checked" } }, "required": ["status"] },
+      "then": { "not": { "required": ["unavailable"] } }
+    }
+  ],
+  "$defs": {
+    "clearance_record": {
+      "type": "object",
+      "required": ["sei", "disposition", "posture", "authority", "as_of", "reasons", "content_hash"],
+      "additionalProperties": false,
+      "properties": {
+        "sei": {
+          "description": "The SEI this clearance is keyed on (== the SIGNED entity_key.value; identity-stable).",
+          "type": "string",
+          "minLength": 1
+        },
+        "disposition": {
+          "description": "Record-level governance disposition. NOT the envelope 'status', NOT a consumer's 'enrichment.governance'. v1 closed enum = {'cleared'}: every record is a verified human clearance. (Future dispositions arrive in governance_read.v2 -- v1 is never mutated.)",
+          "enum": ["cleared"]
+        },
+        "posture": {
+          "description": "The PROVABLE clearance mechanism. legis does NOT claim the enforcement cell for a sign-off (it cannot prove structured-vs-protected for a cleared sign-off) -- it reports the mechanism it can prove. 'protected_override' = a protected operator-override verdict; 'operator_signoff' = an operator-cleared sign-off.",
+          "enum": ["protected_override", "operator_signoff"]
+        },
+        "authority": {
+          "description": "Clearing-authority class. v1: both clearance kinds are operator-cleared.",
+          "enum": ["operator"]
+        },
+        "as_of": {
+          "description": "Timestamp from the SIGNED recorded_at of the clearance record (RFC3339 UTC; '+00:00' and 'Z' both valid). A clearance whose recorded_at is absent or non-RFC3339 is OMITTED by the producer (asymmetric-error rule) -- it never ships as null.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "reasons": {
+          "description": "Closed-vocab codes naming the clearance kind (what happened). Never free prose. Distinct axis from 'posture' (the provable mechanism / how); v1 correlates them 1:1 by construction, but v2 may carry additional reason codes without changing posture.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["operator_override", "signoff_cleared"] }
+        },
+        "content_hash": {
+          "description": "The SIGNED Loomweave content hash binding the clearance to the governed content (non-empty).",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
