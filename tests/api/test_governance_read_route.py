@@ -26,7 +26,6 @@ from legis.canonical import canonical_json, content_hash
 from legis.clock import FixedClock
 from legis.enforcement.engine import EnforcementEngine
 from legis.enforcement.protected import ProtectedGate, TrailVerifier
-from legis.enforcement.signoff import SignoffGate
 from legis.enforcement.verdict import JudgeOpinion, Verdict
 from legis.identity.entity_key import EntityKey
 from legis.policy.cells import PolicyCellRegistry, PolicyCellRule
