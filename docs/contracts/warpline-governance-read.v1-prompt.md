@@ -1,7 +1,10 @@
 # Prompt for WARPLINE — wire `LegisGovernanceClient` to legis's `governance_read.v1`
 
-> **Canonical contract:** `contracts/governance_read.v1.schema.json` in the legis repo. Mirror that
-> file's bytes; the copy embedded below is for convenience and is asserted byte-equal in legis CI.
+> **Canonical contract:** `contracts/governance_read.v1.schema.json` in the legis repo. **Mirror that
+> file** — it is the source of truth. The copy embedded below is an abridged convenience mirror: every
+> *validating* keyword (type/enum/minLength/format/allOf/if-then) is identical to the canonical file
+> and legis CI asserts that equality; only the human `description` annotations are dropped here (they
+> live in the canonical file).
 
 > **⚠ Contract hardened since the first hand-off (backward-compatible).** The schema now enforces the
 > discriminated union (status `unavailable` ⇒ a non-empty `unavailable` reason array + `records: []`;
@@ -52,7 +55,7 @@ Filigree bindings) — a deliberate v1 non-goal.
 → **Confirm: does cleared-only enrichment match your `enrichment.governance` semantics? Reply before
 finalizing the consumer if you need more than verified clearances.**
 
-## The contract — `governance_read.v1.schema.json` (byte-mirror of the committed file)
+## The contract — `governance_read.v1.schema.json` (structural mirror; validating keywords identical, descriptions in the canonical file)
 
 ```json
 {
