@@ -7,6 +7,11 @@ a new plan, never an in-place edit.
 
 TDD note: the format test (test_non_rfc3339_as_of_rejected) is the RED→GREEN signal for
 this task — it ONLY passes when jsonschema[format] (rfc3339-validator backend) is installed.
+
+Cross-transport schema agreement: the ``test_cross_transport_*`` tests each capture a REAL
+output (MCP golden / HTTP body / CLI stdout) from the respective transport and validate it
+against the committed frozen schema with the rfc3339 format checker wired. This ensures that
+all three adapters produce output that conforms to the same frozen contract.
 """
 import json
 import pathlib
@@ -251,3 +256,138 @@ def test_prompt_schema_block_matches_committed_file():
         "difference in validating keywords (type, enum, minLength, format, allOf, etc.) before "
         "committing. A .v1 change is never allowed — use .v2."
     )
+
+
+# ── CROSS-TRANSPORT SCHEMA AGREEMENT ──────────────────────────────────────────
+# Each test below captures a REAL output from one transport (MCP golden / HTTP /
+# CLI) and validates it against the committed frozen schema WITH the rfc3339
+# format checker wired.  These are the only tests that couple the three adapters
+# to the single frozen contract file — not hand-authored shapes, not embedded
+# _one_of outputSchemas, but actual transport outputs.
+
+_GOLDEN_PATH = _REPO / "tests" / "conformance" / "fixtures" / "legis-governance-read.golden.json"
+
+# SEI / key / policy / clock mirroring test_governance_read_route.py for HTTP + CLI fixtures.
+_XPORT_CLOCK_ISO = "2026-06-02T12:00:00+00:00"
+_XPORT_KEY = b"xport-schema-key"
+_XPORT_KEY_STR = "xport-schema-key"
+_XPORT_POLICY = "protected.xport"
+_XPORT_SEI = "loomweave:eid:xport-schema-test"
+_XPORT_PROTECTED = frozenset({_XPORT_POLICY})
+
+
+def test_cross_transport_mcp_golden_validates_against_frozen_schema(validator):
+    """The Task 3 FROZEN GOLDEN (a real captured MCP wire output) must validate
+    against the frozen v1 schema WITH the rfc3339 format checker.  This is the
+    canonical cross-transport check for the MCP adapter — it operates on an actual
+    captured output, not a hand-authored shape.
+    """
+    golden = json.loads(_GOLDEN_PATH.read_text(encoding="utf-8"))
+    # Must not raise — any schema violation here means the MCP adapter drifted from v1.
+    validator.validate(golden)
+
+
+def test_cross_transport_http_body_validates_against_frozen_schema(tmp_path, validator):
+    """A REAL HTTP response body from the FastAPI route must validate against the
+    frozen v1 schema.  Drives the actual app (not a mock), so a route-level field
+    rename or missing key fails here immediately.
+    """
+    import hashlib
+
+    from fastapi.testclient import TestClient
+
+    from legis.api.app import create_app
+    from legis.clock import FixedClock
+    from legis.enforcement.engine import EnforcementEngine
+    from legis.enforcement.protected import ProtectedGate, TrailVerifier
+    from legis.enforcement.verdict import JudgeOpinion, Verdict
+    from legis.identity.entity_key import EntityKey
+    from legis.policy.cells import PolicyCellRegistry, PolicyCellRule
+    from legis.posture.ledger import PostureLedger
+    from legis.store.audit_store import AuditStore
+
+    class _Judge:
+        def evaluate(self, record):  # noqa: ANN001
+            return JudgeOpinion(Verdict.BLOCKED, "j@1", "advisory")
+
+    store = AuditStore(f"sqlite:///{tmp_path / 'gov.db'}")
+    clock = FixedClock(_XPORT_CLOCK_ISO)
+    pg_write = ProtectedGate(store, clock, judge=_Judge(), key=_XPORT_KEY,
+                             protected_policies=_XPORT_PROTECTED)
+    pg_write.operator_override(
+        policy=_XPORT_POLICY,
+        entity_key=EntityKey(value=_XPORT_SEI, identity_stable=True),
+        rationale="approved",
+        operator_id="op-xport",
+        file_fingerprint="sha256:ff",
+        ast_path="Module/Call",
+        extensions={"loomweave": {"content_hash": "blake3:xport-test"}},
+    )
+
+    ledger = PostureLedger(f"sqlite:///{tmp_path / 'posture.db'}", initialize=True)
+    fp = hashlib.sha256(b"k" * 32).hexdigest()
+    ledger.genesis(key_fingerprint=fp, agent_id="installer", recorded_at="t0")
+
+    app = create_app(
+        enforcement=EnforcementEngine(store, clock),
+        protected_gate=ProtectedGate(store, clock, judge=_Judge(), key=_XPORT_KEY,
+                                     protected_policies=_XPORT_PROTECTED),
+        trail_verifier=TrailVerifier(_XPORT_KEY, _XPORT_PROTECTED),
+        cell_registry=PolicyCellRegistry(
+            default_cell="chill",
+            rules=(PolicyCellRule(pattern=_XPORT_POLICY, cell="protected"),),
+        ),
+        posture_ledger=ledger,
+    )
+    import pytest as _pytest
+    _pytest.importorskip("fastapi")  # defensive — already a dep
+    client = TestClient(app, headers={"Authorization": "Bearer dev-token"})
+    resp = client.get(f"/governance/sei/{_XPORT_SEI}/governance-read")
+    assert resp.status_code == 200
+    body = resp.json()
+    # The core assertion: the REAL HTTP output validates against the frozen contract.
+    validator.validate(body)
+
+
+def test_cross_transport_cli_stdout_validates_against_frozen_schema(
+    tmp_path, monkeypatch, capsys, validator
+):
+    """A REAL CLI stdout from `legis governance-read` must validate against the
+    frozen v1 schema WITH the rfc3339 format checker.  Captures actual main() output
+    so any CLI serialization drift from the v1 envelope shape fails here.
+    """
+    from legis.cli import main
+    from legis.clock import FixedClock
+    from legis.enforcement.protected import ProtectedGate
+    from legis.enforcement.verdict import JudgeOpinion, Verdict
+    from legis.identity.entity_key import EntityKey
+    from legis.store.audit_store import AuditStore
+
+    class _AcceptJudge:
+        def evaluate(self, record):  # noqa: ANN001
+            return JudgeOpinion(verdict=Verdict.ACCEPTED, model="j@1", rationale="ok")
+
+    db_path = tmp_path / "gov.db"
+    store = AuditStore(f"sqlite:///{db_path}")
+    gate = ProtectedGate(store, FixedClock(_XPORT_CLOCK_ISO), judge=_AcceptJudge(),
+                         key=_XPORT_KEY, protected_policies=_XPORT_PROTECTED)
+    gate.operator_override(
+        policy=_XPORT_POLICY,
+        entity_key=EntityKey(value=_XPORT_SEI, identity_stable=True),
+        rationale="operator clears",
+        operator_id="op-cli-xport",
+        file_fingerprint="sha256:ff",
+        ast_path="Module.Call",
+        extensions={"loomweave": {"content_hash": "ch:cli-xport-test"}},
+    )
+
+    monkeypatch.setenv("LEGIS_HMAC_KEY", _XPORT_KEY_STR)
+    monkeypatch.setenv("LEGIS_PROTECTED_POLICIES", _XPORT_POLICY)
+
+    rc = main(["governance-read", "--db", f"sqlite:///{db_path}", _XPORT_SEI])
+    assert rc == 0
+    out, err = capsys.readouterr()
+    assert not err, f"unexpected stderr: {err!r}"
+    envelope = json.loads(out)
+    # The core assertion: the REAL CLI output validates against the frozen contract.
+    validator.validate(envelope)
