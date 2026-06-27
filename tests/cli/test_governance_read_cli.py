@@ -20,8 +20,6 @@ from __future__ import annotations
 import json
 import sqlite3
 
-import pytest
-
 from legis.cli import main
 from legis.clock import FixedClock
 from legis.enforcement.protected import ProtectedGate
