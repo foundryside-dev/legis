@@ -62,6 +62,8 @@ from legis.service.governance import bind_signoff_issue as _bind_signoff_issue
 from legis.service.governance import compute_override_rate as _compute_override_rate
 from legis.service.governance import read_identity_gaps as _read_identity_gaps
 from legis.service.governance import read_lineage_integrity as _read_lineage_integrity
+from legis.service.governance import governance_read_unavailable as _governance_read_unavailable
+from legis.service.governance import read_governance_for_sei as _read_governance_for_sei
 from legis.service.governance import evaluate_policy as _evaluate_policy
 from legis.service.governance import request_signoff as _request_signoff
 from legis.service.governance import resolve_for_record as _resolve_for_record
@@ -869,6 +871,17 @@ def create_app(
     @app.get("/governance/lineage-integrity")
     def lineage_integrity() -> dict:
         return _read_lineage_integrity(identity, verified_governance_records)
+
+    @app.get("/governance/sei/{sei:path}/governance-read")
+    def governance_read(sei: str) -> dict:
+        # {sei:path} captures a SEI that may contain '/'. FAIL-CLOSED pre-gate mirrors the MCP
+        # tool; verified_governance_records() runs BOTH chain + signature checks and maps tamper
+        # to HTTP 500. Missing either object -> unavailable (discriminated), never checked/[].
+        if protected_gate is None or trail_verifier is None:
+            return _governance_read_unavailable(
+                sei, "trail not signature-verifiable (no protected gate / verifier)"
+            )
+        return _read_governance_for_sei(verified_governance_records(), sei)
 
     # --- agent-programmable policy grammar (WP-4.1) ---
 
