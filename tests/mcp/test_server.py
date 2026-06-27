@@ -304,6 +304,7 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
         "posture_get",
         "warpline_preflight_get",
         "attestation_get",
+        "governance_read",
     }
     # posture_get is the dedicated read-only posture surface (Phase 8); the
     # change gate (posture set) stays operator/CLI only — no posture_set tool.

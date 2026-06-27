@@ -104,6 +104,7 @@ _AGENT_TOOLS = frozenset(
         "posture_get",
         "warpline_preflight_get",
         "attestation_get",
+        "governance_read",
     }
 )
 _OVERRIDE_RATE_NOTE = "measures operator force-pasts; not movable by agent retries"
@@ -1316,6 +1317,90 @@ def tool_definitions() -> list[dict[str, Any]]:
                 ]
             ),
         },
+        {
+            "name": "governance_read",
+            "description": (
+                "Per-SEI VERIFIED governance CLEARANCE facts (governance_read.v1). "
+                "Advisory — never gate on this. records:[] under 'checked' = no "
+                "verified clearance for this SEI on the verified trail, NOT "
+                "'ungoverned'; 'unavailable' = trail not signature-verifiable, "
+                "NOT 'absent'. A tampered trail -> AUDIT_INTEGRITY_FAILURE. "
+                "Distinct from attestation_get: projects clearance_record shape "
+                "(disposition/posture/authority/as_of/reasons), not raw attestation "
+                "fields (kind/seq)."
+            ),
+            "inputSchema": _schema(["sei"], {"sei": string}),
+            "outputSchema": _one_of(
+                [
+                    # checked variant: verified trail read; records may be empty
+                    _schema(
+                        ["status", "sei", "records"],
+                        {
+                            "status": {"type": "string", "enum": ["checked"]},
+                            "sei": string,
+                            "records": {
+                                "type": "array",
+                                "items": _schema(
+                                    [
+                                        "sei",
+                                        "disposition",
+                                        "posture",
+                                        "authority",
+                                        "as_of",
+                                        "reasons",
+                                        "content_hash",
+                                    ],
+                                    {
+                                        "sei": string,
+                                        "disposition": {
+                                            "type": "string",
+                                            "enum": ["cleared"],
+                                        },
+                                        "posture": {
+                                            "type": "string",
+                                            "enum": [
+                                                "protected_override",
+                                                "operator_signoff",
+                                            ],
+                                        },
+                                        "authority": {
+                                            "type": "string",
+                                            "enum": ["operator"],
+                                        },
+                                        "as_of": string,
+                                        "reasons": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "items": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "operator_override",
+                                                    "signoff_cleared",
+                                                ],
+                                            },
+                                        },
+                                        "content_hash": string,
+                                    },
+                                ),
+                            },
+                        },
+                    ),
+                    # unavailable variant: trail not signature-verifiable
+                    _schema(
+                        ["status", "sei", "records", "unavailable"],
+                        {
+                            "status": {"type": "string", "enum": ["unavailable"]},
+                            "sei": string,
+                            "records": {"type": "array", "maxItems": 0},
+                            "unavailable": {
+                                "type": "array",
+                                "items": _schema(["reason"], {"reason": string}),
+                            },
+                        },
+                    ),
+                ]
+            ),
+        },
     ]
 
 
@@ -2333,6 +2418,26 @@ def _tool_attestation_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     return _tool_result(read_sei_attestations(_governance_trail_records(runtime), sei))
 
 
+def _tool_governance_read(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    from legis.service.governance import governance_read_unavailable, read_governance_for_sei
+
+    sei = _require(args, "sei")
+    # FAIL-CLOSED pre-gate (same invariant as attestation_get): a verifiable answer
+    # needs BOTH a protected gate AND a trail_verifier. Missing either -> unavailable
+    # (discriminated), never a silent checked/[] that reads as "no clearance".
+    if runtime.protected_gate is None or runtime.trail_verifier is None:
+        return _tool_result(
+            governance_read_unavailable(
+                sei, "trail not signature-verifiable (no protected gate / verifier)"
+            )
+        )
+    # _governance_trail_records runs verified_records, which runs BOTH
+    # verify_integrity (chain/delete-reorder-truncate) AND TrailVerifier.verify
+    # (signatures), raising AuditIntegrityError (-> AUDIT_INTEGRITY_FAILURE) on a
+    # tampered protected trail (loud, never a result).
+    return _tool_result(read_governance_for_sei(_governance_trail_records(runtime), sei))
+
+
 def _tool_identity_gap_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
     return _tool_result(
         read_identity_gaps(runtime.identity, lambda: _governance_trail_records(runtime))
@@ -2590,6 +2695,7 @@ _TOOL_HANDLERS: dict[str, Callable[["McpRuntime", dict[str, Any]], dict[str, Any
     "posture_get": _tool_posture_get,
     "warpline_preflight_get": _tool_warpline_preflight_get,
     "attestation_get": _tool_attestation_get,
+    "governance_read": _tool_governance_read,
 }
 
 
