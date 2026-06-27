@@ -727,7 +727,7 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
         message=(
             f"posture key epoch reset on {when} by {agent} — unacknowledged. The floor "
             f"remains {floor}; acknowledge the reset with a signed `legis posture set` "
-            "under the new key (doctor stays non-zero until then). [operator]"
+            "under the new key (doctor stays non-zero until then)."
         ),
         repairable=False,
     )
@@ -775,7 +775,7 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
             "warn",
             message=(
                 "operator key present in LEGIS_OPERATOR_KEY (plaintext-in-env) — usable "
-                "but a residual: prefer the keychain/age backend. [operator]"
+                "but a residual: prefer the keychain/age backend."
             ),
         )
     if key_provider(epoch_fp) is not None:
@@ -785,7 +785,7 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
                 "warn",
                 message=(
                     "LEGIS_OPERATOR_KEY is present but does not match the current key epoch; "
-                    "another custody backend is reachable. [operator]"
+                    "another custody backend is reachable."
                 ),
             )
         return DoctorCheck(cid, "ok", message="operator key reachable")
@@ -795,8 +795,7 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
             "warn",
             message=(
                 "LEGIS_OPERATOR_KEY is present but does not match the current key epoch — "
-                "`posture set` will refuse until a matching custody backend is available. "
-                "[operator]"
+                "`posture set` will refuse until a matching custody backend is available."
             ),
         )
     return DoctorCheck(
@@ -805,7 +804,7 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
         message=(
             "operator key not reachable in any backend — `posture set` will refuse; "
             "`legis posture rekey` to recover (mints a new epoch and preserves the "
-            "current floor). [operator]"
+            "current floor)."
         ),
     )
 
