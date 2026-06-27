@@ -34,6 +34,7 @@ FLOORS: dict[str, float] = {
     "src/legis/mcp.py": 80.0,        # currently ~82
     "src/legis/doctor.py": 88.0,     # currently ~91
     "src/legis/warpline_preflight/": 88.0,  # currently ~92
+    "src/legis/plainweave_preflight/": 88.0,  # advisory sibling consumer
 }
 
 

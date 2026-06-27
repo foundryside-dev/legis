@@ -34,7 +34,7 @@ from legis.service.governance import (
     submit_protected_override,
     verified_records,
 )
-from legis.service.preflight import read_warpline_preflight
+from legis.service.preflight import read_plainweave_preflight, read_warpline_preflight
 from legis.service.wardline import route_wardline_scan
 
 __all__ = [
@@ -64,6 +64,7 @@ __all__ = [
     "submit_operator_override",
     "submit_protected_override",
     "read_warpline_preflight",
+    "read_plainweave_preflight",
     "route_wardline_scan",
     "verified_records",
 ]

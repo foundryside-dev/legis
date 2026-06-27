@@ -103,6 +103,7 @@ _AGENT_TOOLS = frozenset(
         "policy_boundary_check",
         "posture_get",
         "warpline_preflight_get",
+        "plainweave_preflight_get",
         "attestation_get",
         "governance_read",
     }
@@ -180,6 +181,7 @@ class McpRuntime:
     posture_ledger: Any | None = None
     coached_engine: EnforcementEngine | None = None
     warpline: Any | None = None  # advisory sibling; NEVER read by a verdict path
+    plainweave: Any | None = None  # advisory sibling; NEVER read by a verdict path
 
 
 def _load_policy_cell_registry() -> PolicyCellRegistry:
@@ -246,6 +248,29 @@ def build_runtime(agent_id: str) -> McpRuntime:
                 "disabled (governance unaffected).", exc)
             warpline = None
 
+    plainweave = None
+    plainweave_cmd = os.environ.get("PLAINWEAVE_MCP_CMD")
+    if plainweave_cmd:
+        import shlex
+        from legis.plainweave_preflight.client import (
+            PlainweaveError,
+            PlainweaveMcpClient,
+        )
+        from legis.plainweave_preflight.client import (
+            StdioMcpInvoke as PlainweaveStdioMcpInvoke,
+        )
+        try:
+            argv = shlex.split(plainweave_cmd)
+            if not argv:
+                raise PlainweaveError("PLAINWEAVE_MCP_CMD is blank")
+            from legis.config import project_root
+            plainweave = PlainweaveMcpClient(invoke=PlainweaveStdioMcpInvoke(command=argv), repo=str(project_root()))
+        except (PlainweaveError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "PLAINWEAVE_MCP_CMD is set but invalid (%s); plainweave advisory context "
+                "disabled (governance unaffected).", exc)
+            plainweave = None
+
     protected_gate = None
     trail_verifier = None
     signoff_gate = None
@@ -310,6 +335,7 @@ def build_runtime(agent_id: str) -> McpRuntime:
         # state (audit H6 / the no-local-state-on-init invariant).
         posture_ledger=PostureLedger(posture_db_url(), initialize=False),
         warpline=warpline,
+        plainweave=plainweave,
     )
 
 
@@ -902,6 +928,41 @@ def tool_definitions() -> list[dict[str, Any]]:
                             "status": {"type": "string", "enum": ["checked"]},
                             "impact_radius": {"type": "object"},
                             "reverify_worklist": {"type": "object"},
+                        },
+                    ),
+                    _schema(
+                        ["status", "unavailable"],
+                        {
+                            "status": {"type": "string", "enum": ["unavailable"]},
+                            "unavailable": {
+                                "type": "array",
+                                "items": _schema(["reason"], {"reason": string}),
+                            },
+                        },
+                    ),
+                ]
+            ),
+        },
+        {
+            "name": "plainweave_preflight_get",
+            "description": (
+                "ADVISORY preflight context from the plainweave sibling: scoped "
+                "requirement/intent facts (envelope weft.plainweave.preflight_facts.v1, "
+                "ADR-006) over base..head. Purely advisory — NEVER a governance "
+                "verdict (plainweave emits facts only; Legis owns policy/audit). "
+                "Discriminated: 'checked' carries the advisory facts envelope; "
+                "'unavailable' (client unconfigured, transport failure, error "
+                "envelope, or payload shape mismatch) carries reasons. Never read a "
+                "missing 'checked' as 'nothing impacted'."
+            ),
+            "inputSchema": _schema(["base"], {"base": string, "head": string}),
+            "outputSchema": _one_of(
+                [
+                    _schema(
+                        ["status", "preflight_facts"],
+                        {
+                            "status": {"type": "string", "enum": ["checked"]},
+                            "preflight_facts": {"type": "object"},
                         },
                     ),
                     _schema(
@@ -2374,6 +2435,18 @@ def _tool_warpline_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> d
     )
 
 
+def _tool_plainweave_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    from legis.service.preflight import read_plainweave_preflight
+
+    return _tool_result(
+        read_plainweave_preflight(
+            runtime.plainweave,
+            base=_require(args, "base"),
+            head=args.get("head", "HEAD"),
+        )
+    )
+
+
 def _governance_trail_records(runtime: McpRuntime) -> list[Any]:
     """The verified governance trail the SEI lineage-honesty reads consume.
 
@@ -2694,6 +2767,7 @@ _TOOL_HANDLERS: dict[str, Callable[["McpRuntime", dict[str, Any]], dict[str, Any
     "policy_boundary_check": _tool_policy_boundary_check,
     "posture_get": _tool_posture_get,
     "warpline_preflight_get": _tool_warpline_preflight_get,
+    "plainweave_preflight_get": _tool_plainweave_preflight_get,
     "attestation_get": _tool_attestation_get,
     "governance_read": _tool_governance_read,
 }

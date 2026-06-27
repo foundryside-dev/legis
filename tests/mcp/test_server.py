@@ -303,6 +303,7 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
         "policy_boundary_check",
         "posture_get",
         "warpline_preflight_get",
+        "plainweave_preflight_get",
         "attestation_get",
         "governance_read",
     }
@@ -2132,6 +2133,7 @@ def test_warpline_tools_introduce_no_new_error_codes(tmp_path):
 
     runtime, _store = _runtime(tmp_path)
     assert not call_tool(runtime, "warpline_preflight_get", {"base": "x"}).get("isError")
+    assert not call_tool(runtime, "plainweave_preflight_get", {"base": "x"}).get("isError")
     assert not call_tool(runtime, "attestation_get", {"sei": "x#1"}).get("isError")
 
 
@@ -3462,6 +3464,86 @@ def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
     assert sc["status"] == "checked"
     assert sc["impact_radius"] == _impact
     assert sc["reverify_worklist"] == _reverify
+
+
+# plainweave_preflight_get advisory sibling tool (mirrors warpline above)
+# ---------------------------------------------------------------------------
+
+
+def test_build_runtime_wires_plainweave_from_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+    from legis.plainweave_preflight.client import PlainweaveMcpClient
+
+    monkeypatch.setenv("PLAINWEAVE_MCP_CMD", "echo")
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-x")
+    assert isinstance(runtime.plainweave, PlainweaveMcpClient)
+
+
+def test_build_runtime_leaves_plainweave_unwired_without_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+
+    monkeypatch.delenv("PLAINWEAVE_MCP_CMD", raising=False)
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    runtime = build_runtime("agent-x")
+    assert runtime.plainweave is None
+
+
+def test_build_runtime_degrades_plainweave_to_none_on_bad_cmd(monkeypatch, tmp_path):
+    # A misconfigured ADVISORY command must NOT crash the sole governance authority
+    # at startup; it degrades to no advisory context (governance unaffected).
+    from legis.mcp import build_runtime
+
+    monkeypatch.setenv("PLAINWEAVE_MCP_CMD", "   ")  # blank after shlex.split -> fail-safe None
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-x")
+    assert runtime.plainweave is None
+
+
+def test_plainweave_preflight_get_unavailable_when_unwired(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # plainweave defaults to None
+    result = call_tool(runtime, "plainweave_preflight_get", {"base": "aaa"})
+    assert not result.get("isError")
+    assert result["structuredContent"] == {
+        "status": "unavailable",
+        "unavailable": [{"reason": "plainweave client not configured"}],
+    }
+
+
+def test_plainweave_preflight_get_checked_with_injected_client(tmp_path):
+    from legis.mcp import call_tool
+
+    _envelope = {
+        "schema": "weft.plainweave.preflight_facts.v1",
+        "ok": True,
+        "data": {
+            "freshness": "partial",
+            "facts": [],
+            "authority_boundary": {
+                "local_only": True,
+                "live_peer_calls": False,
+                "governance_verdicts": False,
+            },
+        },
+        "warnings": [],
+        "meta": {},
+    }
+
+    class _FakePlainweave:
+        def preflight_facts(self, base, head):
+            return _envelope
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.plainweave = _FakePlainweave()
+    result = call_tool(runtime, "plainweave_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "checked"
+    assert sc["preflight_facts"] == _envelope
 
 
 # Task 5: attestation_get fail-closed scaffolding

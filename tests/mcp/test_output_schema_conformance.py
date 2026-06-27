@@ -660,6 +660,43 @@ def test_warpline_preflight_get_checked_conforms(tmp_path):
     assert payload["status"] == "checked"
 
 
+def test_plainweave_preflight_get_unavailable_conforms(tmp_path):
+    runtime, _store = _runtime(tmp_path)  # plainweave None
+    payload = _conformant(runtime, "plainweave_preflight_get", {"base": "aaa"})
+    assert payload["status"] == "unavailable"
+
+
+def test_plainweave_preflight_get_checked_conforms(tmp_path):
+    class _FakePlainweave:
+        """Returns a real-shaped envelope with a GV-LG-3-valid authority_boundary.
+
+        A boundary-violating envelope would be refused → unavailable, which would
+        make the ``status == 'checked'`` assertion below fail silently.
+        """
+
+        def preflight_facts(self, base, head):
+            return {
+                "schema": "weft.plainweave.preflight_facts.v1",
+                "ok": True,
+                "data": {
+                    "freshness": "partial",
+                    "facts": [],
+                    "authority_boundary": {
+                        "local_only": True,
+                        "live_peer_calls": False,
+                        "governance_verdicts": False,
+                    },
+                },
+                "warnings": [],
+                "meta": {},
+            }
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.plainweave = _FakePlainweave()
+    payload = _conformant(runtime, "plainweave_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert payload["status"] == "checked"
+
+
 def test_attestation_get_unavailable_conforms(tmp_path):
     runtime, _store = _runtime(tmp_path)  # no protected gate
     payload = _conformant(runtime, "attestation_get", {"sei": "mod.fn#1"})
