@@ -403,7 +403,9 @@ def _governance_read(db_url: str, sei: str) -> int:
             records, sei, hmac_key=hmac_key, protected_policies=protected_policies()
         )
     except (ProtectedKeyRequiredError, AuditIntegrityError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
+        # Always prefix "audit integrity" so tooling / tests can key on a single contract
+        # substring regardless of which half of the verification gate raised.
+        print(f"Error: audit integrity: {exc}", file=sys.stderr)
         return 1
 
     print(json.dumps(envelope, sort_keys=True))

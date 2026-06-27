@@ -10,7 +10,7 @@ TDD red→green. Cases:
       on non-protected records, so a CLI that skips verify_integrity() would
       return exit 0 / {status:checked, records:[]} (false-green).
   (d) Signature-tampered protected store (key mismatch) → exit nonzero,
-      "verification failed" in stderr.
+      "audit integrity" in stderr (same contract substring as all other tamper cases).
   (e) Missing/relocated DB (key set) → exit 0, JSON {status:unavailable,…},
       NOT a silent {status:checked, records:[]} from an auto-created empty DB.
 """
@@ -174,8 +174,9 @@ def test_cli_governance_read_sig_tamper_exits_nonzero(tmp_path, monkeypatch, cap
     rc = main(["governance-read", "--db", _db_url(db_path), _SEI])
     assert rc != 0
     out, err = capsys.readouterr()
-    # The AuditIntegrityError message is "Protected audit trail verification failed: …"
-    assert "verification failed" in err.lower(), f"stderr was: {err!r}"
+    # All tamper cases (chain AND signature) must emit "audit integrity" on stderr —
+    # uniform contract substring used by tooling and tests across mcp.py / cli.py.
+    assert "audit integrity" in err.lower(), f"stderr was: {err!r}"
 
 
 # --------------------------------------------------------------------------- #
