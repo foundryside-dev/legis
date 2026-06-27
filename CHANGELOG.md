@@ -9,12 +9,15 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
-## [1.3.0] — 2026-06-27
+## [1.3.0] — 2026-06-28
 
 Suite-standard dot-dir hygiene and the legis-resident halves of six cross-repo
-Weft seam conformance oracles, plus three security/federation fixes: two
+Weft seam conformance oracles; three security/federation fixes (two
 governance-honesty hardenings on the posture and protected-cell audit paths, and
-a rebuild of the Warpline advisory-preflight seam onto Warpline's real MCP wire.
+a rebuild of the Warpline advisory-preflight seam onto Warpline's real MCP wire);
+and two new federation read surfaces — `governance_read.v1` (the per-SEI
+governance read legis now **publishes** for Warpline) and a Plainweave
+advisory-preflight **consumer**.
 
 ### Security
 
@@ -50,6 +53,40 @@ a rebuild of the Warpline advisory-preflight seam onto Warpline's real MCP wire.
   — legis conforms to Warpline's frozen envelope (hub SEAM 4 §4A / GV-LG-3);
   Warpline builds nothing.
 
+### Added — federation read surfaces: `governance_read.v1` (producer) + Plainweave (consumer)
+
+- **`governance_read.v1` — legis publishes a per-SEI governance read for Warpline
+  (PDR-0007).** A new surface on CLI (`legis governance-read <sei>`), MCP
+  (`governance_read` tool) and HTTP (`GET /governance/sei/{sei:path}/governance-read`),
+  returning the frozen `governance_read.v1` envelope (contract committed at
+  `contracts/governance_read.v1.schema.json`). It is a pure projection of the
+  forge-proof per-SEI attestation read (`read_sei_attestations`) into a
+  **cleared-only** posture-record shape (`operator_override` → `protected_override`,
+  `signoff_cleared` → `operator_signoff`), so Warpline's
+  `reverify_worklist(include_federation=True)` can enrich its worklist with legis
+  governance facts. Fail-closed throughout: an unverifiable trail resolves to a
+  discriminated `status: "unavailable"` (never a silent `records: []`); a tampered
+  trail fails loud on all three transports (HTTP 500 / MCP `AUDIT_INTEGRITY_FAILURE`
+  / CLI nonzero); `records: []` under `checked` is honest absence of clearance,
+  never "ungoverned" or "unknown SEI" (legis is an SEI consumer, never the
+  authority). Advisory-only — Warpline echoes it as `enrichment.governance` and
+  never gates on it (GV-LG-1). The discriminated-union schema and the CLI
+  chain-integrity guard are both **mutation-proven** against false-greens. This
+  ships the producer half of the obligation the 1.3.0 conformance note flagged as
+  unwired; Warpline's consumer (`LegisClient.governance_for_sei`) is the remaining
+  integration.
+
+- **Plainweave preflight — advisory consumer (PDR-0008).** legis gains a read-only
+  `plainweave_preflight_get` consumer of Plainweave's
+  `weft.plainweave.preflight_facts.v1` producer (its first sibling consumer),
+  mirroring the Warpline advisory-preflight read exactly: injectable
+  `PlainweaveMcpClient` + `StdioMcpInvoke`, every fault fails closed →
+  `unavailable`, GV-LG-3 validated against Plainweave's real `authority_boundary`
+  shape, configured via `PLAINWEAVE_MCP_CMD` (default unconfigured →
+  `unavailable`). Enrich-only; governance verdicts stay byte-identical with or
+  without Plainweave. The conformance oracle drives a constructed golden (live
+  end-to-end capture is a flagged follow-up).
+
 ### Added
 
 - **Nested `.weft/legis/.gitignore` shipped at install (suite standard,
@@ -80,10 +117,12 @@ a rebuild of the Warpline advisory-preflight seam onto Warpline's real MCP wire.
   (legis→filigree), loomweave-HMAC-wire (legis→loomweave, live-gated), the
   warpline preflight read (legis consumer — now driving Warpline's real
   `warpline.impact_radius.v1` / `warpline.reverify_worklist.v1` MCP envelope; see
-  *Changed* above), and the per-SEI `attestation_get` read (legis producer). One
-  outstanding peer obligation is recorded rather than papered over — warpline's
-  `LegisClient.governance_for_sei` is unwired — with the Layer-2 recheck armed to
-  fire when warpline lands its half.
+  *Changed* above), and the per-SEI `attestation_get` read (legis producer). The
+  peer obligation this note previously flagged as unwired — the per-SEI governance
+  read Warpline needs — is now **shipped on legis's side** as `governance_read.v1`
+  (see *Added* above, with its own frozen-golden oracle); Warpline's consumer
+  (`LegisClient.governance_for_sei`) is the remaining integration half, tracked for
+  the live handshake.
 
 ## [1.2.0] — 2026-06-25
 
