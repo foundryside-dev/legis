@@ -228,11 +228,20 @@ def test_runtime_warpline_referenced_in_no_verdict_path_function():
         )
 
     # --- explicit: non-handler verdict internals not in _TOOL_HANDLERS ---
+    from legis.service.governance import (
+        governance_read_unavailable,
+        read_governance_for_sei,
+        read_governance_for_sei_gate,
+    )
+
     for fn in [
         mcp._engine,
         mcp._coached_engine,
         mcp._governance_trail_records,
         read_sei_attestations,
+        read_governance_for_sei,
+        read_governance_for_sei_gate,
+        governance_read_unavailable,
     ]:
         src = inspect.getsource(fn)
         assert ".warpline" not in src, f"{fn.__name__} references warpline"
