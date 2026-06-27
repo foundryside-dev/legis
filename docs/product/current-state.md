@@ -1,27 +1,26 @@
-# Current State — Legis        Checkpoint: 2026-06-27 · committed (PDR-0005, PDR-0006)
+# Current State — Legis        Checkpoint: 2026-06-28 · committed (PDR-0007, PDR-0008)
 
 ## The bet right now
-**Keep the governance-honesty surface true post-gold** (north-star: open governance-honesty defects → **1**, target 0 by 2026-07-15). Two of the three confirmed P2 findings are **CLOSED** this session; **one remains: legis-0186c23a2c** (policy_boundary_check accepts roots outside the source root). A separate **federation-seam fix shipped** (warpline preflight), and 1.2.0 (warpline interfaces) is live on PyPI.
+**Keep the governance-honesty surface true post-gold** (north-star: open governance-honesty defects → **0** by 2026-07-15; currently **1**). The last confirmed P2 finding is **legis-0186c23a2c** (policy_boundary_check accepts roots outside the source root) — unplanned; closing it takes the north-star to 0. This session shipped two **federation seams** (seam-quality, NOT north-star items) and deployed the governance_read surface locally.
 
 ## In flight / not yet started
-- **legis-0186c23a2c** (unbounded policy-boundary root) — the **last** north-star P2 finding; confirmed, unclaimed, **not yet planned**. Closing it takes the north-star to 0.
-- **legis-fcd59caa67** + **legis-dfdeade118** — P3 follow-ups surfaced by the read_floor close (ungated sibling reads; doctor `None`-cause diagnostic). Tracked, lower priority.
+- **legis-0186c23a2c** (unbounded policy-boundary root) — the **last** north-star P2 finding; confirmed, unplanned. Closing it → north-star **0**. **Next session's primary candidate.**
+- **G1 integration tail** (legis-9a47068338) — legis-side DONE; **warpline must wire `LegisGovernanceClient` + restart its MCP connection** to flip its legis member `disabled`→`clean`. Awaiting warpline's live confirmation (not legis-blocked).
 
-## Recently shipped this session (all merged to LOCAL main; NOT pushed)
-- **legis-476ab6f125** (unverified posture tail) — `read_floor()` fail-closed `verify_integrity()` gate · CLOSED @ main `eb28e4b` (PDR-0005).
-- **legis-0c310712a7** (un-anchored protected batch) — `ProtectedGate.transaction()` advances the HeadAnchor · CLOSED @ main `79b4008` (PDR-0005).
-- **legis-a53d92507d** (warpline preflight phantom-HTTP seam + mis-frozen golden) — MCP-stdio client over warpline's extant envelope; producer-obligation reversed · CLOSED @ main `075edd0` (PDR-0006).
-Each: codebase-validated plan (`docs/plans/2026-06-26-*.md`) → 7-agent ultracode review → revise/re-review → subagent-driven TDD → final opus review → local merge.
+## Recently shipped this session (LOCAL main; NOT pushed)
+- **`governance_read.v1`** (PDR-0007, legis-9a47068338) — per-SEI governance read legis publishes for warpline; cleared-only; CLI+MCP+HTTP + frozen discriminated-union contract; verified (1335 passed, **mutation-proven** false-green-free) + deployed to the global `legis` tool (1.3.0). Integration pending warpline.
+- **Plainweave preflight consumer** (PDR-0008, parallel session `27f12da`) — legis reads Plainweave's `preflight_facts.v1` advisory/enrich-only; 1377 passed at HEAD.
+- Follow-ups filed: **legis-a0e286f5aa** (MCP outputSchema looser than the frozen contract — Minor).
 
 ## Open questions / blocked-on-owner  (escalations)
-- **Push + 1.3.0 publish** — local `main` is **13 ahead / 1 behind** `origin/main` (the 3 fixes + pre-existing 1.3.0-prep; origin advanced by 1 commit not fetched). Nothing is pushed (owner-gated). A push needs a pull/reconcile of that 1 behind first. **1.3.0 must NOT publish until this is pushed** — it was carrying the mis-frozen warpline golden, now fixed on local main.
-- **reverify_worklist §2A** — legis's consumption of warpline's reverify is **unsanctioned** (the hub lock names filigree as the consumer). **Pending wardline's ruling** (bless-as-new-seam vs legis-drops-reverify). The client is structured for a clean drop; do NOT freeze the dependency before wardline rules (PDR-0006 reversal trigger).
-- **(set) → set:** the median-time-to-close target was owner-set ≤14 days (2026-06-25); first 2 samples = 6 days. PDR-0001's inferred-vision reversal trigger remains until the owner's full vision review.
+- **⚠ Release (push + publish) — owner-gated; the one escalation this session.** Local `main` (HEAD `27f12da`) is now far ahead of origin: the 1.3.0 line + 3 prior fixes + warpline-preflight + **G1 governance_read.v1** + **Plainweave consumer**. Direct push is **ruleset-blocked** (PR required). Decide: **(a) SCOPE** — what ships next (fold G1 + Plainweave into 1.3.0, or cut a 1.4.0)? **(b) MECHANISM** — shall I push a branch + open the PR, and who cuts the GitHub Release / PyPI publish? **Nothing is pushed; `governance_read.v1` stays a LOCAL freeze until this lands** (keeps the v1 contract revisable if warpline needs a change before publish).
+- **warpline handshake — live confirmation pending** (the G1 integration half; sibling-side).
+- **Plainweave live e2e capture** — the parallel session's golden is CONSTRUCTED, not live-captured (hub MCP misroutes Plainweave); a flagged follow-up.
 
 ## What this checkpoint did
-- Recorded **PDR-0005** (accept the governance-honesty bet partial; north-star 3→1) and **PDR-0006** (warpline preflight → conform to the extant MCP envelope; the consume-the-extant-standard federation principle; reverify kept droppable).
-- Refreshed `metrics.md` (north-star 1; median 6d/2 samples; advisory-boundary re-proven; CI green @ 075edd0; corrected the stale live-Loomweave publish-gate to skip-not-fail; coverage 92.25% + new warpline_preflight floor) and `roadmap.md` (Now bet 2/3 done; two warpline bets moved to Recently-shipped).
-- Reconciled the tracker: 3 findings walked to CLOSED with close-commits; 3 new issues filed (1 seam fix + 2 P3 follow-ups).
+- Recorded **PDR-0007** (build `governance_read.v1` — cleared-only per-SEI federation read, owner-directed) and **PDR-0008** (record the parallel session's Plainweave advisory consumer under [[0003-federation-read-doctrine]]/[[0006-warpline-preflight-conform-to-extant-mcp-envelope]] doctrine).
+- Refreshed `metrics.md` (north-star unchanged at 1; advisory boundary re-proven ×2; the new federation surface **mutation-proven** false-green-free; CI green, 1377 passed @ HEAD) and `roadmap.md` (two seams → recently-shipped).
+- Reconciled the tracker: filed **legis-9a47068338** (G1 feature) + **legis-a0e286f5aa** (outputSchema follow-up).
 
-## Next session, start here
-**Plan legis-0186c23a2c** (the last north-star finding) via the same /axiom-planning → review → execute path — closing it takes the north-star to **0**. OR, if the owner is ready: the **push + 1.3.0 release** decision (reconcile origin first). The reverify §2A question is on wardline's side, not legis's.
+## Next session starts here
+**Plan legis-0186c23a2c** (the last north-star finding) via the `/axiom-planning` → review → execute path — closing it takes the north-star to **0**. OR, if the owner is ready: the **release decision** (scope + PR mechanism) for the now-substantial unpushed local `main`. The warpline + Plainweave integration tails are sibling-side, not legis-blocked.
