@@ -3340,6 +3340,34 @@ def test_policy_boundary_check_rejects_absolute_repo_root_outside_source_root(tm
 
     assert result["isError"] is True
     assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+    # Fail closed: nothing about the out-of-bounds tree leaks as a scanned result.
+    assert "scanned_root" not in result["structuredContent"]
+
+
+def test_policy_boundary_check_rejects_repo_root_outside_even_when_root_inside(tmp_path):
+    # Discriminating case: repo_root is OUT of bounds while root is an explicit
+    # IN-bounds absolute path. Only the repo_root candidate is out of bounds, so
+    # this fails iff repo_root is actually contained — it pins the repo_root
+    # vector that the other reject-tests cover only incidentally (their default
+    # root, repo_root/src, is also out of bounds). If the containment call ever
+    # dropped repo_root, root alone would pass and this would scan, not error.
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    src = project / "src"
+    src.mkdir(parents=True)
+    (src / "clean.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(
+        runtime, "policy_boundary_check", {"repo_root": str(outside), "root": str(src)}
+    )
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+    assert "scanned_root" not in result["structuredContent"]
 
 
 def test_policy_boundary_check_rejects_relative_traversal_escape(tmp_path):
