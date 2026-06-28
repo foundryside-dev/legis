@@ -124,6 +124,14 @@ advisory-preflight **consumer**.
   (`LegisClient.governance_for_sei`) is the remaining integration half, tracked for
   the live handshake.
 
+### Fixed
+
+- **`legis doctor` no longer double-prints the `[operator]` audience tag.** Five
+  operator-key check messages baked a literal `[operator]` into the message text
+  while the renderer also appends the audience tag, so the lines read
+  `… [operator] [operator]`. The literals are stripped; the renderer remains the
+  single owner of the tag.
+
 ## [1.2.0] — 2026-06-25
 
 Warpline federation interfaces: an advisory preflight consumer and a
