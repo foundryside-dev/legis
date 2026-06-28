@@ -2477,7 +2477,11 @@ def _tool_doctor_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any
 
 
 def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
-    from legis.policy.boundary_scan import count_source_files, scan_policy_boundaries
+    from legis.policy.boundary_scan import (
+        assert_within_boundary,
+        count_source_files,
+        scan_policy_boundaries,
+    )
 
     source_root = Path(runtime.source_root or os.getcwd())
     repo_root_arg = _optional_string(args, "repo_root")
@@ -2488,6 +2492,11 @@ def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> di
     root = Path(root_arg) if root_arg else repo_root / "src"
     if not root.is_absolute():
         root = repo_root / root
+    # Containment (legis-0186c23a2c): an MCP caller supplies these roots, so an
+    # absolute or ..-bearing root must not let Legis walk arbitrary trees outside
+    # the server's configured source boundary. Fail closed (INVALID_ARGUMENT)
+    # BEFORE any filesystem walk; never scan-then-report an out-of-bounds tree.
+    assert_within_boundary(source_root, repo_root, root)
     # Gate honesty (cf. weft-ef2e898642 silent-clean-on-zero-scope): a scan that
     # looked at NOTHING yields zero findings, which would otherwise read as a
     # clean PASS — a vacuous green, the exact failure class of the prior

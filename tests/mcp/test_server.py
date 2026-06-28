@@ -3306,6 +3306,71 @@ def test_policy_boundary_check_outcome_schema_includes_no_root():
     assert set(enum) == {"PASS", "FINDINGS", "NO_ROOT"}
 
 
+# --- legis-0186c23a2c: scan-root containment in policy_boundary_check ---
+
+
+def test_policy_boundary_check_rejects_absolute_root_outside_source_root(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "secret.py").write_text("def s():\n    return 1\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(runtime, "policy_boundary_check", {"root": str(outside)})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+    # Fail closed: nothing about the out-of-bounds tree leaks as a scanned result.
+    assert "scanned_root" not in result["structuredContent"]
+
+
+def test_policy_boundary_check_rejects_absolute_repo_root_outside_source_root(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    (outside / "src").mkdir(parents=True)
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(runtime, "policy_boundary_check", {"repo_root": str(outside)})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_policy_boundary_check_rejects_relative_traversal_escape(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(runtime, "policy_boundary_check", {"root": "../../etc"})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_policy_boundary_check_allows_absolute_root_inside_source_root(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "clean.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    # An ABSOLUTE root that IS inside the boundary must still scan normally.
+    result = call_tool(runtime, "policy_boundary_check", {"root": str(src)})
+
+    assert result.get("isError") is not True
+    assert result["structuredContent"]["outcome"] == "PASS"
+    assert result["structuredContent"]["scanned_root"] == str(src)
+
+
 # --- legis-1611d1673f: pull_request_get number schema/handler type agreement ---
 # --- legis-40a0ff7799: check_list.target_type enum discoverability ---
 
