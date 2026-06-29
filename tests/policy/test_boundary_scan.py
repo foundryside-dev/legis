@@ -1,6 +1,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 from legis.policy.boundary_scan import scan_policy_boundaries
 from legis.policy.decorator import fingerprint_source
 
@@ -692,3 +694,73 @@ def test_count_source_files_zero_for_missing_dir(tmp_path: Path) -> None:
     from legis.policy.boundary_scan import count_source_files
 
     assert count_source_files(tmp_path / "does-not-exist") == 0
+
+
+def test_assert_within_boundary_allows_child_path(tmp_path):
+    from legis.policy.boundary_scan import assert_within_boundary
+
+    child = tmp_path / "src"
+    child.mkdir()
+    # Does not raise.
+    assert_within_boundary(tmp_path, child)
+
+
+def test_assert_within_boundary_allows_anchor_itself(tmp_path):
+    from legis.policy.boundary_scan import assert_within_boundary
+
+    assert_within_boundary(tmp_path, tmp_path)
+
+
+def test_assert_within_boundary_rejects_absolute_sibling(tmp_path):
+    from legis.policy.boundary_scan import assert_within_boundary
+    from legis.service.errors import InvalidArgumentError
+
+    anchor = tmp_path / "project"
+    anchor.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+
+    with pytest.raises(InvalidArgumentError):
+        assert_within_boundary(anchor, outside)
+
+
+def test_assert_within_boundary_rejects_dotdot_escape(tmp_path):
+    from legis.policy.boundary_scan import assert_within_boundary
+    from legis.service.errors import InvalidArgumentError
+
+    anchor = tmp_path / "project"
+    anchor.mkdir()
+
+    with pytest.raises(InvalidArgumentError):
+        assert_within_boundary(anchor, anchor / ".." / "etc")
+
+
+def test_assert_within_boundary_rejects_symlink_escape(tmp_path):
+    from legis.policy.boundary_scan import assert_within_boundary
+    from legis.service.errors import InvalidArgumentError
+
+    anchor = tmp_path / "project"
+    anchor.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link = anchor / "link"
+    link.symlink_to(outside)  # a symlink inside the anchor that points out
+
+    with pytest.raises(InvalidArgumentError):
+        assert_within_boundary(anchor, link)
+
+
+def test_assert_within_boundary_checks_every_candidate(tmp_path):
+    from legis.policy.boundary_scan import assert_within_boundary
+    from legis.service.errors import InvalidArgumentError
+
+    anchor = tmp_path / "project"
+    anchor.mkdir()
+    good = anchor / "src"
+    good.mkdir()
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+
+    # The bad one is second — proves all candidates are checked, not just the first.
+    with pytest.raises(InvalidArgumentError):
+        assert_within_boundary(anchor, good, outside)
