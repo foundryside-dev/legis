@@ -18,7 +18,7 @@ from typing import Any
 
 from legis.clock import Clock
 from legis.enforcement.judge import Judge
-from legis.enforcement.signing import SIG_PREFIX_V3, sign, verify
+from legis.crypto.signing import SIG_PREFIX_V3, sign, verify
 from legis.enforcement.signoff import signoff_signing_fields
 from legis.enforcement.verdict import Verdict
 from legis.identity.entity_key import EntityKey

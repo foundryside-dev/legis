@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 
 from legis.config import posture_db_url
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.hooks import generate_session_context
 from legis.install import inject_instructions
 from legis.posture.ledger import PostureLedger

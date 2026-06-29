@@ -29,6 +29,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import select
 
+from legis.posture.errors import OperatorKeyCustodyError
 from legis.posture.records import (
     KIND_GENESIS,
     KIND_KEY_RESET,
@@ -377,8 +378,6 @@ class PostureLedger:
         epoch ``key_fingerprint``.
         """
         if key_sink is None:
-            from legis.install import OperatorKeyCustodyError
-
             raise OperatorKeyCustodyError(
                 "posture rekey requires an explicit operator-key custody sink"
             )

@@ -15,7 +15,7 @@ exposes a ``key`` attribute or returns key bytes from any public method
 **``chain_seq`` is mandatory in the signed fields.** The caller folds the
 record's chain position (``chain_seq=seq``) into the fields it hands ``sign``;
 the v3 signature binds content *and* position (see
-:mod:`legis.enforcement.signing`). Omitting ``chain_seq`` silently signs the
+:mod:`legis.crypto.signing`). Omitting ``chain_seq`` silently signs the
 wrong base and the verifier — which reconstructs ``chain_seq`` from the seq
 column — will not match. Backends do not add it; the change gate does.
 
@@ -46,7 +46,7 @@ from typing import Callable, Protocol, runtime_checkable
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
-from legis.enforcement import signing as _enf_signing
+from legis.crypto import signing as _enf_signing
 
 # -- key primitives ----------------------------------------------------------
 
@@ -103,7 +103,7 @@ class PostureVerifier(PostureSigner, Protocol):
 def _sign_with_key(fields: dict, key_hex: str) -> str:
     """v3-sign ``fields`` with a hex key, discarding the bytes on return.
 
-    The single internal join to :func:`legis.enforcement.signing.sign` — every
+    The single internal join to :func:`legis.crypto.signing.sign` — every
     backend funnels through here so the version tag (``v3``) and the
     bytes-from-hex decode are defined once.
     """

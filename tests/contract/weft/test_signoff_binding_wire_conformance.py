@@ -23,7 +23,7 @@ existing entity-association oracle):
     base shape.
 
   * The ``signature`` is ``sign({issue_id, entity_id, content_hash, signoff_seq}, key)``
-    (``legis.enforcement.signing.sign`` -> deterministic HMAC-SHA256 over
+    (``legis.crypto.signing.sign`` -> deterministic HMAC-SHA256 over
     ``canonical_json`` of the field dict, tagged ``hmac-sha256:v2:``). It folds in NO
     clock, nonce, or salt, so with a FIXED key it reproduces byte-for-byte — which is
     what makes a byte-pin meaningful. ``issue_id`` is committed by the signature but
@@ -64,7 +64,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import legis.filigree.client as client_mod
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.filigree.client import HttpFiligreeClient
 from legis.governance.signoff_binding import bind_signoff_to_issue
 from legis.identity.entity_key import EntityKey

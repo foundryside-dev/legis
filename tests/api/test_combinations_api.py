@@ -10,7 +10,7 @@ from legis.clock import FixedClock
 from legis.enforcement.engine import EnforcementEngine
 from legis.enforcement.protected import TrailVerifier
 from legis.enforcement.signoff import SignoffGate
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.identity.entity_key import EntityKey
 from legis.store.audit_store import GENESIS, AuditStore, _chain
 from legis.wardline.ingest import wardline_artifact_fields
@@ -174,7 +174,7 @@ def test_bind_issue_endpoint_uses_resolved_backfill_for_locator_keyed_request(tm
 
 
 def test_bind_issue_endpoint_transmits_hmac_binding_signature(tmp_path):
-    from legis.enforcement.signing import verify
+    from legis.crypto.signing import verify
 
     key = b"k" * 32
     fil = _FakeFiligree()

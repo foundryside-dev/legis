@@ -14,7 +14,7 @@ from typing import Any
 
 from legis.canonical import content_hash
 from legis.clock import Clock
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.enforcement.verdict import SignoffState
 from legis.identity.entity_key import EntityKey
 from legis.records.override_record import OverrideRecord

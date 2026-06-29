@@ -26,7 +26,7 @@ import sqlite3
 import pytest
 
 from legis.clock import FixedClock
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.posture import session as session_mod
 from legis.posture.ledger import (
     REFUSED_NO_SESSION,

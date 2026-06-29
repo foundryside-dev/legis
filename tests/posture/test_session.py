@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.posture import session as session_mod
 from legis.posture.records import KIND_SESSION_OPENED
 

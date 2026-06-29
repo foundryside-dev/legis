@@ -213,7 +213,7 @@ def test_policy_list_conforms(tmp_path):
 def test_posture_get_conforms_missing_and_floored(tmp_path):
     import hashlib
 
-    from legis.enforcement import signing as enf_signing
+    from legis.crypto import signing as enf_signing
     from legis.posture.ledger import PostureLedger
 
     # No ledger -> fail-closed structured floor (cross-cutting checklist #1).

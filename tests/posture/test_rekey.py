@@ -51,7 +51,7 @@ class _MemSigner:
         return hashlib.sha256(self._key).hexdigest()
 
     def sign(self, fields):
-        from legis.enforcement import signing as enf_signing
+        from legis.crypto import signing as enf_signing
 
         return enf_signing.sign(fields, self._key, version="v3")
 

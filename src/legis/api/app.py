@@ -397,9 +397,9 @@ def create_app(
     # bare ``create_app`` must not create local state (audit H6). A missing/empty
     # ledger reads ``None`` -> the fail-closed structured floor.
     if cell_registry is None:
-        from legis.mcp import _load_policy_cell_registry
+        from legis.policy.cells import load_policy_cell_registry
 
-        cell_registry = _load_policy_cell_registry()
+        cell_registry = load_policy_cell_registry()
     if posture_ledger is None:
         posture_ledger = PostureLedger(posture_db_url(), initialize=False)
 

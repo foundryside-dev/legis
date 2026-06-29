@@ -18,7 +18,7 @@ import io
 import json
 
 from legis.clock import FixedClock
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.enforcement.engine import EnforcementEngine
 from legis.enforcement.protected import ProtectedGate
 from legis.enforcement.signoff import SignoffGate

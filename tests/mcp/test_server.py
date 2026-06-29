@@ -11,7 +11,7 @@ from legis.clock import FixedClock
 from legis.enforcement.engine import EnforcementEngine
 from legis.enforcement.protected import ProtectedGate, TrailVerifier
 from legis.enforcement.signoff import SignoffGate
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.enforcement.verdict import JudgeOpinion, Verdict
 from legis.git.surface import GitSurface
 from legis.identity.entity_key import EntityKey

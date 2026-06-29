@@ -25,6 +25,7 @@ import sys
 # A prefix ending in ".py" matches a single module; otherwise it matches a
 # package subtree. Current coverage (2026-06-06) shown in the trailing comment.
 FLOORS: dict[str, float] = {
+    "src/legis/crypto/": 93.0,       # security-critical: HMAC signing leaf (was under enforcement's floor)
     "src/legis/enforcement/": 93.0,  # currently ~95.0
     "src/legis/posture/": 93.0,      # security-critical: signed key-gated floor
 

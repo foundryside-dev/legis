@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.posture import signing
 
 

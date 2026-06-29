@@ -13,7 +13,7 @@ import hashlib
 
 import pytest
 
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.posture.ledger import PostureLedger
 from legis.posture.records import KIND_KEY_RESET, KIND_SESSION_OPENED
 

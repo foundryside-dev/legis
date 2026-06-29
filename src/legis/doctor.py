@@ -504,7 +504,7 @@ def check_hmac_key(root: Path) -> DoctorCheck:  # noqa: ARG001
 def check_policy_cells(root: Path) -> DoctorCheck:
     """Report-only (N3 / C-10(c)): is the policy-cell registry discoverable?
 
-    Mirrors ``mcp._load_policy_cell_registry``'s precedence (LEGIS_POLICY_CELLS >
+    Mirrors ``legis.policy.cells.load_policy_cell_registry``'s precedence (LEGIS_POLICY_CELLS >
     policy/cells.toml > LEGIS_DEV_DEFAULT_CELLS > fail-closed), but resolves the
     root from the doctor target (``root``) where the server falls back to
     ``os.getcwd()`` — these coincide when doctor runs from the server's launch
@@ -651,7 +651,7 @@ def _transition_acknowledges(rec: Any, *, new_fp: str, key_provider: Any) -> boo
     key (D6). Record-kind presence is insufficient — the signature must verify
     against a key whose fingerprint equals *new_fp*, proving the transition was
     signed under the reset's new epoch, not merely placed after it."""
-    from legis.enforcement import signing as _signing
+    from legis.crypto import signing as _signing
     from legis.posture.signing import key_fingerprint
 
     sig = rec.payload.get("operator_sig")

@@ -34,9 +34,8 @@ from legis.governance.binding_ledger import BindingError
 from legis.policy.cells import (
     CELL_TIER_ORDER,
     PolicyCellRegistry,
-    default_policy_cells,
     fail_closed_policy_cells,
-    load_policy_cells,
+    load_policy_cell_registry,
 )
 from legis.policy.grammar import PolicyGrammar, PolicyResult, default_grammar
 from legis.posture.floor import FlooredRegistry, _max_tier, floored_registry
@@ -184,25 +183,6 @@ class McpRuntime:
     plainweave: Any | None = None  # advisory sibling; NEVER read by a verdict path
 
 
-def _load_policy_cell_registry() -> PolicyCellRegistry:
-    configured = os.environ.get("LEGIS_POLICY_CELLS")
-    if configured:
-        return load_policy_cells(configured)
-
-    root = Path(os.environ.get("LEGIS_SOURCE_ROOT") or os.getcwd())
-    default_path = root / "policy" / "cells.toml"
-    if default_path.exists():
-        return load_policy_cells(default_path)
-
-    # No configuration found. Fail closed — an unmatched policy escalates to a
-    # human operator (structured) — unless a deployment explicitly opts into the
-    # chill dev posture. Otherwise an incomplete deployment would silently
-    # downgrade governance to self-clear (Q-M7 / audit H6).
-    if os.environ.get("LEGIS_DEV_DEFAULT_CELLS") == "1":
-        return default_policy_cells()
-    return fail_closed_policy_cells()
-
-
 def build_runtime(agent_id: str) -> McpRuntime:
     from legis.config import (
         binding_db_url,
@@ -313,7 +293,7 @@ def build_runtime(agent_id: str) -> McpRuntime:
         protected_gate=protected_gate,
         trail_verifier=trail_verifier,
         signoff_gate=signoff_gate,
-        cell_registry=_load_policy_cell_registry(),
+        cell_registry=load_policy_cell_registry(),
         check_surface=None,
         git_surface=GitSurface(os.environ.get("LEGIS_SOURCE_ROOT") or os.getcwd()),
         pull_surface=None,
