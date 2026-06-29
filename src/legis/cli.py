@@ -114,6 +114,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--db", default=gov_db_default,
         help="Governance store URL (defaults to the server's governance store)",
     )
+    gov_read = subparsers.add_parser(
+        "governance-read",
+        help="Read per-SEI verified governance clearances (governance_read.v1); output is always JSON",
+    )
+    gov_read.add_argument("sei", help="Stable Entity Identity (SEI) to query")
+    gov_read.add_argument(
+        "--db", default=gov_db_default,
+        help="Governance store URL (defaults to the server's governance store)",
+    )
     backfill = subparsers.add_parser(
         "sei-backfill",
         help="Resolve legacy locator-keyed governance records through Loomweave batch resolve",
@@ -333,6 +342,74 @@ def _check_override_rate(db_url: str) -> int:
     print(f"override-rate gate: {res.status.value} "
           f"(rate={res.rate:.3f}, sample={res.sample_size})")
     return 1 if res.status is GateStatus.FAIL else 0
+
+
+def _governance_read(db_url: str, sei: str) -> int:
+    """Per-SEI verified governance clearances (governance_read.v1) for the CLI path.
+
+    Both verification halves are mandatory (Constraint 1 / must-fix #1):
+      1. ``store.verify_integrity()`` — the hash-chain / seq-contiguity / delete-reorder
+         half; catches a tampered non-protected record that ``TrailVerifier.verify``
+         is silent about (it only verifies records it recognises as protected).
+      2. ``read_governance_for_sei_gate`` — the signature half, through the service
+         gate (Constraint 6), exactly as ``_check_override_rate`` does it.
+
+    Fail-closed paths: no key → unavailable; missing DB → unavailable; chain
+    tamper → exit 1; signature tamper → exit 1. No bare ``except``.
+    Output is always JSON (no ``--json`` flag needed / warning avoided).
+    """
+    import os
+
+    from legis.config import protected_policies
+    from legis.service.errors import AuditIntegrityError, ProtectedKeyRequiredError
+    from legis.service.governance import governance_read_unavailable, read_governance_for_sei_gate
+    from legis.store.audit_store import AuditStore
+
+    hmac_key = os.environ.get("LEGIS_HMAC_KEY")
+    if not hmac_key:
+        # No key → signatures are unverifiable from the CLI → unavailable, never
+        # a silent checked/[] that claims clearances were confirmed.
+        print(json.dumps(governance_read_unavailable(
+            sei, "trail not signature-verifiable (LEGIS_HMAC_KEY unset)"), sort_keys=True))
+        return 0
+
+    missing_db = _missing_sqlite_db(db_url)
+    if missing_db is not None:
+        # Absent store on a READ = unavailable (NOT the override-rate CI
+        # PASS_WITH_NOTICE axis, and NOT an auto-created empty DB read as
+        # checked/[] — that would be a false-green on the "no governance yet"
+        # case, indistinguishable from "verified and found none").
+        print(json.dumps(governance_read_unavailable(
+            sei, f"governance store not found: {missing_db}"), sort_keys=True))
+        return 0
+
+    store = AuditStore(db_url)
+    # HALF 1: hash-chain / seq-contiguity / delete-reorder defence.
+    # Must run BEFORE read_all + the service gate (which only checks
+    # signatures, not the chain). A seq gap in non-protected records
+    # passes TrailVerifier.verify silently but fails here.
+    if not store.verify_integrity():
+        print(
+            "Error: audit integrity failure: database hash chain verification failed",
+            file=sys.stderr,
+        )
+        return 1
+
+    records = store.read_all()
+    try:
+        # HALF 2: signature verification, through the service gate (Constraint 6).
+        # TamperError is wrapped into AuditIntegrityError inside the gate.
+        envelope = read_governance_for_sei_gate(
+            records, sei, hmac_key=hmac_key, protected_policies=protected_policies()
+        )
+    except (ProtectedKeyRequiredError, AuditIntegrityError) as exc:
+        # Always prefix "audit integrity" so tooling / tests can key on a single contract
+        # substring regardless of which half of the verification gate raised.
+        print(f"Error: audit integrity: {exc}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(envelope, sort_keys=True))
+    return 0
 
 
 def _run_doctor(args) -> int:
@@ -740,6 +817,9 @@ def main(argv: list[str] | None = None, *, run=uvicorn.run) -> int:
 
     if args.command in {"check-override-rate", "governance-gate"}:
         return _check_override_rate(args.db)
+
+    if args.command == "governance-read":
+        return _governance_read(args.db, args.sei)
 
     if args.command == "sei-backfill":
         report = run_pre_sei_backfill(

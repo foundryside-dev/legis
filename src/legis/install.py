@@ -28,6 +28,13 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+# ``OperatorKeyCustodyError`` now lives in the posture leaf (``posture/errors``)
+# so the posture package can raise/catch it without importing this 1500-LOC
+# setup module (architecture handover B5 / H-2). Re-exported here so existing
+# references — ``install.OperatorKeyCustodyError`` and
+# ``from legis.install import OperatorKeyCustodyError`` — keep resolving.
+from legis.posture.errors import OperatorKeyCustodyError
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -1304,18 +1311,6 @@ def register_mcp_json(
 # nothing and appends nothing. The ledger's own ``read_all`` non-empty guard
 # (``PostureLedger.genesis``) is the source of truth; install mirrors it so it
 # does not even mint a throwaway key on the idempotent path.
-
-
-class OperatorKeyCustodyError(RuntimeError):
-    """The minted operator key could not be placed in custody.
-
-    Raised by the default key sink when a backend cannot persist the key (no age
-    passphrase, no shipped keychain adapter). Install treats this as fail-closed:
-    NO ``GENESIS`` is written (the sink runs before the genesis append), so the
-    ledger never carries a fingerprint the operator cannot later sign against. A
-    bare ``legis install`` reports this as a *deferred* posture step (re-run with
-    custody configured), not a hard failure of the whole install.
-    """
 
 
 # A sink that persists the minted key into the chosen custody backend. The key

@@ -13,7 +13,7 @@ import hashlib
 
 import pytest
 
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.posture.ledger import PostureLedger
 from legis.posture.records import KIND_KEY_RESET, KIND_SESSION_OPENED
 
@@ -125,14 +125,16 @@ def test_read_floor_ignores_metadata_floor_field(tmp_path):
     assert ledger.read_floor() == "protected"
 
 
-def test_read_floor_uses_tail_read(tmp_path, monkeypatch):
+def test_read_floor_verifies_integrity_before_returning_floor(tmp_path):
+    """read_floor() gates on verify_integrity() before the tail scan: on a valid
+    chain the gate passes and the floor is returned. Supersedes the old
+    'read_floor must not call read_all' guard — the integrity-before-trust gate
+    DELIBERATELY calls read_all via verify_integrity; that property is RETIRED,
+    not regressed. (legis-476ab6f125.)
+    """
     ledger = PostureLedger(_url(tmp_path), initialize=True)
     ledger.genesis(key_fingerprint="ab" * 32, agent_id="installer", recorded_at="t0")
-
-    def _boom():
-        raise AssertionError("read_floor must not call read_all (hot path)")
-
-    monkeypatch.setattr(ledger.store, "read_all", _boom)
+    assert ledger.store.verify_integrity() is True
     assert ledger.read_floor() == "chill"
 
 

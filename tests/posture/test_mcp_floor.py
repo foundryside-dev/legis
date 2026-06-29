@@ -41,7 +41,7 @@ def _posture_ledger(tmp_path, floor=None):
     """A posture ledger seeded with a GENESIS (chill) and optional transition."""
     import hashlib
 
-    from legis.enforcement import signing as enf_signing
+    from legis.crypto import signing as enf_signing
 
     url = f"sqlite:///{tmp_path / 'posture.db'}"
     ledger = PostureLedger(url, initialize=True)
@@ -154,7 +154,7 @@ def test_mcp_floor_read_per_invocation(tmp_path):
     # call reflects the new floor (no cached posture_floor field).
     import hashlib
 
-    from legis.enforcement import signing as enf_signing
+    from legis.crypto import signing as enf_signing
 
     runtime, _gov = _runtime(tmp_path, floor=None, default_cell="chill")
     first = _call(
@@ -196,7 +196,7 @@ def test_idempotent_replay_is_floor_exempt(tmp_path):
     # same key: the replay returns the ORIGINAL outcome (floor-exempt, D4).
     import hashlib
 
-    from legis.enforcement import signing as enf_signing
+    from legis.crypto import signing as enf_signing
 
     runtime, _gov = _runtime(tmp_path, floor=None, default_cell="chill")
     args = {

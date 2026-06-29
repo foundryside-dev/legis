@@ -1,6 +1,6 @@
 import pytest
 
-from legis.enforcement.signing import (
+from legis.crypto.signing import (
     SIG_PREFIX,
     SIG_PREFIX_V3,
     sign,

@@ -17,6 +17,7 @@ from legis.clock import FixedClock
 from legis.enforcement.engine import EnforcementEngine
 from legis.policy.grammar import AllowlistBoundary, PolicyGrammar
 from legis.store.audit_store import AuditStore
+from legis.warpline_preflight.client import WarplineMcpClient
 
 
 # ---------------------------------------------------------------------------
@@ -72,13 +73,38 @@ def _runtime(
 
 
 class _HostileWarpline:
-    """Returns arbitrary/garbage advisory data to prove it cannot perturb a verdict."""
+    """Returns envelopes with a GV-LG-3-VALID meta but hostile advisory payload.
+
+    The hostile values are in ``data.affected``/``data.items`` — the advisory
+    payload that must NOT perturb a governance verdict.  The meta is deliberately
+    valid (``local_only:true, peer_side_effects:[]``) so the test proves that a
+    *hostile payload* (not a contract violation) is inert; a meta-violating
+    envelope would be refused → unavailable, making the byte-identity comparison
+    vacuously ``unavailable == unavailable``.
+    """
 
     def impact_radius(self, base, head):
-        return {"affected": [{"sei": "EVERYTHING"}], "count": 9999, "block": True}
+        return {
+            "schema": "warpline.impact_radius.v1",
+            "ok": True,
+            "data": {
+                "completeness": "FULL",
+                "affected": [{"sei": "EVERYTHING", "depth": 9999}],
+                "changed": [],
+            },
+            "meta": {"local_only": True, "peer_side_effects": [], "producer": {"tool": "hostile"}},
+        }
 
     def reverify_worklist(self, base, head):
-        return {"entries": [{"sei": "EVERYTHING", "reason": "force"}], "count": 9999}
+        return {
+            "schema": "warpline.reverify_worklist.v1",
+            "ok": True,
+            "data": {
+                "completeness": "FULL",
+                "items": [{"sei": "EVERYTHING", "reason": "force"}],
+            },
+            "meta": {"local_only": True, "peer_side_effects": [], "producer": {"tool": "hostile"}},
+        }
 
 
 def _seed_real_verdict_runtime(tmp_path):
@@ -137,7 +163,45 @@ def test_governance_verdicts_byte_identical_warpline_unset_vs_hostile(tmp_path):
     runtime_set.warpline = _HostileWarpline()  # structurally present, hostile
     setval = _run_governance_paths(runtime_set)
 
+    # GUARD: the hostile side must have actually reached status=="checked" — a
+    # _HostileWarpline that raises exceptions would produce "unavailable" on both
+    # sides and make the byte-identity assertion trivially pass while proving
+    # nothing.  This side-assertion is NOT part of setval.
+    from legis.mcp import call_tool
+    pf = call_tool(runtime_set, "warpline_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert pf["structuredContent"]["status"] == "checked", (
+        "_HostileWarpline returned unavailable — its envelope was rejected before "
+        "reaching the advisory layer; the byte-identity assertion is vacuous"
+    )
+
     assert json.dumps(unset, sort_keys=True) == json.dumps(setval, sort_keys=True)
+
+
+def test_gv_lg_3_invalid_meta_peer_side_effects_yields_unavailable(tmp_path):
+    """Positive GV-LG-3 pin: an envelope with non-empty peer_side_effects is
+    refused by WarplineMcpClient._call (raises WarplineError), which propagates
+    through read_warpline_preflight as status='unavailable'.  This ensures the
+    boundary check fires end-to-end, not just in unit tests of _call."""
+    from legis.mcp import call_tool
+
+    invalid_meta_envelope = {
+        "schema": "warpline.impact_radius.v1",
+        "ok": True,
+        "data": {"completeness": "FULL", "affected": []},
+        "meta": {
+            "local_only": True,
+            "peer_side_effects": ["some-peer"],   # GV-LG-3 VIOLATION
+            "producer": {"tool": "warpline"},
+        },
+    }
+    runtime, _ = _runtime(tmp_path)
+    runtime.warpline = WarplineMcpClient(
+        invoke=lambda t, a: invalid_meta_envelope, repo="/r"
+    )
+    pf = call_tool(runtime, "warpline_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert pf["structuredContent"]["status"] == "unavailable", (
+        "GV-LG-3: a non-empty peer_side_effects must yield unavailable, not checked"
+    )
 
 
 def test_runtime_warpline_referenced_in_no_verdict_path_function():
@@ -164,11 +228,20 @@ def test_runtime_warpline_referenced_in_no_verdict_path_function():
         )
 
     # --- explicit: non-handler verdict internals not in _TOOL_HANDLERS ---
+    from legis.service.governance import (
+        governance_read_unavailable,
+        read_governance_for_sei,
+        read_governance_for_sei_gate,
+    )
+
     for fn in [
         mcp._engine,
         mcp._coached_engine,
         mcp._governance_trail_records,
         read_sei_attestations,
+        read_governance_for_sei,
+        read_governance_for_sei_gate,
+        governance_read_unavailable,
     ]:
         src = inspect.getsource(fn)
         assert ".warpline" not in src, f"{fn.__name__} references warpline"

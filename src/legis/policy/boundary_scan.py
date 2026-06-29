@@ -97,6 +97,39 @@ def count_source_files(root: str | Path) -> int:
     return sum(1 for _ in scan_root.rglob("*.py"))
 
 
+def assert_within_boundary(anchor: str | Path, *candidates: str | Path) -> None:
+    """Fail closed when any candidate path resolves outside *anchor*.
+
+    The MCP ``policy_boundary_check`` surface accepts caller-supplied scan roots
+    (``root``, ``repo_root``). An absolute root — or a relative root with ``..``
+    segments — would otherwise let an MCP caller make Legis walk and parse
+    arbitrary Python trees visible to the server process, leaking paths and parse
+    results and inviting expensive traversal (legis-0186c23a2c).
+
+    ``resolve()`` collapses ``..`` and symlinks, so ``relative_to`` is a true
+    containment test: a symlink inside the anchor that points outside resolves
+    outside and is rejected. Raises ``InvalidArgumentError`` — the MCP adapter
+    maps that to an ``INVALID_ARGUMENT`` error envelope (``isError``), never a
+    result, so a rejected scan can never be misread as a clean PASS.
+    """
+    # Deferred import: policy/ does not import service/ at module load, and
+    # service/__init__ pulls in modules that import policy/ — importing at module
+    # level would risk a cycle. Importing here (call time) is cycle-safe.
+    from legis.service.errors import InvalidArgumentError
+
+    anchor_resolved = Path(anchor).resolve()
+    for candidate in candidates:
+        candidate_resolved = Path(candidate).resolve()
+        try:
+            candidate_resolved.relative_to(anchor_resolved)
+        except ValueError as exc:
+            raise InvalidArgumentError(
+                f"scan root {candidate_resolved} is outside the configured source "
+                f"boundary {anchor_resolved}; pass a root within the server's "
+                "source root (set via LEGIS_SOURCE_ROOT)."
+            ) from exc
+
+
 def _too_complex_finding(display_path: str) -> BoundaryFinding:
     return BoundaryFinding(
         "POLICY_BOUNDARY_FILE_TOO_COMPLEX",

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.filigree.client import FiligreeClient
 from legis.governance.binding_ledger import BindingLedger
 from legis.identity.entity_key import EntityKey

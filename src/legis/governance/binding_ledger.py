@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from legis.clock import Clock
-from legis.enforcement.signing import sign, verify
+from legis.crypto.signing import sign, verify
 from legis.identity.entity_key import EntityKey
 from legis.store.protocol import AppendOnlyStore
 

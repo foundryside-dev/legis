@@ -7,7 +7,7 @@ from legis.enforcement.protected import (
     TrailVerifier,
     signing_fields,
 )
-from legis.enforcement.signing import verify
+from legis.crypto.signing import verify
 from legis.enforcement.verdict import JudgeOpinion, Verdict
 from legis.identity.entity_key import EntityKey
 from legis.store.audit_store import AuditStore

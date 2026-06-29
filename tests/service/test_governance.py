@@ -467,7 +467,7 @@ def test_source_binding_status_is_bound_into_the_signature(tmp_path):
     # protected record from an unverified one, and the status cannot be flipped
     # after the fact without breaking the signature.
     from legis.enforcement.protected import signing_fields
-    from legis.enforcement.signing import verify
+    from legis.crypto.signing import verify
 
     key = b"protected-key"
     store = AuditStore(f"sqlite:///{tmp_path}/protected.db")

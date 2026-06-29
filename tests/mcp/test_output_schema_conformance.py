@@ -213,7 +213,7 @@ def test_policy_list_conforms(tmp_path):
 def test_posture_get_conforms_missing_and_floored(tmp_path):
     import hashlib
 
-    from legis.enforcement import signing as enf_signing
+    from legis.crypto import signing as enf_signing
     from legis.posture.ledger import PostureLedger
 
     # No ledger -> fail-closed structured floor (cross-cutting checklist #1).
@@ -632,15 +632,68 @@ def test_warpline_preflight_get_unavailable_conforms(tmp_path):
 
 def test_warpline_preflight_get_checked_conforms(tmp_path):
     class _FakeWarpline:
+        """Returns real-shaped envelopes with a GV-LG-3-valid meta.
+
+        A meta-violating envelope would be refused → unavailable, which would
+        make the ``status == 'checked'`` assertion below fail silently.
+        """
+
         def impact_radius(self, base, head):
-            return {"affected": [], "count": 0}
+            return {
+                "schema": "warpline.impact_radius.v1",
+                "ok": True,
+                "data": {"completeness": "FULL", "affected": []},
+                "meta": {"local_only": True, "peer_side_effects": []},
+            }
 
         def reverify_worklist(self, base, head):
-            return {"entries": [], "count": 0}
+            return {
+                "schema": "warpline.reverify_worklist.v1",
+                "ok": True,
+                "data": {"completeness": "FULL", "items": []},
+                "meta": {"local_only": True, "peer_side_effects": []},
+            }
 
     runtime, _store = _runtime(tmp_path)
     runtime.warpline = _FakeWarpline()
     payload = _conformant(runtime, "warpline_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert payload["status"] == "checked"
+
+
+def test_plainweave_preflight_get_unavailable_conforms(tmp_path):
+    runtime, _store = _runtime(tmp_path)  # plainweave None
+    payload = _conformant(runtime, "plainweave_preflight_get", {"base": "aaa"})
+    assert payload["status"] == "unavailable"
+
+
+def test_plainweave_preflight_get_checked_conforms(tmp_path):
+    class _FakePlainweave:
+        """Returns a real-shaped envelope with a GV-LG-3-valid authority_boundary.
+
+        A boundary-violating envelope would be refused → unavailable, which would
+        make the ``status == 'checked'`` assertion below fail silently.
+        """
+
+        def preflight_facts(self, base, head):
+            return {
+                "schema": "weft.plainweave.preflight_facts.v1",
+                "ok": True,
+                "data": {
+                    "freshness": "partial",
+                    "facts": [],
+                    "authority_boundary": {
+                        "local_only": True,
+                        "live_peer_calls": False,
+                        "governance_verdicts": False,
+                    },
+                },
+                "warnings": [],
+                "meta": {},
+            }
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.plainweave = _FakePlainweave()
+    payload = _conformant(runtime, "plainweave_preflight_get", {"base": "aaa", "head": "bbb"})
     assert payload["status"] == "checked"
 
 
@@ -671,3 +724,59 @@ def test_attestation_get_tamper_error_conforms_to_envelope(tmp_path):
     result = call_tool(runtime, "attestation_get", {"sei": "mod.fn#1"})
     assert result.get("isError")
     Draft202012Validator(ERROR_ENVELOPE_SCHEMA).validate(result["structuredContent"])
+
+
+# --- governance_read output schema conformance ---
+
+
+def test_governance_read_checked_variant_conforms(tmp_path):
+    """The 'checked' variant of governance_read with actual clearance records
+    must validate against the declared _one_of outputSchema."""
+    from legis.clock import FixedClock
+    from legis.enforcement.protected import ProtectedGate, TrailVerifier
+    from legis.enforcement.signoff import SignoffGate
+    from legis.identity.entity_key import EntityKey
+
+    _KEY = b"schema-conf-key"
+    _POLICY = "protected.schema_test"
+    _SEI = "loomweave:eid:schema-conformance"
+
+    store = AuditStore(f"sqlite:///{tmp_path / 'gov-conf.db'}")
+    clock = FixedClock("2026-06-02T12:00:00+00:00")
+
+    # Write a genuine signoff_cleared record
+    gate = SignoffGate(store, clock, signer=True, key=_KEY)
+    req = gate.request(
+        policy=_POLICY,
+        entity_key=EntityKey(value=_SEI, identity_stable=True),
+        rationale="review",
+        agent_id="agent-1",
+        extensions={"loomweave": {"content_hash": "blake3:schema-conf"}},
+    )
+    gate.sign_off(request_seq=req.seq, operator_id="op-1", rationale="ok")
+
+    runtime, _ = _runtime(tmp_path)
+    runtime.protected_gate = ProtectedGate(
+        store, clock, judge=_ScriptedJudge(), key=_KEY,
+        protected_policies=frozenset({_POLICY}),
+    )
+    runtime.trail_verifier = TrailVerifier(_KEY, frozenset({_POLICY}))
+    runtime.engine._store = store  # point engine at the store with clearances
+
+    payload = _conformant(runtime, "governance_read", {"sei": _SEI})
+    assert payload["status"] == "checked"
+    assert len(payload["records"]) >= 1
+    rec = payload["records"][0]
+    assert rec["disposition"] == "cleared"
+    assert rec["posture"] == "operator_signoff"
+    assert rec["authority"] == "operator"
+
+
+def test_governance_read_unavailable_variant_conforms(tmp_path):
+    """The 'unavailable' variant (no protected gate wired) must validate against
+    the declared _one_of outputSchema."""
+    runtime, _store = _runtime(tmp_path)  # no protected gate
+    payload = _conformant(runtime, "governance_read", {"sei": "loomweave:eid:any"})
+    assert payload["status"] == "unavailable"
+    assert payload["records"] == []
+    assert payload["unavailable"] and "reason" in payload["unavailable"][0]

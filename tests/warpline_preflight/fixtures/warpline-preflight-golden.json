@@ -1,28 +1,167 @@
 {
   "impact_radius": {
-    "affected": [
-      {
-        "sei": "loomweave:eid:0123456789abcdef0123456789abcdef",
-        "locator": "python:function:src/pkg/mod.py::fn",
-        "depth": 1
-      },
-      {
-        "sei": "loomweave:eid:fedcba9876543210fedcba9876543210",
-        "locator": "python:function:src/pkg/other.py::helper",
+    "schema": "warpline.impact_radius.v1",
+    "ok": true,
+    "query": {
+      "repo": "/home/john/legis",
+      "tool": "warpline_impact_radius_get",
+      "arguments": {
+        "rev_range": "HEAD~1..HEAD",
+        "changed_entity_key_ids": [],
         "depth": 2
+      },
+      "filters": {},
+      "sort": {
+        "by": "depth",
+        "order": "asc"
+      },
+      "page": {
+        "limit": 100,
+        "cursor": null
       }
+    },
+    "data": {
+      "completeness": "NO_SNAPSHOT",
+      "staleness": {
+        "snapshot_commit": null,
+        "commits_behind": null
+      },
+      "resolved": [],
+      "unresolved": [],
+      "changed": [],
+      "affected": [],
+      "overflow": {
+        "total": 0,
+        "returned": 0,
+        "dumped_to": null,
+        "reason_class": "clean"
+      },
+      "page": {
+        "limit": 100,
+        "next_cursor": null,
+        "has_more": false,
+        "reason_class": "clean"
+      }
+    },
+    "warnings": [
+      "NO_SNAPSHOT: downstream traversal unavailable; changed set only"
     ],
-    "count": 2
+    "next_actions": {},
+    "enrichment": {
+      "sei": "absent",
+      "edges": "absent",
+      "work": "unavailable",
+      "risk": "unavailable",
+      "governance": "unavailable",
+      "requirements": "unavailable"
+    },
+    "enrichment_reasons": {
+      "requirements": {
+        "reason_class": "disabled",
+        "cause": "the requirements dimension is reserved in the frozen enrichment vocab but no requirements-trace transport is wired in warpline yet",
+        "fix": "wire a requirements-trace consumer (e.g. a legis/requirements read keyed on the SEI) and populate enrichment.requirements; until then it is honestly reserved, not an earned-empty"
+      }
+    },
+    "meta": {
+      "producer": {
+        "tool": "warpline",
+        "version": "1.2.0"
+      },
+      "local_only": true,
+      "peer_side_effects": []
+    }
   },
   "reverify_worklist": {
-    "entries": [
-      {
-        "sei": "loomweave:eid:0123456789abcdef0123456789abcdef",
-        "locator": "python:function:src/pkg/mod.py::fn",
-        "priority": "high",
-        "reason": "changed"
+    "schema": "warpline.reverify_worklist.v1",
+    "ok": true,
+    "query": {
+      "repo": "/home/john/legis",
+      "tool": "warpline_reverify_worklist_get",
+      "arguments": {
+        "rev_range": "HEAD~1..HEAD",
+        "changed_entity_key_ids": [],
+        "depth": 2
+      },
+      "filters": {},
+      "sort": {
+        "by": "priority",
+        "order": "asc"
+      },
+      "group_by": "none",
+      "include_federation": false,
+      "page": {
+        "limit": 100,
+        "cursor": null
       }
+    },
+    "data": {
+      "completeness": "NO_SNAPSHOT",
+      "staleness": {
+        "snapshot_commit": null,
+        "commits_behind": null
+      },
+      "verification_summary": {
+        "fresh": 0,
+        "stale": 0,
+        "unverified": 0,
+        "unavailable": 0,
+        "local_source_configured": false
+      },
+      "resolved": [],
+      "unresolved": [],
+      "items": [],
+      "grouped": null,
+      "next_actions": {
+        "filigree": []
+      },
+      "overflow": {
+        "total": 0,
+        "returned": 0,
+        "dumped_to": null,
+        "reason_class": "clean"
+      },
+      "page": {
+        "limit": 100,
+        "next_cursor": null,
+        "has_more": false,
+        "reason_class": "clean"
+      }
+    },
+    "warnings": [
+      "NO_SNAPSHOT: downstream traversal unavailable; changed set only"
     ],
-    "count": 1
+    "next_actions": {
+      "filigree": []
+    },
+    "enrichment": {
+      "sei": "absent",
+      "edges": "absent",
+      "work": "unavailable",
+      "risk": "unavailable",
+      "governance": "unavailable",
+      "requirements": "unavailable"
+    },
+    "enrichment_reasons": {
+      "requirements": {
+        "reason_class": "disabled",
+        "cause": "the requirements dimension is reserved in the frozen enrichment vocab but no requirements-trace transport is wired in warpline yet",
+        "fix": "wire a requirements-trace consumer (e.g. a legis/requirements read keyed on the SEI) and populate enrichment.requirements; until then it is honestly reserved, not an earned-empty"
+      }
+    },
+    "meta": {
+      "producer": {
+        "tool": "warpline",
+        "version": "1.2.0"
+      },
+      "local_only": true,
+      "peer_side_effects": []
+    }
+  },
+  "_provenance": {
+    "source": "live-captured",
+    "captured": "2026-06-27",
+    "warpline_version": "1.2.0",
+    "repo": "/home/john/legis",
+    "rev_range": "HEAD~1..HEAD"
   }
 }

@@ -9,10 +9,128 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
-## [1.3.0] — 2026-06-26
+## [1.4.0] — 2026-06-29
 
-Suite-standard dot-dir hygiene, plus the legis-resident halves of six cross-repo
-Weft seam conformance oracles.
+Two internal hardenings on top of 1.3.0: a `policy_boundary_check` scan-root
+containment fix that closes an absolute-path escape of the configured source
+boundary, and a behavior-preserving decoupling of four package layering
+inversions that removes the most fragile import edges in the tree.
+
+### Security
+
+- **`policy_boundary_check` contains scan roots to the source boundary
+  (legis-0186c23a2c).** The MCP `policy_boundary_check` tool accepted absolute
+  scan roots pointing outside the configured source root. A new
+  `assert_within_boundary` primitive constrains every scan root to the source
+  boundary, so a caller can no longer steer the governance-honesty scan at paths
+  outside the repo's source tree. Pinned by a `repo_root` containment vector.
+- **Dependency bump: `starlette` 1.2.1 → 1.3.1 (GHSA-82w8-qh3p-5jfq,
+  GHSA-jp82-jpqv-5vv3).** Fixes a high-severity `request.form()` DoS (size/field
+  limits silently ignored for `application/x-www-form-urlencoded`) and a
+  low-severity `request.url.hostname` poisoning. fastapi (`>=0.115`, locked at
+  0.136.3) requires only `starlette>=0.46.0`, so the bump resolves with no other
+  lock changes; full suite + mypy green. (The low-severity npm `esbuild`
+  dev-server advisory is in the docs-site toolchain, not the legis package, and
+  is left for a separate site-only change — its parents cap it at `^0.27`.)
+
+### Changed — layering inversions decoupled (architecture handover P1)
+
+- **Signing primitive extracted to a dependency-free `crypto/` leaf (H-1 / B3).**
+  `enforcement/signing.py` moved verbatim to `legis/crypto/signing.py` (it imports
+  only `legis.canonical`). `store` and `enforcement` now both import it downward,
+  killing the `store ↔ enforcement` bidirectional edge. The HMAC bytes and the
+  cross-tool signing contract are unchanged — the byte-pinned conformance vectors
+  are untouched — and a `crypto/` coverage floor preserves the protection the
+  module had under `enforcement`'s floor.
+- **`OperatorKeyCustodyError` relocated to a `posture/errors.py` leaf (H-2 / B5).**
+  `posture` no longer imports the 1500-LOC `install` setup module; `install`
+  re-exports the error for back-compat.
+- **Policy-cell registry loader moved to `policy/cells.py` (H-3 / B6).**
+  `_load_policy_cell_registry` is now the public
+  `policy.cells.load_policy_cell_registry`; the HTTP app and the MCP server both
+  import it from there, removing the `api → mcp` transport-on-transport edge. The
+  fail-closed default is preserved verbatim.
+- **`policy → service` non-edge documented (H-4 / B4).** Confirmed the suspected
+  `policy → service` import does not exist in the tree; recorded the
+  leaf-direction rule (`service → policy` only) in `policy/__init__`.
+
+## [1.3.0] — 2026-06-28
+
+Suite-standard dot-dir hygiene and the legis-resident halves of six cross-repo
+Weft seam conformance oracles; three security/federation fixes (two
+governance-honesty hardenings on the posture and protected-cell audit paths, and
+a rebuild of the Warpline advisory-preflight seam onto Warpline's real MCP wire);
+and two new federation read surfaces — `governance_read.v1` (the per-SEI
+governance read legis now **publishes** for Warpline) and a Plainweave
+advisory-preflight **consumer**.
+
+### Security
+
+- **Posture `read_floor()` fails closed on a chain-integrity break
+  (legis-476ab6f125).** The hot routing read now gates on the keyless
+  `verify_integrity()` chain re-hash before returning the floor, so a
+  raw-DB-written/forged ledger tail can no longer silently set the routing floor:
+  an unverifiable chain resolves to `None` → the fail-closed `structured`
+  default, never the tampered floor. A recomputed-keyless-chain forgery remains
+  the conceded raw-file-write residual (README "Known security limitations"),
+  pinned by a characterization test rather than implied-closed.
+- **Protected-cell batches advance the HeadAnchor (legis-0c310712a7).**
+  `ProtectedGate` gains a `transaction()` context manager — a parity mirror of
+  `SignoffGate.transaction()` — that advances the out-of-band HeadAnchor after a
+  batched protected append commits, so a later tail-truncation back to a stale
+  anchor is detectable. Preventive/parity hardening: production wires no anchor
+  and no caller batches protected appends today.
+
+### Changed — Warpline advisory preflight rebuilt onto the real MCP wire
+
+- **`warpline_preflight_get` now speaks Warpline's actual surface
+  (legis-a53d92507d).** The prior client issued `GET /api/impact-radius` against
+  an HTTP server Warpline never served. It is replaced by a stdlib stdio JSON-RPC
+  client (`WarplineMcpClient` + `StdioMcpInvoke`, no new dependency) that consumes
+  Warpline's **extant** `warpline_impact_radius_get` / `warpline_reverify_worklist_get`
+  MCP tools with a `rev_range`, parses the real `warpline.impact_radius.v1` /
+  `warpline.reverify_worklist.v1` envelope, and verifies the
+  `meta.local_only` / `peer_side_effects` invariant (GV-LG-3), failing closed on
+  every fault. Config moves from `WARPLINE_API_URL` to `WARPLINE_MCP_CMD`. The
+  advisory boundary is unchanged: governance verdicts stay byte-identical with or
+  without Warpline, and any failure degrades to a discriminated `unavailable`.
+  This **reverses** the earlier "Warpline must ship a flat HTTP producer" framing
+  — legis conforms to Warpline's frozen envelope (hub SEAM 4 §4A / GV-LG-3);
+  Warpline builds nothing.
+
+### Added — federation read surfaces: `governance_read.v1` (producer) + Plainweave (consumer)
+
+- **`governance_read.v1` — legis publishes a per-SEI governance read for Warpline
+  (PDR-0007).** A new surface on CLI (`legis governance-read <sei>`), MCP
+  (`governance_read` tool) and HTTP (`GET /governance/sei/{sei:path}/governance-read`),
+  returning the frozen `governance_read.v1` envelope (contract committed at
+  `contracts/governance_read.v1.schema.json`). It is a pure projection of the
+  forge-proof per-SEI attestation read (`read_sei_attestations`) into a
+  **cleared-only** posture-record shape (`operator_override` → `protected_override`,
+  `signoff_cleared` → `operator_signoff`), so Warpline's
+  `reverify_worklist(include_federation=True)` can enrich its worklist with legis
+  governance facts. Fail-closed throughout: an unverifiable trail resolves to a
+  discriminated `status: "unavailable"` (never a silent `records: []`); a tampered
+  trail fails loud on all three transports (HTTP 500 / MCP `AUDIT_INTEGRITY_FAILURE`
+  / CLI nonzero); `records: []` under `checked` is honest absence of clearance,
+  never "ungoverned" or "unknown SEI" (legis is an SEI consumer, never the
+  authority). Advisory-only — Warpline echoes it as `enrichment.governance` and
+  never gates on it (GV-LG-1). The discriminated-union schema and the CLI
+  chain-integrity guard are both **mutation-proven** against false-greens. This
+  ships the producer half of the obligation the 1.3.0 conformance note flagged as
+  unwired; Warpline's consumer (`LegisClient.governance_for_sei`) is the remaining
+  integration.
+
+- **Plainweave preflight — advisory consumer (PDR-0008).** legis gains a read-only
+  `plainweave_preflight_get` consumer of Plainweave's
+  `weft.plainweave.preflight_facts.v1` producer (its first sibling consumer),
+  mirroring the Warpline advisory-preflight read exactly: injectable
+  `PlainweaveMcpClient` + `StdioMcpInvoke`, every fault fails closed →
+  `unavailable`, GV-LG-3 validated against Plainweave's real `authority_boundary`
+  shape, configured via `PLAINWEAVE_MCP_CMD` (default unconfigured →
+  `unavailable`). Enrich-only; governance verdicts stay byte-identical with or
+  without Plainweave. The conformance oracle drives a constructed golden (live
+  end-to-end capture is a flagged follow-up).
 
 ### Added
 
@@ -42,11 +160,22 @@ Weft seam conformance oracles.
   the default suite) plus a skip-clean Layer-2 source recheck: SEI
   (loomweave→legis), git-renames (legis→loomweave), signoff-binding
   (legis→filigree), loomweave-HMAC-wire (legis→loomweave, live-gated), the
-  warpline preflight read (legis consumer), and the per-SEI `attestation_get`
-  read (legis producer). Two outstanding peer obligations are recorded rather
-  than papered over — warpline ships no flat HTTP producer for the preflight
-  shape, and warpline's `LegisClient.governance_for_sei` is unwired — with the
-  Layer-2 rechecks armed to fire when each peer lands its half.
+  warpline preflight read (legis consumer — now driving Warpline's real
+  `warpline.impact_radius.v1` / `warpline.reverify_worklist.v1` MCP envelope; see
+  *Changed* above), and the per-SEI `attestation_get` read (legis producer). The
+  peer obligation this note previously flagged as unwired — the per-SEI governance
+  read Warpline needs — is now **shipped on legis's side** as `governance_read.v1`
+  (see *Added* above, with its own frozen-golden oracle); Warpline's consumer
+  (`LegisClient.governance_for_sei`) is the remaining integration half, tracked for
+  the live handshake.
+
+### Fixed
+
+- **`legis doctor` no longer double-prints the `[operator]` audience tag.** Five
+  operator-key check messages baked a literal `[operator]` into the message text
+  while the renderer also appends the audience tag, so the lines read
+  `… [operator] [operator]`. The literals are stripped; the renderer remains the
+  single owner of the tag.
 
 ## [1.2.0] — 2026-06-25
 

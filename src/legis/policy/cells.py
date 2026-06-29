@@ -8,6 +8,7 @@ back through ``policy_explain`` and ``override_submit``.
 from __future__ import annotations
 
 import fnmatch
+import os
 import tomllib
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -113,6 +114,34 @@ def load_policy_cells(path: str | Path) -> PolicyCellRegistry:
         rules.append(PolicyCellRule(pattern=pattern, cell=cell))
 
     return PolicyCellRegistry(default_cell=default_cell, rules=rules)
+
+
+def load_policy_cell_registry() -> PolicyCellRegistry:
+    """Resolve the active policy-cell registry by configuration precedence.
+
+    ``LEGIS_POLICY_CELLS`` (an explicit path) > ``policy/cells.toml`` under
+    ``LEGIS_SOURCE_ROOT`` (or cwd) > fail-closed default. Both transports — the
+    MCP server (:mod:`legis.mcp`) and the HTTP app (:mod:`legis.api.app`) —
+    resolve the registry through this one function so the precedence cannot drift
+    between surfaces, and the HTTP transport no longer imports the MCP transport
+    to get it (architecture handover B6 / H-3).
+    """
+    configured = os.environ.get("LEGIS_POLICY_CELLS")
+    if configured:
+        return load_policy_cells(configured)
+
+    root = Path(os.environ.get("LEGIS_SOURCE_ROOT") or os.getcwd())
+    default_path = root / "policy" / "cells.toml"
+    if default_path.exists():
+        return load_policy_cells(default_path)
+
+    # No configuration found. Fail closed — an unmatched policy escalates to a
+    # human operator (structured) — unless a deployment explicitly opts into the
+    # chill dev posture. Otherwise an incomplete deployment would silently
+    # downgrade governance to self-clear (Q-M7 / audit H6).
+    if os.environ.get("LEGIS_DEV_DEFAULT_CELLS") == "1":
+        return default_policy_cells()
+    return fail_closed_policy_cells()
 
 
 def _validate_rule(index: int, rule: PolicyCellRule) -> PolicyCellRule:

@@ -3,7 +3,7 @@
 This is the CONSUMER half of the cross-member conformance vector described in
 ``vectors/README.md``. It loads ``vectors/wardline_scan_artifact.v1.json`` — the
 SAME bytes Wardline's producer CI loads — and drives every vector case through
-legis's real signer (``enforcement.signing.sign``) and real ingest
+legis's real signer (``crypto.signing.sign``) and real ingest
 (``wardline.ingest.active_defects``).
 
 Why this file exists (Weft incident 2026-06-10, root cause #2): the findings
@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.wardline.ingest import (
     DEFECT_KIND,
     FINDINGS_KEY,

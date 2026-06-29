@@ -11,7 +11,7 @@ from legis.clock import FixedClock
 from legis.enforcement.engine import EnforcementEngine
 from legis.enforcement.protected import ProtectedGate, TrailVerifier
 from legis.enforcement.signoff import SignoffGate
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.enforcement.verdict import JudgeOpinion, Verdict
 from legis.git.surface import GitSurface
 from legis.identity.entity_key import EntityKey
@@ -303,7 +303,9 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
         "policy_boundary_check",
         "posture_get",
         "warpline_preflight_get",
+        "plainweave_preflight_get",
         "attestation_get",
+        "governance_read",
     }
     # posture_get is the dedicated read-only posture surface (Phase 8); the
     # change gate (posture set) stays operator/CLI only — no posture_set tool.
@@ -2131,6 +2133,7 @@ def test_warpline_tools_introduce_no_new_error_codes(tmp_path):
 
     runtime, _store = _runtime(tmp_path)
     assert not call_tool(runtime, "warpline_preflight_get", {"base": "x"}).get("isError")
+    assert not call_tool(runtime, "plainweave_preflight_get", {"base": "x"}).get("isError")
     assert not call_tool(runtime, "attestation_get", {"sei": "x#1"}).get("isError")
 
 
@@ -3306,6 +3309,99 @@ def test_policy_boundary_check_outcome_schema_includes_no_root():
     assert set(enum) == {"PASS", "FINDINGS", "NO_ROOT"}
 
 
+# --- legis-0186c23a2c: scan-root containment in policy_boundary_check ---
+
+
+def test_policy_boundary_check_rejects_absolute_root_outside_source_root(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    (outside / "secret.py").write_text("def s():\n    return 1\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(runtime, "policy_boundary_check", {"root": str(outside)})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+    # Fail closed: nothing about the out-of-bounds tree leaks as a scanned result.
+    assert "scanned_root" not in result["structuredContent"]
+
+
+def test_policy_boundary_check_rejects_absolute_repo_root_outside_source_root(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    (outside / "src").mkdir(parents=True)
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(runtime, "policy_boundary_check", {"repo_root": str(outside)})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+    # Fail closed: nothing about the out-of-bounds tree leaks as a scanned result.
+    assert "scanned_root" not in result["structuredContent"]
+
+
+def test_policy_boundary_check_rejects_repo_root_outside_even_when_root_inside(tmp_path):
+    # Discriminating case: repo_root is OUT of bounds while root is an explicit
+    # IN-bounds absolute path. Only the repo_root candidate is out of bounds, so
+    # this fails iff repo_root is actually contained — it pins the repo_root
+    # vector that the other reject-tests cover only incidentally (their default
+    # root, repo_root/src, is also out of bounds). If the containment call ever
+    # dropped repo_root, root alone would pass and this would scan, not error.
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    src = project / "src"
+    src.mkdir(parents=True)
+    (src / "clean.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(
+        runtime, "policy_boundary_check", {"repo_root": str(outside), "root": str(src)}
+    )
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+    assert "scanned_root" not in result["structuredContent"]
+
+
+def test_policy_boundary_check_rejects_relative_traversal_escape(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    project = tmp_path / "project"
+    (project / "src").mkdir(parents=True)
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(project))
+
+    result = call_tool(runtime, "policy_boundary_check", {"root": "../../etc"})
+
+    assert result["isError"] is True
+    assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+
+
+def test_policy_boundary_check_allows_absolute_root_inside_source_root(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "clean.py").write_text("def f():\n    return 1\n", encoding="utf-8")
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+
+    # An ABSOLUTE root that IS inside the boundary must still scan normally.
+    result = call_tool(runtime, "policy_boundary_check", {"root": str(src)})
+
+    assert result.get("isError") is not True
+    assert result["structuredContent"]["outcome"] == "PASS"
+    assert result["structuredContent"]["scanned_root"] == str(src)
+
+
 # --- legis-1611d1673f: pull_request_get number schema/handler type agreement ---
 # --- legis-40a0ff7799: check_list.target_type enum discoverability ---
 
@@ -3385,33 +3481,33 @@ def test_check_list_target_type_schema_declares_enum_matching_handler(tmp_path):
 
 def test_build_runtime_wires_warpline_from_env(monkeypatch, tmp_path):
     from legis.mcp import build_runtime
-    from legis.warpline_preflight.client import HttpWarplineClient
+    from legis.warpline_preflight.client import WarplineMcpClient
 
-    monkeypatch.setenv("WARPLINE_API_URL", "http://localhost:9100")
+    monkeypatch.setenv("WARPLINE_MCP_CMD", "echo")
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)  # engine-only: no protected gate
     # NOTE: build_runtime(agent_id) takes ONLY agent_id (mcp.py:200); source root
     # and DBs are env-driven (LEGIS_SOURCE_ROOT, mcp.py:275). There is NO
     # source_root= kwarg — passing one raises TypeError before any assertion.
     runtime = build_runtime("agent-x")
-    assert isinstance(runtime.warpline, HttpWarplineClient)
+    assert isinstance(runtime.warpline, WarplineMcpClient)
 
 
 def test_build_runtime_leaves_warpline_unwired_without_env(monkeypatch, tmp_path):
     from legis.mcp import build_runtime
 
-    monkeypatch.delenv("WARPLINE_API_URL", raising=False)
+    monkeypatch.delenv("WARPLINE_MCP_CMD", raising=False)
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     runtime = build_runtime("agent-x")
     assert runtime.warpline is None
 
 
-def test_build_runtime_degrades_warpline_to_none_on_bad_url(monkeypatch, tmp_path):
-    # A misconfigured ADVISORY url must NOT crash the sole governance authority
+def test_build_runtime_degrades_warpline_to_none_on_bad_cmd(monkeypatch, tmp_path):
+    # A misconfigured ADVISORY command must NOT crash the sole governance authority
     # at startup; it degrades to no advisory context (governance unaffected).
     from legis.mcp import build_runtime
 
-    monkeypatch.setenv("WARPLINE_API_URL", "not-a-valid-url")
+    monkeypatch.setenv("WARPLINE_MCP_CMD", "   ")  # blank after shlex.split -> fail-safe None
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
     runtime = build_runtime("agent-x")
@@ -3433,12 +3529,25 @@ def test_warpline_preflight_get_unavailable_when_unwired(tmp_path):
 def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
     from legis.mcp import call_tool
 
+    _impact = {
+        "schema": "warpline.impact_radius.v1",
+        "ok": True,
+        "data": {"completeness": "FULL", "affected": [{"sei": "S1", "depth": 1}]},
+        "meta": {"local_only": True, "peer_side_effects": []},
+    }
+    _reverify = {
+        "schema": "warpline.reverify_worklist.v1",
+        "ok": True,
+        "data": {"completeness": "FULL", "items": []},
+        "meta": {"local_only": True, "peer_side_effects": []},
+    }
+
     class _FakeWarpline:
         def impact_radius(self, base, head):
-            return {"affected": [{"sei": "S1"}], "count": 1}
+            return _impact
 
         def reverify_worklist(self, base, head):
-            return {"entries": [], "count": 0}
+            return _reverify
 
     runtime, _store = _runtime(tmp_path)
     runtime.warpline = _FakeWarpline()
@@ -3446,8 +3555,88 @@ def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
     assert not result.get("isError")
     sc = result["structuredContent"]
     assert sc["status"] == "checked"
-    assert sc["impact_radius"] == {"affected": [{"sei": "S1"}], "count": 1}
-    assert sc["reverify_worklist"] == {"entries": [], "count": 0}
+    assert sc["impact_radius"] == _impact
+    assert sc["reverify_worklist"] == _reverify
+
+
+# plainweave_preflight_get advisory sibling tool (mirrors warpline above)
+# ---------------------------------------------------------------------------
+
+
+def test_build_runtime_wires_plainweave_from_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+    from legis.plainweave_preflight.client import PlainweaveMcpClient
+
+    monkeypatch.setenv("PLAINWEAVE_MCP_CMD", "echo")
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-x")
+    assert isinstance(runtime.plainweave, PlainweaveMcpClient)
+
+
+def test_build_runtime_leaves_plainweave_unwired_without_env(monkeypatch, tmp_path):
+    from legis.mcp import build_runtime
+
+    monkeypatch.delenv("PLAINWEAVE_MCP_CMD", raising=False)
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    runtime = build_runtime("agent-x")
+    assert runtime.plainweave is None
+
+
+def test_build_runtime_degrades_plainweave_to_none_on_bad_cmd(monkeypatch, tmp_path):
+    # A misconfigured ADVISORY command must NOT crash the sole governance authority
+    # at startup; it degrades to no advisory context (governance unaffected).
+    from legis.mcp import build_runtime
+
+    monkeypatch.setenv("PLAINWEAVE_MCP_CMD", "   ")  # blank after shlex.split -> fail-safe None
+    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-x")
+    assert runtime.plainweave is None
+
+
+def test_plainweave_preflight_get_unavailable_when_unwired(tmp_path):
+    from legis.mcp import call_tool
+
+    runtime, _store = _runtime(tmp_path)  # plainweave defaults to None
+    result = call_tool(runtime, "plainweave_preflight_get", {"base": "aaa"})
+    assert not result.get("isError")
+    assert result["structuredContent"] == {
+        "status": "unavailable",
+        "unavailable": [{"reason": "plainweave client not configured"}],
+    }
+
+
+def test_plainweave_preflight_get_checked_with_injected_client(tmp_path):
+    from legis.mcp import call_tool
+
+    _envelope = {
+        "schema": "weft.plainweave.preflight_facts.v1",
+        "ok": True,
+        "data": {
+            "freshness": "partial",
+            "facts": [],
+            "authority_boundary": {
+                "local_only": True,
+                "live_peer_calls": False,
+                "governance_verdicts": False,
+            },
+        },
+        "warnings": [],
+        "meta": {},
+    }
+
+    class _FakePlainweave:
+        def preflight_facts(self, base, head):
+            return _envelope
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.plainweave = _FakePlainweave()
+    result = call_tool(runtime, "plainweave_preflight_get", {"base": "aaa", "head": "bbb"})
+    assert not result.get("isError")
+    sc = result["structuredContent"]
+    assert sc["status"] == "checked"
+    assert sc["preflight_facts"] == _envelope
 
 
 # Task 5: attestation_get fail-closed scaffolding

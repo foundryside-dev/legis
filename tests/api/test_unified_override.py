@@ -61,7 +61,7 @@ def _registry():
 
 def _ledger(tmp_path, floor=None):
     """A posture ledger seeded with GENESIS (chill) + optional raised floor."""
-    from legis.enforcement import signing as enf_signing
+    from legis.crypto import signing as enf_signing
 
     url = f"sqlite:///{tmp_path / 'posture.db'}"
     ledger = PostureLedger(url, initialize=True)

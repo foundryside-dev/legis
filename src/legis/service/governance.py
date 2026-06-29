@@ -8,6 +8,7 @@ never a transport error. (``resolve_for_record`` itself propagates no errors.)
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -348,6 +349,96 @@ def read_sei_attestations(verified_runtime_records: list, sei: str) -> dict[str,
             )
 
     return {"status": "checked", "sei": sei, "attestations": attestations}
+
+
+_POSTURE_BY_KIND = {
+    "operator_override": "protected_override",   # provable: protected_cell + OVERRIDDEN_BY_OPERATOR signed
+    "signoff_cleared": "operator_signoff",       # provable: SIGNED_OFF + integrity-bound request
+}
+# Three coupled points: read_sei_attestations' admitted kinds, these map keys, and the schema's
+# `posture` enum. A new clearance kind must update all three. reasons = clearance-kind code (WHAT
+# happened); posture = provable mechanism (HOW) — distinct axes, 1:1 in v1.
+
+
+def _is_rfc3339(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return True
+    except ValueError:
+        return False
+
+
+def read_governance_for_sei(verified_runtime_records: list, sei: str) -> dict[str, Any]:
+    """Per-SEI VERIFIED GOVERNANCE CLEARANCES as the ``governance_read.v1`` envelope.
+
+    A pure PROJECTION of ``read_sei_attestations`` (the forge-proof admitted set) — adds NO admission
+    logic and reads NO unsigned field, inheriting the signature-coverage/asymmetric-error guarantees.
+    A clearance whose ``recorded_at`` is absent or non-RFC3339, or whose ``kind`` has no known
+    posture, is OMITTED (asymmetric-error: a missing clearance only wastes warpline work; a malformed
+    one is the unsafe direction). The caller owns the ``status:"unavailable"`` pre-gate via
+    ``governance_read_unavailable`` for the no-key / unverifiable-trail case.
+    """
+    att = read_sei_attestations(verified_runtime_records, sei)
+    if att.get("status") != "checked":
+        # read_sei_attestations is contracted to return "checked" here (the handler owns the
+        # unavailable pre-gate). If that ever changes, fail loud rather than relabel it "checked".
+        raise AuditIntegrityError(
+            f"read_sei_attestations returned unexpected status {att.get('status')!r}"
+        )
+    records: list[dict[str, Any]] = []
+    for a in att["attestations"]:
+        posture = _POSTURE_BY_KIND.get(a["kind"])
+        if posture is None:
+            continue  # unknown kind -> omit, never fabricate a posture
+        if not _is_rfc3339(a.get("recorded_at")):
+            continue  # missing / malformed timestamp -> omit, never ship as_of:null
+        records.append(
+            {
+                "sei": sei,
+                "disposition": "cleared",
+                "posture": posture,
+                "authority": "operator",
+                "as_of": a["recorded_at"],
+                "reasons": [a["kind"]],
+                "content_hash": a["content_hash"],
+            }
+        )
+    return {"status": "checked", "sei": sei, "records": records}
+
+
+def read_governance_for_sei_gate(
+    records: list, sei: str, *, hmac_key: str | None, protected_policies
+) -> dict[str, Any]:
+    """Verified governance read for the CLI/batch path: detect protected -> require key -> verify
+    signatures (fail closed) -> project. Mirrors ``evaluate_override_rate_gate`` exactly, so the CLI
+    measures the same trust the HTTP/MCP paths do (Constraint 6). The store-level hash-chain check
+    (``verify_integrity``) is the CALLER's responsibility BEFORE this call (as in
+    ``_check_override_rate``) — both halves are mandatory (Constraint 1).
+    """
+    protected_present = any(
+        _requires_protected_verification(r.payload, protected_policies) for r in records
+    )
+    if protected_present and not hmac_key:
+        raise ProtectedKeyRequiredError(
+            "Protected audit records require LEGIS_HMAC_KEY for verification"
+        )
+    if hmac_key:
+        verifier = TrailVerifier(hmac_key.encode("utf-8"), protected_policies)
+        try:
+            verifier.verify(records)
+        except TamperError as exc:
+            raise AuditIntegrityError(
+                f"Protected audit trail verification failed: {exc}"
+            ) from exc
+    return read_governance_for_sei(records, sei)
+
+
+def governance_read_unavailable(sei: str, reason: str) -> dict[str, Any]:
+    """The shared ``governance_read.v1`` unavailable envelope (one shape across all 3 adapters).
+    NEVER a silent ``checked``/``[]`` — an unverifiable trail reads as "could not check" (GOV-2)."""
+    return {"status": "unavailable", "sei": sei, "records": [], "unavailable": [{"reason": reason}]}
 
 
 def _requires_protected_verification(payload: dict[str, Any], protected_policies) -> bool:

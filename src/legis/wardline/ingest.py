@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
-from legis.enforcement.signing import verify
+from legis.crypto.signing import verify
 
 # The shared trust vocabulary (Wardline taints.py) — carried, never re-derived.
 TRUST_TIERS: frozenset[str] = frozenset({

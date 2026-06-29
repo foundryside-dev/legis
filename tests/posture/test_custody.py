@@ -11,7 +11,7 @@ from hashlib import sha256
 
 import pytest
 
-from legis.enforcement import signing as enf_signing
+from legis.crypto import signing as enf_signing
 from legis.posture import signing
 
 

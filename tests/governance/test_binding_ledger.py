@@ -2,7 +2,7 @@ import pytest
 import sqlite3
 
 from legis.clock import FixedClock
-from legis.enforcement.signing import sign
+from legis.crypto.signing import sign
 from legis.governance.binding_ledger import (
     BindingError,
     BindingLedger,

@@ -1,0 +1,91 @@
+{
+  "preflight_facts": {
+    "schema": "weft.plainweave.preflight_facts.v1",
+    "ok": true,
+    "data": {
+      "producer": {
+        "tool": "plainweave",
+        "version": "1.1.0",
+        "project": "legis"
+      },
+      "scope": {
+        "kind": "commit_range",
+        "base": "HEAD~1",
+        "head": "HEAD",
+        "requirement_ids": [],
+        "entity_refs": [],
+        "baseline_id": null
+      },
+      "generated_at": "2026-06-27T00:00:00+00:00",
+      "freshness": "partial",
+      "facts": [],
+      "summary": {
+        "info": 0,
+        "warn": 0,
+        "critical": 0,
+        "facts": 0,
+        "by_kind": {},
+        "by_freshness": {}
+      },
+      "warnings": [
+        {
+          "code": "live_diff_resolution_unavailable",
+          "severity": "info",
+          "message": "Plainweave did not call Legis or Loomweave to resolve the live diff.",
+          "freshness": "unavailable",
+          "provenance": {
+            "producer": "plainweave",
+            "inputs": []
+          }
+        },
+        {
+          "code": "linked_work_facts_unavailable",
+          "severity": "info",
+          "message": "Filigree linked-work facts are not joined by this local-only producer.",
+          "freshness": "unavailable",
+          "provenance": {
+            "producer": "plainweave",
+            "inputs": []
+          }
+        },
+        {
+          "code": "finding_facts_unavailable",
+          "severity": "info",
+          "message": "Wardline finding facts are not joined by this local-only producer.",
+          "freshness": "unavailable",
+          "provenance": {
+            "producer": "plainweave",
+            "inputs": []
+          }
+        }
+      ],
+      "provenance": {
+        "producer": "plainweave",
+        "inputs": []
+      },
+      "authority_boundary": {
+        "local_only": true,
+        "live_peer_calls": false,
+        "governance_verdicts": false,
+        "legis_policy_cells": "external"
+      }
+    },
+    "warnings": [],
+    "meta": {
+      "producer": {
+        "tool": "plainweave",
+        "version": "1.1.0"
+      },
+      "generated_at": "2026-06-27T00:00:00+00:00",
+      "project": "legis"
+    }
+  },
+  "_provenance": {
+    "source": "constructed-from-frozen-producer-contract",
+    "constructed": "2026-06-27",
+    "plainweave_version": "1.1.0",
+    "producer_contract": "weft.plainweave.preflight_facts.v1 (ADR-006)",
+    "scope": "commit_range HEAD~1..HEAD with no requirement/entity/baseline subjects -> empty facts (the representative output of the consumer's actual call)",
+    "live_capture_status": "PENDING: a live end-to-end capture against a real plainweave-mcp is a required follow-up in a legis-rooted session (the hub session's MCP wiring misroutes plainweave calls)."
+  }
+}

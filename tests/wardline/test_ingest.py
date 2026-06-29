@@ -239,7 +239,7 @@ def test_known_non_defect_kinds_are_excluded_not_rejected():
 # The relaxation is scoped to exactly `dirty is True AND signature absent` — a
 # signed (or clean) payload still verifies normally, so a real tamper stays red.
 
-from legis.enforcement.signing import sign  # noqa: E402
+from legis.crypto.signing import sign  # noqa: E402
 from legis.wardline.ingest import (  # noqa: E402
     SKIPPED_DIRTY_TREE,
     WardlineDirtyTreeError,

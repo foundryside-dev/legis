@@ -37,7 +37,7 @@ def test_sei_keyed_signoff_binds_to_issue():
 
 
 def test_binding_is_hmac_signed_when_a_key_is_supplied():
-    from legis.enforcement.signing import verify
+    from legis.crypto.signing import verify
 
     fil = FakeFiligree()
     key = b"k" * 32

@@ -31,7 +31,7 @@ def _fp():
 
 
 def _mem_signer():
-    from legis.enforcement import signing as enf_signing
+    from legis.crypto import signing as enf_signing
 
     class _MemSigner:
         def __init__(self):

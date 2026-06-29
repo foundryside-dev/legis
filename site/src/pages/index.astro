@@ -125,7 +125,7 @@ const CAPABILITIES = [
           <EnrichmentChip client:visible state="present" peer="loomweave" />
           <EnrichmentChip client:visible state="present" peer="warpline" />
           <EnrichmentChip client:visible state="absent" peer="filigree" />
-          <EnrichmentChip client:visible state="unavailable" peer="charter" />
+          <EnrichmentChip client:visible state="unavailable" peer="plainweave" />
         </div>
         <p class="terminal__cap">version snapshot <code>v1.1.1</code> — the gold release line. Moving facts live in <a href={REPO} rel="noopener">the repo</a>.</p>
       </div>
@@ -145,11 +145,13 @@ const CAPABILITIES = [
         state exists for that change?</em> It owns the verdicts, the enforcement cells, the
         HMAC-signed protected records, and the SEI-keyed sign-off ledger.
       </p>
-      <Banner client:visible tone="info" title="A discipline, not a hardened security boundary.">
-        Legis is a <strong>&ldquo;forced me to do the right thing&rdquo;</strong> discipline. Its worth is the
-        effort the threat model forces and the residual tiers it names honestly (raw DB-file write,
-        model-robustness, response-integrity-rests-on-TLS) — not a claim to withstand an attacker who
-        already holds those capabilities. The system is only as load-bearing as the effort put into it.
+      <Banner client:visible tone="danger" title="Not a hardened security boundary or access control.">
+        Legis is <strong>deconfliction-first, not security</strong> — a <strong>&ldquo;forced me to do the
+        right thing&rdquo;</strong> discipline plus an attributable, tamper-evident record, never an
+        access-control gate, and low-security by design. Its worth is the effort the threat model forces and
+        the residual tiers it names honestly (raw DB-file write, model-robustness,
+        response-integrity-rests-on-TLS) — not a claim to withstand an attacker who already holds those
+        capabilities. Do not lean on it to keep anyone out, or for secure, regulated, or confidential data.
       </Banner>
     </div>
   </section>

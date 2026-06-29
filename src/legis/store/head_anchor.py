@@ -53,8 +53,8 @@ import json
 import os
 from typing import Any
 
-from legis.enforcement.signing import verify
-from legis.enforcement.signing import sign as _sign
+from legis.crypto.signing import verify
+from legis.crypto.signing import sign as _sign
 
 ANCHOR_VERSION = "v3"
 

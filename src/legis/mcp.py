@@ -34,9 +34,8 @@ from legis.governance.binding_ledger import BindingError
 from legis.policy.cells import (
     CELL_TIER_ORDER,
     PolicyCellRegistry,
-    default_policy_cells,
     fail_closed_policy_cells,
-    load_policy_cells,
+    load_policy_cell_registry,
 )
 from legis.policy.grammar import PolicyGrammar, PolicyResult, default_grammar
 from legis.posture.floor import FlooredRegistry, _max_tier, floored_registry
@@ -103,7 +102,9 @@ _AGENT_TOOLS = frozenset(
         "policy_boundary_check",
         "posture_get",
         "warpline_preflight_get",
+        "plainweave_preflight_get",
         "attestation_get",
+        "governance_read",
     }
 )
 _OVERRIDE_RATE_NOTE = "measures operator force-pasts; not movable by agent retries"
@@ -179,25 +180,7 @@ class McpRuntime:
     posture_ledger: Any | None = None
     coached_engine: EnforcementEngine | None = None
     warpline: Any | None = None  # advisory sibling; NEVER read by a verdict path
-
-
-def _load_policy_cell_registry() -> PolicyCellRegistry:
-    configured = os.environ.get("LEGIS_POLICY_CELLS")
-    if configured:
-        return load_policy_cells(configured)
-
-    root = Path(os.environ.get("LEGIS_SOURCE_ROOT") or os.getcwd())
-    default_path = root / "policy" / "cells.toml"
-    if default_path.exists():
-        return load_policy_cells(default_path)
-
-    # No configuration found. Fail closed — an unmatched policy escalates to a
-    # human operator (structured) — unless a deployment explicitly opts into the
-    # chill dev posture. Otherwise an incomplete deployment would silently
-    # downgrade governance to self-clear (Q-M7 / audit H6).
-    if os.environ.get("LEGIS_DEV_DEFAULT_CELLS") == "1":
-        return default_policy_cells()
-    return fail_closed_policy_cells()
+    plainweave: Any | None = None  # advisory sibling; NEVER read by a verdict path
 
 
 def build_runtime(agent_id: str) -> McpRuntime:
@@ -229,18 +212,44 @@ def build_runtime(agent_id: str) -> McpRuntime:
         filigree = HttpFiligreeClient(filigree_url)
 
     warpline = None
-    warpline_url = os.environ.get("WARPLINE_API_URL")
-    if warpline_url:
-        from legis.warpline_preflight.client import HttpWarplineClient, WarplineError
-
+    warpline_cmd = os.environ.get("WARPLINE_MCP_CMD")
+    if warpline_cmd:
+        import shlex
+        from legis.warpline_preflight.client import StdioMcpInvoke, WarplineError, WarplineMcpClient
         try:
-            warpline = HttpWarplineClient(warpline_url)
-        except WarplineError:
+            argv = shlex.split(warpline_cmd)
+            if not argv:
+                raise WarplineError("WARPLINE_MCP_CMD is blank")
+            from legis.config import project_root
+            warpline = WarplineMcpClient(invoke=StdioMcpInvoke(command=argv), repo=str(project_root()))
+        except (WarplineError, ValueError) as exc:
             logging.getLogger(__name__).warning(
-                "WARPLINE_API_URL is set but invalid; warpline advisory context "
-                "disabled (governance unaffected)."
-            )
+                "WARPLINE_MCP_CMD is set but invalid (%s); warpline advisory context "
+                "disabled (governance unaffected).", exc)
             warpline = None
+
+    plainweave = None
+    plainweave_cmd = os.environ.get("PLAINWEAVE_MCP_CMD")
+    if plainweave_cmd:
+        import shlex
+        from legis.plainweave_preflight.client import (
+            PlainweaveError,
+            PlainweaveMcpClient,
+        )
+        from legis.plainweave_preflight.client import (
+            StdioMcpInvoke as PlainweaveStdioMcpInvoke,
+        )
+        try:
+            argv = shlex.split(plainweave_cmd)
+            if not argv:
+                raise PlainweaveError("PLAINWEAVE_MCP_CMD is blank")
+            from legis.config import project_root
+            plainweave = PlainweaveMcpClient(invoke=PlainweaveStdioMcpInvoke(command=argv), repo=str(project_root()))
+        except (PlainweaveError, ValueError) as exc:
+            logging.getLogger(__name__).warning(
+                "PLAINWEAVE_MCP_CMD is set but invalid (%s); plainweave advisory context "
+                "disabled (governance unaffected).", exc)
+            plainweave = None
 
     protected_gate = None
     trail_verifier = None
@@ -284,7 +293,7 @@ def build_runtime(agent_id: str) -> McpRuntime:
         protected_gate=protected_gate,
         trail_verifier=trail_verifier,
         signoff_gate=signoff_gate,
-        cell_registry=_load_policy_cell_registry(),
+        cell_registry=load_policy_cell_registry(),
         check_surface=None,
         git_surface=GitSurface(os.environ.get("LEGIS_SOURCE_ROOT") or os.getcwd()),
         pull_surface=None,
@@ -306,6 +315,7 @@ def build_runtime(agent_id: str) -> McpRuntime:
         # state (audit H6 / the no-local-state-on-init invariant).
         posture_ledger=PostureLedger(posture_db_url(), initialize=False),
         warpline=warpline,
+        plainweave=plainweave,
     )
 
 
@@ -914,6 +924,41 @@ def tool_definitions() -> list[dict[str, Any]]:
             ),
         },
         {
+            "name": "plainweave_preflight_get",
+            "description": (
+                "ADVISORY preflight context from the plainweave sibling: scoped "
+                "requirement/intent facts (envelope weft.plainweave.preflight_facts.v1, "
+                "ADR-006) over base..head. Purely advisory — NEVER a governance "
+                "verdict (plainweave emits facts only; Legis owns policy/audit). "
+                "Discriminated: 'checked' carries the advisory facts envelope; "
+                "'unavailable' (client unconfigured, transport failure, error "
+                "envelope, or payload shape mismatch) carries reasons. Never read a "
+                "missing 'checked' as 'nothing impacted'."
+            ),
+            "inputSchema": _schema(["base"], {"base": string, "head": string}),
+            "outputSchema": _one_of(
+                [
+                    _schema(
+                        ["status", "preflight_facts"],
+                        {
+                            "status": {"type": "string", "enum": ["checked"]},
+                            "preflight_facts": {"type": "object"},
+                        },
+                    ),
+                    _schema(
+                        ["status", "unavailable"],
+                        {
+                            "status": {"type": "string", "enum": ["unavailable"]},
+                            "unavailable": {
+                                "type": "array",
+                                "items": _schema(["reason"], {"reason": string}),
+                            },
+                        },
+                    ),
+                ]
+            ),
+        },
+        {
             "name": "identity_gap_list",
             "description": (
                 "List governance attestations whose SEI Loomweave now reports "
@@ -1304,6 +1349,90 @@ def tool_definitions() -> list[dict[str, Any]]:
                             "status": {"type": "string", "enum": ["unavailable"]},
                             "sei": string,
                             "attestations": {"type": "array", "maxItems": 0},
+                            "unavailable": {
+                                "type": "array",
+                                "items": _schema(["reason"], {"reason": string}),
+                            },
+                        },
+                    ),
+                ]
+            ),
+        },
+        {
+            "name": "governance_read",
+            "description": (
+                "Per-SEI VERIFIED governance CLEARANCE facts (governance_read.v1). "
+                "Advisory — never gate on this. records:[] under 'checked' = no "
+                "verified clearance for this SEI on the verified trail, NOT "
+                "'ungoverned'; 'unavailable' = trail not signature-verifiable, "
+                "NOT 'absent'. A tampered trail -> AUDIT_INTEGRITY_FAILURE. "
+                "Distinct from attestation_get: projects clearance_record shape "
+                "(disposition/posture/authority/as_of/reasons), not raw attestation "
+                "fields (kind/seq)."
+            ),
+            "inputSchema": _schema(["sei"], {"sei": string}),
+            "outputSchema": _one_of(
+                [
+                    # checked variant: verified trail read; records may be empty
+                    _schema(
+                        ["status", "sei", "records"],
+                        {
+                            "status": {"type": "string", "enum": ["checked"]},
+                            "sei": string,
+                            "records": {
+                                "type": "array",
+                                "items": _schema(
+                                    [
+                                        "sei",
+                                        "disposition",
+                                        "posture",
+                                        "authority",
+                                        "as_of",
+                                        "reasons",
+                                        "content_hash",
+                                    ],
+                                    {
+                                        "sei": string,
+                                        "disposition": {
+                                            "type": "string",
+                                            "enum": ["cleared"],
+                                        },
+                                        "posture": {
+                                            "type": "string",
+                                            "enum": [
+                                                "protected_override",
+                                                "operator_signoff",
+                                            ],
+                                        },
+                                        "authority": {
+                                            "type": "string",
+                                            "enum": ["operator"],
+                                        },
+                                        "as_of": string,
+                                        "reasons": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "items": {
+                                                "type": "string",
+                                                "enum": [
+                                                    "operator_override",
+                                                    "signoff_cleared",
+                                                ],
+                                            },
+                                        },
+                                        "content_hash": string,
+                                    },
+                                ),
+                            },
+                        },
+                    ),
+                    # unavailable variant: trail not signature-verifiable
+                    _schema(
+                        ["status", "sei", "records", "unavailable"],
+                        {
+                            "status": {"type": "string", "enum": ["unavailable"]},
+                            "sei": string,
+                            "records": {"type": "array", "maxItems": 0},
                             "unavailable": {
                                 "type": "array",
                                 "items": _schema(["reason"], {"reason": string}),
@@ -2286,6 +2415,18 @@ def _tool_warpline_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> d
     )
 
 
+def _tool_plainweave_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    from legis.service.preflight import read_plainweave_preflight
+
+    return _tool_result(
+        read_plainweave_preflight(
+            runtime.plainweave,
+            base=_require(args, "base"),
+            head=args.get("head", "HEAD"),
+        )
+    )
+
+
 def _governance_trail_records(runtime: McpRuntime) -> list[Any]:
     """The verified governance trail the SEI lineage-honesty reads consume.
 
@@ -2328,6 +2469,26 @@ def _tool_attestation_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     # _governance_trail_records runs verified_records, which raises
     # AuditIntegrityError (-> AUDIT_INTEGRITY_FAILURE) on a tampered protected trail.
     return _tool_result(read_sei_attestations(_governance_trail_records(runtime), sei))
+
+
+def _tool_governance_read(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+    from legis.service.governance import governance_read_unavailable, read_governance_for_sei
+
+    sei = _require(args, "sei")
+    # FAIL-CLOSED pre-gate (same invariant as attestation_get): a verifiable answer
+    # needs BOTH a protected gate AND a trail_verifier. Missing either -> unavailable
+    # (discriminated), never a silent checked/[] that reads as "no clearance".
+    if runtime.protected_gate is None or runtime.trail_verifier is None:
+        return _tool_result(
+            governance_read_unavailable(
+                sei, "trail not signature-verifiable (no protected gate / verifier)"
+            )
+        )
+    # _governance_trail_records runs verified_records, which runs BOTH
+    # verify_integrity (chain/delete-reorder-truncate) AND TrailVerifier.verify
+    # (signatures), raising AuditIntegrityError (-> AUDIT_INTEGRITY_FAILURE) on a
+    # tampered protected trail (loud, never a result).
+    return _tool_result(read_governance_for_sei(_governance_trail_records(runtime), sei))
 
 
 def _tool_identity_gap_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
@@ -2477,7 +2638,11 @@ def _tool_doctor_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any
 
 
 def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
-    from legis.policy.boundary_scan import count_source_files, scan_policy_boundaries
+    from legis.policy.boundary_scan import (
+        assert_within_boundary,
+        count_source_files,
+        scan_policy_boundaries,
+    )
 
     source_root = Path(runtime.source_root or os.getcwd())
     repo_root_arg = _optional_string(args, "repo_root")
@@ -2488,6 +2653,11 @@ def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> di
     root = Path(root_arg) if root_arg else repo_root / "src"
     if not root.is_absolute():
         root = repo_root / root
+    # Containment (legis-0186c23a2c): an MCP caller supplies these roots, so an
+    # absolute or ..-bearing root must not let Legis walk arbitrary trees outside
+    # the server's configured source boundary. Fail closed (INVALID_ARGUMENT)
+    # BEFORE any filesystem walk; never scan-then-report an out-of-bounds tree.
+    assert_within_boundary(source_root, repo_root, root)
     # Gate honesty (cf. weft-ef2e898642 silent-clean-on-zero-scope): a scan that
     # looked at NOTHING yields zero findings, which would otherwise read as a
     # clean PASS — a vacuous green, the exact failure class of the prior
@@ -2586,7 +2756,9 @@ _TOOL_HANDLERS: dict[str, Callable[["McpRuntime", dict[str, Any]], dict[str, Any
     "policy_boundary_check": _tool_policy_boundary_check,
     "posture_get": _tool_posture_get,
     "warpline_preflight_get": _tool_warpline_preflight_get,
+    "plainweave_preflight_get": _tool_plainweave_preflight_get,
     "attestation_get": _tool_attestation_get,
+    "governance_read": _tool_governance_read,
 }
 
 

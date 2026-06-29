@@ -145,7 +145,7 @@ def _skill_pack_posture(root: Path) -> str:
 def _cells_posture(root: Path) -> str:
     """Is a policy-cell registry discoverable from this process, and how big?
 
-    Mirrors ``mcp._load_policy_cell_registry``'s file precedence
+    Mirrors ``legis.policy.cells.load_policy_cell_registry``'s file precedence
     (LEGIS_POLICY_CELLS > policy/cells.toml) but only *reports* — this hook
     process does not see the MCP server's env (.mcp.json), so it never claims
     server runtime posture. No malformed-cells fallback is ratified (the server
