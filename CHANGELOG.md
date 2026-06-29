@@ -24,6 +24,14 @@ inversions that removes the most fragile import edges in the tree.
   `assert_within_boundary` primitive constrains every scan root to the source
   boundary, so a caller can no longer steer the governance-honesty scan at paths
   outside the repo's source tree. Pinned by a `repo_root` containment vector.
+- **Dependency bump: `starlette` 1.2.1 → 1.3.1 (GHSA-82w8-qh3p-5jfq,
+  GHSA-jp82-jpqv-5vv3).** Fixes a high-severity `request.form()` DoS (size/field
+  limits silently ignored for `application/x-www-form-urlencoded`) and a
+  low-severity `request.url.hostname` poisoning. fastapi (`>=0.115`, locked at
+  0.136.3) requires only `starlette>=0.46.0`, so the bump resolves with no other
+  lock changes; full suite + mypy green. (The low-severity npm `esbuild`
+  dev-server advisory is in the docs-site toolchain, not the legis package, and
+  is left for a separate site-only change — its parents cap it at `^0.27`.)
 
 ### Changed — layering inversions decoupled (architecture handover P1)
 
