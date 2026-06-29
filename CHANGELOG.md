@@ -9,6 +9,43 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.4.0] — 2026-06-29
+
+Two internal hardenings on top of 1.3.0: a `policy_boundary_check` scan-root
+containment fix that closes an absolute-path escape of the configured source
+boundary, and a behavior-preserving decoupling of four package layering
+inversions that removes the most fragile import edges in the tree.
+
+### Security
+
+- **`policy_boundary_check` contains scan roots to the source boundary
+  (legis-0186c23a2c).** The MCP `policy_boundary_check` tool accepted absolute
+  scan roots pointing outside the configured source root. A new
+  `assert_within_boundary` primitive constrains every scan root to the source
+  boundary, so a caller can no longer steer the governance-honesty scan at paths
+  outside the repo's source tree. Pinned by a `repo_root` containment vector.
+
+### Changed — layering inversions decoupled (architecture handover P1)
+
+- **Signing primitive extracted to a dependency-free `crypto/` leaf (H-1 / B3).**
+  `enforcement/signing.py` moved verbatim to `legis/crypto/signing.py` (it imports
+  only `legis.canonical`). `store` and `enforcement` now both import it downward,
+  killing the `store ↔ enforcement` bidirectional edge. The HMAC bytes and the
+  cross-tool signing contract are unchanged — the byte-pinned conformance vectors
+  are untouched — and a `crypto/` coverage floor preserves the protection the
+  module had under `enforcement`'s floor.
+- **`OperatorKeyCustodyError` relocated to a `posture/errors.py` leaf (H-2 / B5).**
+  `posture` no longer imports the 1500-LOC `install` setup module; `install`
+  re-exports the error for back-compat.
+- **Policy-cell registry loader moved to `policy/cells.py` (H-3 / B6).**
+  `_load_policy_cell_registry` is now the public
+  `policy.cells.load_policy_cell_registry`; the HTTP app and the MCP server both
+  import it from there, removing the `api → mcp` transport-on-transport edge. The
+  fail-closed default is preserved verbatim.
+- **`policy → service` non-edge documented (H-4 / B4).** Confirmed the suspected
+  `policy → service` import does not exist in the tree; recorded the
+  leaf-direction rule (`service → policy` only) in `policy/__init__`.
+
 ## [1.3.0] — 2026-06-28
 
 Suite-standard dot-dir hygiene and the legis-resident halves of six cross-repo
