@@ -1,11 +1,11 @@
-# Roadmap — Legis            Updated: 2026-07-01 (PDR-0009, PDR-0010)
+# Roadmap — Legis            Updated: 2026-07-01 (PDR-0009, PDR-0010, PDR-0011)
 
 > Sequencing, WSJF / cost-of-delay, and dated forecasts are produced by
 > /axiom-program-management. This file records bets as INTENT, not a delivery
 > schedule. Do not compute WSJF here; hand the committed bet over for sequencing.
 
 ## Now  (committed, in-flight)
-- **— open —** The post-gold governance-honesty bet is **WON**: all 3 confirmed P2 findings closed (the last, legis-0186c23a2c, shipped in 1.4.0), **north-star = 0**, met ahead of the 2026-07-15 target. No successor Now bet has been decided — that is the next `DECIDE`. Promotion candidates sit in **Next** (v2 keyed-signing unification; federation integration hardening). See `current-state.md` open questions.
+- **Federation offline contract hardening** (PDR-0011) — close the silent-divergence risk on the federation seams legis can prove **without a live daemon** (Path B holds): (1) **G16** — replace the rename contract's self-referential `_parse_like_loomweave` mock with a committed **two-way shared-vector file** + author it as the Loomweave-facing artifact (the *shipped* `/git/renames` seam currently tests against legis's own guess of Loomweave's Rust parser); (2) **G8** — guard the backfill/helper resolve path (degrade, don't crash). · tracker: legis-c4cbf78fdb (G16), legis-b7ce9fdc40 (G8) · metric: new guardrail — rename-parser conformance vector-pinned, not self-referential · **escalation:** Loomweave co-committing / running the same vectors is owner-gated (touches a sibling).
 
 ## Recently shipped (record, not in-flight)
 - **legis 1.4.0 — SHIPPED to PyPI** (PDR-0009, PDR-0010; tag `v1.4.0` @ 3055d2c) — one consolidated minor: `governance_read.v1` + the Plainweave consumer + the warpline MCP rewire + the posture/protected honesty hardenings + the **H-1…H-4 layering decouple** (signing → dependency-free `crypto/` leaf, `posture/errors.py`, `policy.cells` loader) + the **`policy_boundary_check` containment security fix** (closed the last north-star finding) + a **starlette** security bump. Owner-authorized publish; passed a 6-area adversarial release review (GO).
@@ -16,7 +16,7 @@
 
 ## Next (shaped, decreasing certainty)
 - **v2: unify keyed signing onto operator elevation sessions** — migrate protected-cell verdict + sign-off signing onto the elevation-session primitive shipped in the posture-ratchet line · tracker: legis-11b3a3dd14, legis-2d0537655d
-- **Federation integration hardening (live-fire)** — run the cross-tool seams against real daemons, not stubs: real-Filigree bind/closure (G12), move-aware SEI backfill (G2), backfill failure guards (G8), two-way rename-parser conformance vectors (G16) · tracker: legis-356fe094dd, legis-bc9e5f3e60, legis-b7ce9fdc40, legis-c4cbf78fdb
+- **Federation integration hardening — live-fire + sibling-blocked residual** (the forks NOT taken in PDR-0011) — opt-in live-daemon proof (real-Filigree bind/closure G12 · legis-356fe094dd; the Loomweave live oracle) and move-aware SEI backfill (G2 · legis-bc9e5f3e60 — blocked on Loomweave exposing a historical-locator surface). Reopening Path B (CI-reachable siblings) is the strategy-level fork above these. The offline core (G16 + G8) was split out to **Now** (PDR-0011).
 
 ## Later (directional bets, no order, no dates)
 - **Additional key-custody backends** — 1Password / Vault signer backends beyond the v1 OS-keychain + age-file + env escape hatch.

@@ -1,31 +1,27 @@
-# Current State — Legis        Checkpoint: 2026-07-01 · committed (PDR-0009, PDR-0010)
+# Current State — Legis        Checkpoint: 2026-07-01 · committed (PDR-0009, PDR-0010); DECIDE recorded (PDR-0011)
 
 ## The bet right now
-**— open —.** The post-gold governance-honesty bet is **WON**: **north-star = 0** open governance-honesty defects (met ahead of the 2026-07-15 target) after `legis-0186c23a2c` shipped in **1.4.0**. **No successor Now bet has been decided — that is the next `DECIDE`.** Promotion candidates (already shaped in `roadmap.md` → Next): **v2 keyed-signing unification** (legis-11b3a3dd14, legis-2d0537655d) and **federation integration hardening / live-fire** (legis-356fe094dd, -bc9e5f3e60, -b7ce9fdc40, -c4cbf78fdb).
+**Federation offline contract hardening** (PDR-0011) — close the silent-divergence risk on the federation seams legis can prove **without a live daemon** (Path B holds). Two legis-unilateral, in-CI workstreams:
+- **G16** (legis-c4cbf78fdb) — the rename feed's contract tests assert against `_parse_like_loomweave`, a **legis-authored Python mock** of Loomweave's Rust `parse_legis_rename_json` (one-way; the mock IS the oracle). This is live on the **shipped `/git/renames`** seam Loomweave consumes today. Replace it with a **committed two-way shared-vector file** + author that file as the Loomweave-facing artifact.
+- **G8** (legis-b7ce9fdc40) — guard `resolve_batch`/`resolve_sei` at the backfill/helper layer; degrade to unresolved/unavailable with evidence (not a crash); add `BrokenResolveClient` coverage.
+
+**Success criterion (falsifiable):** no legis-authored parser mock remains in the rename contract test (both directions assert against the committed vector file, published for Loomweave) **and** a `BrokenResolveClient` test proves the backfill path degrades not crashes. Guardrail: shipped rename-feed output shape stays byte-stable. Metric: new guardrail in `metrics.md` (rename-parser conformance vector-pinned, not self-referential — currently **BREACHED**, this bet closes it).
 
 ## In flight / not yet started
-- **governance_read.v1 → warpline integration** (legis-9a47068338) — legis-side **DONE + published in 1.4.0**; the v1 contract is now publicly frozen. **Warpline must wire `LegisGovernanceClient` + restart its MCP connection** to flip its legis member `disabled`→`clean`. Sibling-side, **not legis-blocked**.
-- **Successor Now bet — undecided.** The next session's `DECIDE` picks it (candidates above).
-
-## Recently shipped this session — legis 1.4.0 LIVE on PyPI (tag v1.4.0 @ 3055d2c)
-One consolidated minor (PR #24, 6-area adversarial review → GO), owner-authorized publish:
-- **`policy_boundary_check` containment** (legis-0186c23a2c) — closed the **last north-star finding** → north-star 0.
-- **H-1…H-4 layering decouple** — signing → dependency-free `crypto/` leaf; `OperatorKeyCustodyError` → `posture/errors.py`; `_load_policy_cell_registry` → `policy.cells`; `policy→service` non-edge documented. Byte-identical signing move; cross-tool vectors untouched.
-- **`governance_read.v1`** + **Plainweave consumer** + **warpline MCP rewire** + **posture/protected hardenings** — all now published.
-- **starlette 1.2.1→1.3.1** security bump — cleared 2 of 3 dependabot alerts (PDR-0010).
-- Ops: global `legis` uv tool replaced with the official 1.4.0 wheel; uv cache pruned of 11 old legis versions.
+- **This bet is decided but not started** — no code written yet. Next session builds it (G16 first — designing faithful vectors is the subtle part — then G8).
+- **Deferred by design (NOT this bet):** G12 real-Filigree live-fire (legis-356fe094dd) + the Loomweave live oracle → opt-in runbooks (fork b); G2 move-aware backfill (legis-bc9e5f3e60) → blocked on Loomweave exposing a historical-locator surface; reopening Path B → strategy-level (fork c). See roadmap Next.
+- **governance_read.v1 → warpline integration** (legis-9a47068338) — legis-side done + published in 1.4.0; warpline's live handshake pending (sibling-side, not legis-blocked).
 
 ## Open questions / blocked-on-owner  (escalations)
-- **Release publish — DONE under explicit owner authority this session; nothing awaits sign-off on it.** The owner directed the release live ("tag a new release on my authority"); v1.4.0 is on PyPI. Recorded as PDR-0009 (`accepted`). *(Stated here because the outward-facing action must be visible in the escalation section — it is resolved, not pending.)*
-- **Successor Now bet needs deciding** — north-star is met; the honesty bet is won. What does Legis bet on next? (Owner steer welcome; candidates shaped in Next.)
-- **governance_read.v1 is now publicly frozen** (inform) — if warpline's live integration needs a shape change, it is a **`governance_read.v2`** (ADD), never a v1 edit.
-- **esbuild LOW advisory deferred** (legis-70658a5bbc, PDR-0010) — the dependabot alert stays open on the default branch until a separate site-only change; negligible impact (Windows-dev-only, not the wheel).
-- **warpline handshake** — the G1 integration half; sibling-side, awaiting warpline's live confirmation.
+- **⚠ Loomweave vector handoff — owner-gated (the one escalation on the Now bet).** Legis authoring + pinning its half of the rename vectors is in-grant and lands value alone; **Loomweave co-committing and running the SAME vectors against its real `parse_legis_rename_json`** is what fully closes the drift loop, and it touches a sibling maintainer → your call to route.
+- **governance_read.v1 is publicly frozen** (inform) — a warpline-driven shape change is `governance_read.v2` (ADD), never a v1 edit.
+- **esbuild LOW advisory deferred** (legis-70658a5bbc, PDR-0010) — dependabot alert stays open on the default branch until a site-only change.
+- **warpline handshake** — sibling-side, awaiting warpline's live confirmation.
 
-## What this checkpoint did
-- Recorded **PDR-0009** (ship 1.4.0 — consolidated release + owner-authorized PyPI publish) and **PDR-0010** (1.4.0 security scope — bring in starlette, defer esbuild).
-- **north-star 1 → 0** (bet won); moved the honesty bet Now → won in `roadmap.md`; refreshed `metrics.md` with the 1.4.0 shipped readings (1389 passed, coverage 92.5% incl. new `crypto/` floor, publish-gate confirmed live, both boundary invariants re-proven).
-- Reconciled the tracker: **closed legis-0186c23a2c** (verify-walked, shipped in 1.4.0); noted publish-done on legis-9a47068338; filed **legis-a7c9ad6404** (warpline stderr bound) + **legis-70658a5bbc** (esbuild site advisory). Open follow-up legis-a0e286f5aa (MCP outputSchema drift-guard) re-confirmed by the review.
+## What this session did
+- **1.4.0 SHIPPED** (PDR-0009/0010): consolidated release live on PyPI; north-star **1 → 0** (post-gold honesty bet WON); the H-1…H-4 layering decouple + policy-boundary fix + starlette bump landed. Checkpoint committed (2d1d9a8).
+- **DECIDE the successor bet** (PDR-0011): audited the federation seams (found them contract-shaped but never live-proven, with a silent-drift risk on the shipped rename seam), and — owner-directed — selected **federation offline contract hardening** (fork a of 3). Promoted to Now; added the rename-conformance guardrail; scoped G16+G8 in, G2/G12/live-fire out.
+- Tracker: closed legis-0186c23a2c (1.4.0); filed legis-a7c9ad6404, legis-70658a5bbc; refined G16 (legis-c4cbf78fdb) scope.
 
 ## Next session starts here
-**`DECIDE` the successor Now bet** — the honesty north-star is met, so Legis needs its next bet (promote from Next: v2 keyed-signing unification, or federation integration hardening / live-fire). The warpline handshake, the esbuild site fix, and the outputSchema drift-guard are tracked follow-ups, not blockers.
+**Build the Now bet** — start with **G16** (design the two-way shared rename-vector file that faithfully captures Loomweave's parser edge cases from legis's side, replace the `_parse_like_loomweave` mock, assert both directions), then **G8** (backfill resolve guards + `BrokenResolveClient` coverage). Plan-first via `/axiom-planning` is warranted for G16 (the vector-authoring is the subtle, drift-risk-laden part). The Loomweave co-commit handoff is a flagged owner escalation, not a blocker to legis's half.
