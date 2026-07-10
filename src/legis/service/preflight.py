@@ -11,7 +11,10 @@ into the other, and neither perturbs a governance verdict.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from legis.plainweave_preflight.client import PlainweaveClient
 
 
 def read_warpline_preflight(
@@ -40,7 +43,9 @@ def read_warpline_preflight(
 
 
 def read_plainweave_preflight(
-    plainweave_client: Any | None, base: str, head: str
+    plainweave_client: "PlainweaveClient | None", base: str, head: str, *,
+    requirement_limit: int | None = None,
+    requirement_offset: int | None = None,
 ) -> dict[str, Any]:
     """Read Plainweave's ADVISORY preflight facts (envelope
     ``weft.plainweave.preflight_facts.v1``, ADR-006) over base..head.
@@ -60,8 +65,15 @@ def read_plainweave_preflight(
             "unavailable": [{"reason": "plainweave client not configured"}],
         }
     try:
-        facts = plainweave_client.preflight_facts(base, head)
-    except PlainweaveError as exc:
+        if requirement_limit is None and requirement_offset is None:
+            facts = plainweave_client.preflight_facts(base, head)
+        else:
+            facts = plainweave_client.preflight_facts(
+                base, head,
+                requirement_limit=requirement_limit,
+                requirement_offset=requirement_offset,
+            )
+    except (PlainweaveError, TypeError) as exc:
         return {
             "status": "unavailable",
             "unavailable": [{"reason": f"plainweave check failed: {exc}"}],

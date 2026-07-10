@@ -35,9 +35,74 @@ class PlainweaveError(RuntimeError):
     """A Plainweave call failed at the transport or contract layer."""
 
 
+def _page_int(tool: str, page: dict[str, Any], field: str, *, minimum: int, maximum: int | None = None) -> int:
+    value = page.get(field)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.{field} must be an integer")
+    if value < minimum or (maximum is not None and value > maximum):
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.{field} is out of bounds")
+    return value
+
+
+def _validate_requirement_page(
+    tool: str, data: dict[str, Any], *, required: bool,
+    requested_limit: int | None, requested_offset: int | None,
+) -> None:
+    scope = data.get("scope")
+    if not isinstance(scope, dict):
+        if required:
+            raise PlainweaveError(f"{tool} data.scope.requirement_page is required for continuation")
+        return
+    page = scope.get("requirement_page")
+    if page is None:
+        if required:
+            raise PlainweaveError(f"{tool} data.scope.requirement_page is required for continuation")
+        return
+    if not isinstance(page, dict):
+        raise PlainweaveError(f"{tool} data.scope.requirement_page must be an object")
+
+    limit = _page_int(tool, page, "limit", minimum=1, maximum=100)
+    offset = _page_int(tool, page, "offset", minimum=0)
+    effective_limit = requested_limit if requested_limit is not None else 100
+    effective_offset = requested_offset if requested_offset is not None else 0
+    if limit != effective_limit:
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.limit does not match the request")
+    if offset != effective_offset:
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.offset does not match the request")
+    returned = _page_int(tool, page, "returned", minimum=0, maximum=limit)
+    total = _page_int(tool, page, "total", minimum=0)
+    requirement_ids = scope.get("requirement_ids")
+    if (
+        not isinstance(requirement_ids, list)
+        or any(not isinstance(item, str) or not item for item in requirement_ids)
+        or len(requirement_ids) != returned
+    ):
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.returned does not match requirement_ids")
+    expected_returned = min(limit, max(total - offset, 0))
+    if returned != expected_returned:
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.returned is inconsistent")
+
+    has_more = page.get("has_more")
+    expected_has_more = offset + limit < total
+    if not isinstance(has_more, bool) or has_more != expected_has_more:
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.has_more is inconsistent")
+    expected_next = offset + limit if has_more else None
+    next_offset = page.get("next_offset")
+    if has_more:
+        next_valid = isinstance(next_offset, int) and not isinstance(next_offset, bool)
+    else:
+        next_valid = next_offset is None
+    if not next_valid or next_offset != expected_next:
+        raise PlainweaveError(f"{tool} data.scope.requirement_page.next_offset is inconsistent")
+
+
 @runtime_checkable
 class PlainweaveClient(Protocol):
-    def preflight_facts(self, base: str, head: str) -> dict[str, Any]: ...
+    def preflight_facts(
+        self, base: str, head: str, *,
+        requirement_limit: int | None = None,
+        requirement_offset: int | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class PlainweaveMcpClient:
@@ -50,17 +115,34 @@ class PlainweaveMcpClient:
         self._invoke = invoke
         self._repo = repo
 
-    def preflight_facts(self, base: str, head: str) -> dict[str, Any]:
-        return self._call(PREFLIGHT_SCHEMA, PREFLIGHT_TOOL, base, head)
+    def preflight_facts(
+        self, base: str, head: str, *,
+        requirement_limit: int | None = None,
+        requirement_offset: int | None = None,
+    ) -> dict[str, Any]:
+        return self._call(
+            PREFLIGHT_SCHEMA, PREFLIGHT_TOOL, base, head,
+            requirement_limit=requirement_limit,
+            requirement_offset=requirement_offset,
+        )
 
-    def _call(self, schema: str, tool: str, base: str, head: str) -> dict[str, Any]:
+    def _call(
+        self, schema: str, tool: str, base: str, head: str, *,
+        requirement_limit: int | None,
+        requirement_offset: int | None,
+    ) -> dict[str, Any]:
         # The producer tool takes NO 'repo' arg (its signature is scope_kind/base/
         # head/requirement_ids/entity_refs/baseline_id); the "which plainweave" is
         # implicit in what the launched MCP command roots on. A commit-range scope
         # advertises base..head; the producer never resolves the live diff itself
         # (it honestly reports freshness "partial"). Sending an unknown kwarg would
-        # be rejected by the producer, so the args are exactly scope_kind/base/head.
-        env = self._invoke(tool, {"scope_kind": "commit_range", "base": base, "head": head})
+        # be rejected by the producer, so only supported page controls are added.
+        arguments: dict[str, Any] = {"scope_kind": "commit_range", "base": base, "head": head}
+        if requirement_limit is not None:
+            arguments["requirement_limit"] = requirement_limit
+        if requirement_offset is not None:
+            arguments["requirement_offset"] = requirement_offset
+        env = self._invoke(tool, arguments)
         if not isinstance(env, dict):
             raise PlainweaveError(f"{tool} returned {type(env).__name__}, expected an envelope object")
         if env.get("schema") != schema:
@@ -92,6 +174,12 @@ class PlainweaveMcpClient:
             raise PlainweaveError(
                 f"{tool} envelope data is missing the mandatory 'freshness'/'facts' fields"
             )
+        _validate_requirement_page(
+            tool, data,
+            required=requirement_limit is not None or requirement_offset is not None,
+            requested_limit=requirement_limit,
+            requested_offset=requirement_offset,
+        )
         return env
 
 

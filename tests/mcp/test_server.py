@@ -3639,6 +3639,65 @@ def test_plainweave_preflight_get_checked_with_injected_client(tmp_path):
     assert sc["preflight_facts"] == _envelope
 
 
+def test_plainweave_preflight_get_exposes_and_forwards_requirement_page(tmp_path):
+    from legis.mcp import call_tool, tool_definitions
+
+    tool = next(tool for tool in tool_definitions() if tool["name"] == "plainweave_preflight_get")
+    properties = tool["inputSchema"]["properties"]
+    assert properties["requirement_limit"] == {"type": "integer", "minimum": 1, "maximum": 100}
+    assert properties["requirement_offset"] == {"type": "integer", "minimum": 0}
+    calls = []
+
+    class _PagedPlainweave:
+        def preflight_facts(self, base, head, *, requirement_limit=None, requirement_offset=None):
+            calls.append((base, head, requirement_limit, requirement_offset))
+            return {
+                "schema": "weft.plainweave.preflight_facts.v1",
+                "ok": True,
+                "data": {
+                    "freshness": "partial", "facts": [],
+                    "scope": {
+                        "kind": "commit_range", "requirement_ids": ["req-100"],
+                        "requirement_page": {
+                            "limit": 50, "offset": 100, "returned": 1, "total": 101,
+                            "has_more": False, "next_offset": None,
+                        },
+                    },
+                    "authority_boundary": {
+                        "local_only": True, "live_peer_calls": False, "governance_verdicts": False,
+                    },
+                },
+                "warnings": [], "meta": {},
+            }
+
+    runtime, _store = _runtime(tmp_path)
+    runtime.plainweave = _PagedPlainweave()
+    result = call_tool(
+        runtime, "plainweave_preflight_get",
+        {"base": "aaa", "head": "bbb", "requirement_limit": 50, "requirement_offset": 100},
+    )
+
+    assert not result.get("isError")
+    assert result["structuredContent"]["status"] == "checked"
+    assert calls == [("aaa", "bbb", 50, 100)]
+
+
+def test_plainweave_preflight_get_rejects_invalid_requirement_page(tmp_path):
+    from legis.mcp import call_tool
+
+    invalid_arguments = [
+        {"base": "aaa", "requirement_limit": 0},
+        {"base": "aaa", "requirement_limit": 101},
+        {"base": "aaa", "requirement_offset": -1},
+        {"base": "aaa", "requirement_offset": True},
+    ]
+    runtime, _store = _runtime(tmp_path)
+    for arguments in invalid_arguments:
+        result = call_tool(runtime, "plainweave_preflight_get", arguments)
+        assert result["isError"] is True
+        assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
+
+
 # Task 5: attestation_get fail-closed scaffolding
 # ---------------------------------------------------------------------------
 

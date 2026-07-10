@@ -15,7 +15,10 @@ import logging
 import os
 from pathlib import Path
 import sys
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
+
+if TYPE_CHECKING:
+    from legis.plainweave_preflight.client import PlainweaveClient
 
 from legis import __version__
 from legis.canonical import content_hash
@@ -180,7 +183,7 @@ class McpRuntime:
     posture_ledger: Any | None = None
     coached_engine: EnforcementEngine | None = None
     warpline: Any | None = None  # advisory sibling; NEVER read by a verdict path
-    plainweave: Any | None = None  # advisory sibling; NEVER read by a verdict path
+    plainweave: "PlainweaveClient | None" = None  # advisory sibling; NEVER read by a verdict path
 
 
 def build_runtime(agent_id: str) -> McpRuntime:
@@ -933,9 +936,19 @@ def tool_definitions() -> list[dict[str, Any]]:
                 "Discriminated: 'checked' carries the advisory facts envelope; "
                 "'unavailable' (client unconfigured, transport failure, error "
                 "envelope, or payload shape mismatch) carries reasons. Never read a "
-                "missing 'checked' as 'nothing impacted'."
+                "missing 'checked' as 'nothing impacted'. Follow the producer's "
+                "scope.requirement_page.next_offset with requirement_offset when "
+                "has_more is true; pages stay bounded and are never auto-aggregated."
             ),
-            "inputSchema": _schema(["base"], {"base": string, "head": string}),
+            "inputSchema": _schema(
+                ["base"],
+                {
+                    "base": string,
+                    "head": string,
+                    "requirement_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "requirement_offset": {"type": "integer", "minimum": 0},
+                },
+            ),
             "outputSchema": _one_of(
                 [
                     _schema(
@@ -1655,6 +1668,21 @@ def _optional_string(args: dict[str, Any], key: str) -> str | None:
         return None
     if not isinstance(value, str) or not value:
         raise ValueError(f"argument {key!r} must be a non-empty string when provided")
+    return value
+
+
+def _optional_int(
+    args: dict[str, Any], key: str, *, minimum: int, maximum: int | None = None
+) -> int | None:
+    if key not in args:
+        return None
+    value = args[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise InvalidArgumentError(f"argument {key!r} must be an integer")
+    if value < minimum:
+        raise InvalidArgumentError(f"argument {key!r} must be at least {minimum}")
+    if maximum is not None and value > maximum:
+        raise InvalidArgumentError(f"argument {key!r} must be at most {maximum}")
     return value
 
 
@@ -2423,6 +2451,8 @@ def _tool_plainweave_preflight_get(runtime: McpRuntime, args: dict[str, Any]) ->
             runtime.plainweave,
             base=_require(args, "base"),
             head=args.get("head", "HEAD"),
+            requirement_limit=_optional_int(args, "requirement_limit", minimum=1, maximum=100),
+            requirement_offset=_optional_int(args, "requirement_offset", minimum=0),
         )
     )
 
