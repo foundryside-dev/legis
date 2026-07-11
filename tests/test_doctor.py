@@ -464,6 +464,30 @@ def test_doctor_refuses_operator_owned_mcp_json_unchanged(tmp_path, monkeypatch,
         assert path.is_symlink() and path.readlink() == link_before
 
 
+def test_doctor_refuses_duplicate_mcp_json_unchanged(tmp_path: Path) -> None:
+    executable = _make_executable(tmp_path / "tools" / "legis")
+    path = tmp_path / ".mcp.json"
+    path.write_text(
+        '{"mcpServers":{"legis":{'
+        '"type":"stdio",'
+        f'"command":{json.dumps(str(executable))},'
+        '"args":["mcp","--agent-id","operator"],'
+        '"env":{"KEEP_FIRST":"operator"},'
+        '"env":{}'
+        "}}}",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    check = check_mcp_json(tmp_path, repair=True)
+
+    assert check.status == "error"
+    assert check.repairable is False
+    assert check.fixed is False
+    assert check.message is not None and "malformed" in check.message.lower()
+    assert path.read_bytes() == before
+
+
 def test_doctor_repairs_safe_stale_command_and_preserves_operator_env(
     tmp_path, monkeypatch
 ):

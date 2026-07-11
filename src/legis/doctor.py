@@ -1115,8 +1115,8 @@ def _filigree_binding_urls(root: Path) -> list[str]:
     if not path.exists():
         return []
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        data = _install._strict_json_loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
         return []
     if not isinstance(data, dict):
         return []

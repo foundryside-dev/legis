@@ -928,6 +928,27 @@ def gitignore_rules_present(project_root: Path) -> bool:
     return all(rule in present for rule in _LEGIS_IGNORE_RULES)
 
 
+def _strict_json_loads(content: str) -> Any:
+    """Parse operator configuration without last-key-wins or NaN extensions."""
+
+    def object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("non-standard JSON numeric constant")
+
+    return json.loads(
+        content,
+        object_pairs_hook=object_from_pairs,
+        parse_constant=reject_constant,
+    )
+
+
 def _parsed_mcp_entry_is_current(
     project_root: Path,
     data: Any,
@@ -971,8 +992,8 @@ def mcp_entry_is_current(project_root: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        data = _strict_json_loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
         return False
     return _parsed_mcp_entry_is_current(project_root, data, check_env=True)
 
@@ -1271,8 +1292,8 @@ def mcp_json_doctor_repair_blocker(project_root: Path) -> str | None:
     if not stat.S_ISREG(path_stat.st_mode):
         return "project .mcp.json is not a regular file; refusing automatic repair"
     try:
-        parsed: Any = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
+        parsed: Any = _strict_json_loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, ValueError):
         return "project .mcp.json is malformed JSON; fix it by hand"
     except (OSError, UnicodeDecodeError):
         return "project .mcp.json is unreadable; fix it by hand"
@@ -1344,8 +1365,8 @@ def register_mcp_json(
     data: dict[str, Any] = {}
     if path.exists():
         try:
-            parsed = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            parsed = _strict_json_loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError):
             return False, ".mcp.json present but unreadable; fix or remove it by hand"
         if not isinstance(parsed, dict):
             return (

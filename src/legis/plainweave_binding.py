@@ -149,8 +149,8 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
             pass
 
     try:
-        data: Any = json.loads(snapshot.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeError) as exc:
+        data: Any = install._strict_json_loads(snapshot.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeError, ValueError) as exc:
         return fail(f"project .mcp.json is malformed or unreadable: {exc}")
     if not isinstance(data, dict):
         return fail("project .mcp.json top level is not an object")
@@ -826,8 +826,8 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
         return None, _MALFORMED_CONFIG
 
     try:
-        data: Any = json.loads(config.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeError):
+        data: Any = install._strict_json_loads(config.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
         return None, _MALFORMED_CONFIG
 
     if not isinstance(data, dict):

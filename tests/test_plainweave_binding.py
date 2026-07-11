@@ -1029,6 +1029,29 @@ def test_malformed_json_is_reported_and_unchanged(tmp_path: Path) -> None:
     assert config.read_bytes() == before
 
 
+def test_duplicate_project_json_is_reported_and_unchanged(tmp_path: Path) -> None:
+    config = tmp_path / ".mcp.json"
+    command = json.dumps(sys.executable)
+    config.write_text(
+        '{"mcpServers":{"legis":{'
+        '"type":"stdio",'
+        f'"command":{command},'
+        '"args":["-P","-m","legis","mcp","--agent-id","operator"],'
+        '"env":{"KEEP_FIRST":"operator"},'
+        '"env":{}'
+        "}}}",
+        encoding="utf-8",
+    )
+    before = config.read_bytes()
+
+    state = plainweave_binding.inspect_project_binding(tmp_path, "desired")
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert state.error is not None and "malformed" in state.error.lower()
+    assert error is not None and "malformed" in error.lower()
+    assert config.read_bytes() == before
+
+
 def test_symlinked_project_config_is_reported_and_unchanged(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -1513,6 +1536,39 @@ def test_malformed_mcp_json_is_invalid_for_initialized_project(
     assert result.error is not None
     assert "malformed" in result.error.lower()
     assert "no executable" in result.error.lower()
+
+
+@pytest.mark.parametrize("ambiguous_json", ["duplicate", "nonstandard-constant"])
+def test_ambiguous_project_json_cannot_establish_plainweave_discovery(
+    tmp_path: Path,
+    monkeypatch,
+    ambiguous_json: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    root_json = json.dumps(str(root))
+    command_json = json.dumps(str(command))
+    if ambiguous_json == "duplicate":
+        tail = f'"args":["--root",{root_json}],"args":["--root",{root_json}]'
+    else:
+        tail = f'"args":["--root",{root_json}],"metadata":NaN'
+    (root / ".mcp.json").write_text(
+        '{"mcpServers":{"plainweave":{'
+        f'"type":"stdio","command":{command_json},{tail}'
+        "}}}",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None
+    assert "malformed" in result.error.lower()
 
 
 def test_non_string_project_args_are_invalid(tmp_path: Path, monkeypatch) -> None:
