@@ -200,20 +200,18 @@ def _project_registration_is_repairable(
 
 
 def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck:
-    """Check the Plainweave command bound to the project Legis MCP entry."""
+    """Check that the project Legis MCP entry uses runtime autodiscovery."""
     cid = "install.plainweave_project_binding"
     discovery = _plainweave_binding.discover_plainweave(root)
     discovery_check = _plainweave_discovery_error(cid, discovery)
     if discovery_check is not None:
         return discovery_check
-    desired = discovery.command
-    assert desired is not None
 
     blocker = _install.mcp_json_doctor_repair_blocker(root)
     if blocker is not None:
         return DoctorCheck(cid, "error", message=blocker, repairable=False)
 
-    state = _plainweave_binding.inspect_project_binding(root, desired)
+    state = _plainweave_binding.inspect_project_binding(root, None)
     if state.current:
         return DoctorCheck(cid, "ok", repairable=True)
     if state.error is not None:
@@ -235,18 +233,24 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
         return DoctorCheck(
             cid,
             "error",
-            message="project Plainweave launch binding is missing or stale",
+            message=(
+                "project Legis registration carries legacy PLAINWEAVE_MCP_CMD; "
+                "runtime autodiscovery requires project-agnostic registration"
+            ),
             repairable=True,
         )
 
-    error = _plainweave_binding.repair_project_binding(root, desired)
-    post = _plainweave_binding.inspect_project_binding(root, desired)
+    error = _plainweave_binding.repair_project_binding(root, None)
+    post = _plainweave_binding.inspect_project_binding(root, None)
     if error is None and post.current:
         return DoctorCheck(
             cid,
             "ok",
             fixed=True,
-            message="project Plainweave launch binding repaired; reconnect or restart the MCP client",
+            message=(
+                "legacy project Plainweave binding removed; reconnect or restart "
+                "the MCP client"
+            ),
             repairable=True,
         )
     return DoctorCheck(
@@ -254,22 +258,15 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
         "error",
         message=error
         or post.error
-        or "project Plainweave launch binding remains stale after repair",
+        or "legacy project Plainweave binding remains after repair",
         repairable=True,
     )
 
 
 def check_plainweave_codex_binding(root: Path, *, repair: bool) -> DoctorCheck:
-    """Check the Plainweave command bound to an existing global Codex Legis entry."""
+    """Check that an existing global Codex Legis entry is project-agnostic."""
     cid = "install.plainweave_codex_binding"
-    discovery = _plainweave_binding.discover_plainweave(root)
-    discovery_check = _plainweave_discovery_error(cid, discovery)
-    if discovery_check is not None:
-        return discovery_check
-    desired = discovery.command
-    assert desired is not None
-
-    state = _plainweave_binding.inspect_codex_binding(root, desired)
+    state = _plainweave_binding.inspect_codex_binding(root, None)
     if state.error is not None:
         return DoctorCheck(cid, "error", message=state.error, repairable=False)
     if not state.registered:
@@ -279,34 +276,63 @@ def check_plainweave_codex_binding(root: Path, *, repair: bool) -> DoctorCheck:
             message="global Codex Legis MCP registration is not configured; launch binding not applicable",
             repairable=False,
         )
-    if state.current:
-        return DoctorCheck(cid, "ok", repairable=True)
-    if not repair:
+    if not state.current and not repair:
         return DoctorCheck(
             cid,
             "error",
-            message="global Codex Plainweave launch binding is missing or stale",
+            message=(
+                "global Codex Legis registration carries legacy "
+                "PLAINWEAVE_MCP_CMD; runtime autodiscovery requires a "
+                "project-agnostic registration"
+            ),
             repairable=True,
         )
-
-    error = _plainweave_binding.repair_codex_binding(root, desired)
-    post = _plainweave_binding.inspect_codex_binding(root, desired)
-    if error is None and post.current:
+    if not state.current:
+        error = _plainweave_binding.repair_codex_binding(root, None)
+        post = _plainweave_binding.inspect_codex_binding(root, None)
+        if error is None and post.current and post.project_bound:
+            return DoctorCheck(
+                cid,
+                "error",
+                fixed=True,
+                message=(
+                    "legacy global Plainweave binding removed; the global Codex "
+                    "Legis registration still has a fixed cwd. Remove fixed cwd "
+                    "so runtime autodiscovery inherits the active project, then "
+                    "reconnect or restart Codex"
+                ),
+                repairable=False,
+            )
+        if error is None and post.current:
+            return DoctorCheck(
+                cid,
+                "ok",
+                fixed=True,
+                message=(
+                    "legacy global Plainweave binding removed; reconnect or "
+                    "restart Codex"
+                ),
+                repairable=True,
+            )
         return DoctorCheck(
             cid,
-            "ok",
-            fixed=True,
-            message="global Codex Plainweave launch binding repaired; reconnect or restart Codex",
+            "error",
+            message=error
+            or post.error
+            or "legacy global Plainweave binding remains after repair",
             repairable=True,
         )
-    return DoctorCheck(
-        cid,
-        "error",
-        message=error
-        or post.error
-        or "global Codex Plainweave launch binding remains stale after repair",
-        repairable=True,
-    )
+    if state.project_bound:
+        return DoctorCheck(
+            cid,
+            "error",
+            message=(
+                "global Codex Legis registration has a fixed cwd; remove fixed cwd "
+                "so runtime autodiscovery inherits the active project"
+            ),
+            repairable=False,
+        )
+    return DoctorCheck(cid, "ok", repairable=True)
 
 
 # ---------------------------------------------------------------------------
