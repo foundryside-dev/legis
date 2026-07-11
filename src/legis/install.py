@@ -331,19 +331,29 @@ def _atomic_write_text(path: Path, content: str) -> None:
         existing_mode = None
 
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=path.name)
+    directory_fd: int | None = None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
-        if existing_mode is not None:
-            os.chmod(tmp, existing_mode)
-        else:
-            umask = os.umask(0)
-            os.umask(umask)
-            os.chmod(tmp, 0o666 & ~umask)
+            f.flush()
+            if existing_mode is not None:
+                os.fchmod(f.fileno(), existing_mode)
+            else:
+                umask = os.umask(0)
+                os.umask(umask)
+                os.fchmod(f.fileno(), 0o666 & ~umask)
+            os.fsync(f.fileno())
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        directory_fd = os.open(path.parent, directory_flags)
         os.replace(tmp, path)
+        os.fsync(directory_fd)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
 
 
 class _ConfigWriterLockError(OSError):
@@ -1565,6 +1575,7 @@ def _atomic_write_anchored_mcp_json(
                 raise OSError("short write while preparing project .mcp.json")
             payload = payload[written:]
         os.fchmod(temp_fd, mode if mode is not None else 0o600)
+        os.fsync(temp_fd)
         os.close(temp_fd)
         temp_fd = None
         os.replace(
@@ -1574,6 +1585,7 @@ def _atomic_write_anchored_mcp_json(
             dst_dir_fd=directory_fd,
         )
         temp_name = None
+        os.fsync(directory_fd)
     finally:
         if temp_fd is not None:
             os.close(temp_fd)

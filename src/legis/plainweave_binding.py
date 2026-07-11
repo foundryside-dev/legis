@@ -338,6 +338,7 @@ def _anchored_replace_unlocked(
 
         _write_all(temp_fd, content)
         os.fchmod(temp_fd, mode)
+        os.fsync(temp_fd)
         os.close(temp_fd)
         temp_fd = None
 
@@ -380,6 +381,7 @@ def _anchored_replace_unlocked(
         except TypeError as exc:
             return f"platform does not support anchored {repair_subject} replacement: {exc}"
         temp_name = None
+        os.fsync(root_fd)
         return None
     except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
         return f"could not repair {repair_subject}: {exc}"

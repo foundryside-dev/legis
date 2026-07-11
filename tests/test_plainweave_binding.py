@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import stat
 import subprocess
 import sys
 import threading
@@ -1392,6 +1393,36 @@ def test_anchored_replace_error_is_returned_without_partial_write(
 
     assert error and "simulated atomic replacement failure" in error
     assert config.read_bytes() == before
+
+
+def test_plainweave_binding_replace_is_file_and_directory_durable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _write_legis_entry(tmp_path)
+    events: list[str] = []
+    real_fsync = plainweave_binding.os.fsync
+    real_replace = plainweave_binding.os.replace
+
+    def observed_fsync(fd: int) -> None:
+        mode = plainweave_binding.os.fstat(fd).st_mode
+        events.append("fsync-directory" if stat.S_ISDIR(mode) else "fsync-file")
+        real_fsync(fd)
+
+    def observed_replace(*args, **kwargs) -> None:
+        events.append("replace")
+        real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(plainweave_binding.os, "fsync", observed_fsync)
+    monkeypatch.setattr(plainweave_binding.os, "replace", observed_replace)
+
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert error is None
+    assert events == ["fsync-file", "replace", "fsync-directory"]
+    assert (
+        PLAINWEAVE_ENV in json.loads(config.read_text())["mcpServers"]["legis"]["env"]
+    )
 
 
 def test_repair_refuses_to_overwrite_changed_validated_snapshot(

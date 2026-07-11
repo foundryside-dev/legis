@@ -422,6 +422,68 @@ def test_atomic_write_preserves_existing_mode(tmp_path):
     assert mode == 0o640
 
 
+def test_atomic_write_is_file_and_directory_durable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "CLAUDE.md"
+    events: list[str] = []
+    real_fsync = install.os.fsync
+    real_replace = install.os.replace
+
+    def observed_fsync(fd: int) -> None:
+        mode = install.os.fstat(fd).st_mode
+        events.append("fsync-directory" if stat.S_ISDIR(mode) else "fsync-file")
+        real_fsync(fd)
+
+    def observed_replace(*args, **kwargs) -> None:
+        events.append("replace")
+        real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(install.os, "fsync", observed_fsync)
+    monkeypatch.setattr(install.os, "replace", observed_replace)
+
+    install._atomic_write_text(target, "durable content\n")
+
+    assert events == ["fsync-file", "replace", "fsync-directory"]
+    assert target.read_text(encoding="utf-8") == "durable content\n"
+
+
+def test_anchored_mcp_write_is_file_and_directory_durable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    real_fsync = install.os.fsync
+    real_replace = install.os.replace
+
+    def observed_fsync(fd: int) -> None:
+        mode = install.os.fstat(fd).st_mode
+        events.append("fsync-directory" if stat.S_ISDIR(mode) else "fsync-file")
+        real_fsync(fd)
+
+    def observed_replace(*args, **kwargs) -> None:
+        events.append("replace")
+        real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(install.os, "fsync", observed_fsync)
+    monkeypatch.setattr(install.os, "replace", observed_replace)
+    directory_fd = install._open_directory_path_nofollow(tmp_path.resolve())
+    try:
+        install._atomic_write_anchored_mcp_json(
+            directory_fd,
+            '{"mcpServers": {}}\n',
+            mode=None,
+        )
+    finally:
+        install.os.close(directory_fd)
+
+    assert events == ["fsync-file", "replace", "fsync-directory"]
+    assert (tmp_path / ".mcp.json").read_text(encoding="utf-8") == (
+        '{"mcpServers": {}}\n'
+    )
+
+
 def test_reject_symlink_raises_on_symlink(tmp_path):
     real = tmp_path / "r"
     real.write_text("x")
