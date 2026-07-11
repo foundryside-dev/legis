@@ -873,6 +873,23 @@ def test_register_mcp_json_rejects_duplicate_keys_unchanged(tmp_path: Path) -> N
     assert mcp.read_bytes() == before
 
 
+@pytest.mark.parametrize("doctor_safe", [False, True], ids=["install", "doctor"])
+def test_register_mcp_json_rejects_deep_nesting_unchanged(
+    tmp_path: Path,
+    doctor_safe: bool,
+) -> None:
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text("[" * 101 + "0" + "]" * 101, encoding="utf-8")
+    before = mcp.read_bytes()
+
+    ok, message = install.register_mcp_json(tmp_path, doctor_safe=doctor_safe)
+
+    assert ok is False
+    assert "unreadable" in message.lower()
+    assert install.mcp_entry_is_current(tmp_path) is False
+    assert mcp.read_bytes() == before
+
+
 @pytest.mark.parametrize(
     "number",
     ["1e1000", "1e-1000", "-1e-1000", "1.234567890123456789"],
@@ -882,6 +899,17 @@ def test_strict_json_rejects_lossy_floating_point_numbers(number: str) -> None:
         install._strict_json_loads(f'{{"unrelated": {number}}}')
 
     assert install._strict_json_loads('{"finite": 1e100}') == {"finite": 1e100}
+
+
+def test_strict_json_enforces_nesting_limit() -> None:
+    at_limit = "[" * 100 + "0" + "]" * 100
+    over_limit = "[" * 101 + "0" + "]" * 101
+    brackets_inside_string = json.dumps("[" * 101)
+
+    assert install._strict_json_loads(at_limit) is not None
+    assert install._strict_json_loads(brackets_inside_string) == "[" * 101
+    with pytest.raises(ValueError, match="nesting"):
+        install._strict_json_loads(over_limit)
 
 
 # ---------------------------------------------------------------------------

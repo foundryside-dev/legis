@@ -337,6 +337,24 @@ def test_mcp_json_absent_is_error(tmp_path):
 
 
 @pytest.mark.parametrize("repair", [False, True], ids=["report", "fix"])
+def test_mcp_json_deep_nesting_is_reported_without_crashing(
+    tmp_path: Path,
+    repair: bool,
+) -> None:
+    config = tmp_path / ".mcp.json"
+    config.write_text("[" * 10_000 + "0" + "]" * 10_000, encoding="utf-8")
+    before = config.read_bytes()
+
+    check = check_mcp_json(tmp_path, repair=repair)
+
+    assert check.status == "error"
+    assert check.fixed is False
+    assert check.repairable is False
+    assert check.message is not None and "malformed" in check.message.lower()
+    assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize("repair", [False, True], ids=["report", "fix"])
 def test_mcp_json_without_writer_lock_is_operator_only(
     tmp_path: Path,
     monkeypatch,

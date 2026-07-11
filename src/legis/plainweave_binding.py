@@ -887,27 +887,10 @@ def _resolve_plainweave_executable(command: object, root: Path) -> str | None:
 
 
 def _json_nesting_is_bounded(text: str) -> bool:
-    depth = 0
-    in_string = False
-    escaped = False
-    for character in text:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
-        if character == '"':
-            in_string = True
-        elif character in "[{":
-            depth += 1
-            if depth > _MAX_PLAINWEAVE_JSON_DEPTH:
-                return False
-        elif character in "]}":
-            depth -= 1
-    return True
+    return install._json_nesting_is_bounded(
+        text,
+        max_depth=_MAX_PLAINWEAVE_JSON_DEPTH,
+    )
 
 
 def _bounded_plainweave_json(config: Path, *, root_fd: int) -> Any:

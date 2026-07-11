@@ -1021,8 +1021,43 @@ def gitignore_rules_present(project_root: Path) -> bool:
     return all(rule in present for rule in _LEGIS_IGNORE_RULES)
 
 
+_MAX_MCP_JSON_DEPTH = 100
+
+
+def _json_nesting_is_bounded(
+    content: str,
+    *,
+    max_depth: int = _MAX_MCP_JSON_DEPTH,
+) -> bool:
+    """Check structural depth without being confused by braces inside strings."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in content:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > max_depth:
+                return False
+        elif character in "]}":
+            depth -= 1
+    return True
+
+
 def _strict_json_loads(content: str) -> Any:
-    """Parse operator configuration without last-key-wins or NaN extensions."""
+    """Parse operator JSON with bounded depth and no lossy extensions."""
+
+    if not _json_nesting_is_bounded(content):
+        raise ValueError("JSON document exceeds the nesting limit")
 
     def object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -1043,12 +1078,15 @@ def _strict_json_loads(content: str) -> Any:
             raise ValueError("JSON number cannot be represented without loss")
         return parsed
 
-    return json.loads(
-        content,
-        object_pairs_hook=object_from_pairs,
-        parse_constant=reject_constant,
-        parse_float=finite_float,
-    )
+    try:
+        return json.loads(
+            content,
+            object_pairs_hook=object_from_pairs,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON document exceeds the parser nesting limit") from exc
 
 
 def _parsed_mcp_entry_is_current(
