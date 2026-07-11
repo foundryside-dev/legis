@@ -15,24 +15,30 @@ _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 laun
 
 - **Plainweave runtime autodiscovery restores multi-project convergence and
   removes binding oscillation (legis-3622e80f2e).** Legis MCP now discovers
-  Plainweave once at startup from the active project cwd, using
-  `.plainweave/plainweave.db` plus a valid local Plainweave `.mcp.json` entry or
-  trusted global `PATH` fallback. The global
+  Plainweave once at startup from the active project cwd. It accepts either a
+  valid root-pinned local Plainweave MCP entry by itself, or
+  `.plainweave/plainweave.db` plus a trusted non-project-local
+  `plainweave-mcp` on `PATH`. The global
   Codex Legis registration stays tool-only and never carries a Plainweave root.
   This converges across projects instead of rewriting one global project target
   back and forth. `PLAINWEAVE_MCP_CMD` is now a retired 1.5.0 legacy migration
   key. `install.plainweave_project_binding` verifies active-project discovery
-  and its absence while `install.mcp_json` retains project-registration
-  ownership. `install.plainweave_codex_binding` independently inspects only an
+  and the legacy key's absence while `install.mcp_json` retains
+  project-registration ownership. `install.plainweave_codex_binding`
+  independently inspects only an
   existing global registration; absence is healthy and it never creates one.
   `legis doctor --fix` semantically changes only the retired key, post-verifies,
   and requests an MCP reconnect or restart. Project `.mcp.json` removal
   reserializes the whole document with two-space indentation while preserving
   unrelated JSON values, the detected newline sequence, final-newline presence,
   and file mode rather than arbitrary whitespace; global Codex TOML removal is
-  text-surgical. Fixed global `cwd`, malformed config, and unsafe config remain
-  operator-owned and unchanged, including the partial `[fixed] [operator]`
-  outcome when legacy cleanup succeeds but a fixed `cwd` remains.
+  text-surgical. Project repair refuses unsafe or secret-bearing `.mcp.json`
+  environment tables and leaves the file unchanged. Global remove-only repair
+  accepts string-valued environment entries and preserves every unrelated
+  entry, including secret-shaped names; it refuses malformed, unsupported, or
+  mixed-transport shapes. Fixed global `cwd` remains operator-owned and
+  unchanged, including the partial `[fixed] [operator]` outcome when legacy
+  cleanup succeeds but the fixed `cwd` remains.
 
 ### Changed
 

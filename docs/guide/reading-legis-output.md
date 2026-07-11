@@ -199,12 +199,12 @@ For Plainweave runtime autodiscovery, read the two check IDs separately:
 | `install.plainweave_project_binding` | The active project must be runtime-discoverable and its Legis MCP entry must omit the retired legacy `PLAINWEAVE_MCP_CMD` key. Project registration repair itself remains `install.mcp_json` work. |
 | `install.plainweave_codex_binding` | An existing global Codex Legis MCP entry must be project-agnostic: no retired legacy key and no fixed `cwd`. No global registration is healthy and not applicable; doctor never creates one. |
 
-The project check uses the active project cwd. Runtime discovery requires local
-`.plainweave/plainweave.db` plus either a valid local Plainweave `.mcp.json`
-entry or a trusted, non-project-local `plainweave-mcp` on global `PATH`. It
-creates no new manifest. Doctor reports the project check healthy and not
-applicable when the project is uninitialized or not configured. A global
-executable alone does not initialize or wire the project.
+The project check uses the active project cwd. Runtime discovery accepts either
+a valid root-pinned local Plainweave MCP entry by itself, or
+`.plainweave/plainweave.db` plus a trusted non-project-local `plainweave-mcp` on
+`PATH`. It creates no new manifest. Doctor reports the project check healthy and
+not applicable when neither path applies. A global executable alone does not
+initialize or wire the project.
 
 For an applicable project, `[auto-fixable]` can mean either the retired legacy
 `PLAINWEAVE_MCP_CMD` key is present or the project Legis registration is safely
@@ -216,6 +216,12 @@ indentation. It preserves unrelated JSON values, the detected newline sequence,
 final-newline presence, and file mode rather than arbitrary whitespace
 formatting. Global Codex TOML removal remains text-surgical.
 
+Project repair refuses unsafe or secret-bearing `.mcp.json` environment tables
+and leaves the file unchanged. Global remove-only repair accepts string-valued
+environment entries and preserves every unrelated entry, including
+secret-shaped names. It refuses malformed, unsupported, or mixed-transport
+global shapes.
+
 `[fixed]` means that check repaired and post-verified its own scope. When the
 same run repairs project registration and then removes the legacy key, inspect
 `[fixed]` on both `install.mcp_json` and
@@ -225,9 +231,10 @@ entry. The global check is independent of project applicability and never
 creates a registration.
 
 `[operator]` means doctor left operator-owned configuration unchanged. This
-includes a fixed global `cwd` and malformed, unsafe, secret-bearing, or
-unsupported config. Doctor never removes fixed `cwd`. When a safe retired-key
-cleanup succeeds but fixed `cwd` remains, the same line can show
+includes a fixed global `cwd`; malformed, unsupported, or mixed-transport
+global config; and unsafe or secret-bearing project config. Doctor never
+removes fixed `cwd`. When a safe retired-key cleanup succeeds but fixed `cwd`
+remains, the same line can show
 `[fixed] [operator]`: the partial fix is real, but runtime autodiscovery still
 cannot inherit the active project cwd.
 

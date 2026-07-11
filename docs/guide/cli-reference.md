@@ -239,7 +239,7 @@ the read-only counterpart — it never repairs; fixes stay on this CLI.)
 | `install.plainweave_codex_binding` | Independently inspects only an existing global Codex Legis entry for the retired key and fixed `cwd`. No registration is healthy and not applicable; the check never creates one. |
 | `[auto-fixable]` | A safe retired key is present, or a project registration is safely missing or stale. |
 | `[fixed]` | That check repaired and post-verified its own scope. If registration and legacy cleanup both changed, inspect `[fixed]` on both `install.mcp_json` and `install.plainweave_project_binding`. |
-| `[operator]` | A fixed global `cwd`, unsafe, secret-bearing, malformed, or unsupported config remains unchanged. A safe legacy cleanup plus fixed `cwd` can report `[fixed] [operator]`. |
+| `[operator]` | A fixed global `cwd`; malformed, unsupported, or mixed-transport global config; or unsafe/secret-bearing project config remains unchanged. A safe global legacy cleanup plus fixed `cwd` can report `[fixed] [operator]`. |
 | healthy, non-applicable | The project is uninitialized or not configured for Plainweave; or no global Codex Legis entry exists for the global check. |
 
 Run `legis doctor` to inspect, `legis doctor --fix` to apply safe repairs, and
@@ -248,16 +248,24 @@ checks are independent. Success means no check has `status: "error"`; do not
 depend on an exact check count.
 
 Legis MCP runtime autodiscovery runs once at startup from the active project
-cwd. It requires local `.plainweave/plainweave.db` plus a valid local Plainweave
-`.mcp.json` entry or trusted global `PATH` fallback; no new manifest is created.
+cwd. It accepts either a valid root-pinned local Plainweave MCP entry by itself,
+or `.plainweave/plainweave.db` plus a trusted non-project-local
+`plainweave-mcp` on `PATH`; no new manifest is created.
 Global Codex Legis config is tool-only and carries no Plainweave root, retired
 legacy `PLAINWEAVE_MCP_CMD`, or fixed `cwd`.
+
+Project repair refuses unsafe or secret-bearing `.mcp.json` environment tables
+and leaves the file unchanged. Global remove-only repair accepts string-valued
+environment entries and preserves every unrelated entry, including
+secret-shaped names. It refuses malformed, unsupported, or mixed-transport
+global shapes.
 
 For migration, run `legis doctor`, run `legis doctor --fix`, manually remove a
 fixed global `cwd` if doctor reports it, reconnect or restart MCP clients, then
 rerun `legis doctor`. `doctor_get` is report-only. Doctor does not initialize
 Plainweave, create a global registration, remove fixed `cwd`, restart clients,
-or repair malformed/unsafe config. See the
+or repair malformed/unsafe project config or malformed/unsupported global
+shapes. See the
 [Plainweave configuration procedure](configuration.md#plainweave-mcp-runtime-autodiscovery-and-legacy-migration)
 for prerequisites, remediation, and safety boundaries.
 

@@ -7,10 +7,12 @@ def test_historical_plainweave_binding_docs_are_superseded() -> None:
     expected_targets = {
         Path(
             "docs/superpowers/specs/2026-07-11-plainweave-doctor-binding-design.md"
-        ): "`2026-07-12-plainweave-runtime-autodiscovery-design.md`",
+        ): "[2026-07-12 Plainweave runtime autodiscovery design]"
+        "(2026-07-12-plainweave-runtime-autodiscovery-design.md)",
         Path(
             "docs/superpowers/plans/2026-07-11-plainweave-doctor-binding.md"
-        ): "`../specs/2026-07-12-plainweave-runtime-autodiscovery-design.md`",
+        ): "[2026-07-12 Plainweave runtime autodiscovery design]"
+        "(../specs/2026-07-12-plainweave-runtime-autodiscovery-design.md)",
     }
 
     for path, target in expected_targets.items():
@@ -19,6 +21,21 @@ def test_historical_plainweave_binding_docs_are_superseded() -> None:
         assert lines[2].startswith("> **Superseded:**"), path
         assert target in lines[2], path
         assert "historical 1.5.0 implementation record" in lines[2], path
+        relative_target = target.rpartition("(")[2].removesuffix(")")
+        assert (path.parent / relative_target).resolve().is_file(), path
+
+
+def test_historical_plainweave_design_and_plan_are_not_active_instructions() -> None:
+    design = Path(
+        "docs/superpowers/specs/2026-07-11-plainweave-doctor-binding-design.md"
+    ).read_text(encoding="utf-8")
+    plan = Path(
+        "docs/superpowers/plans/2026-07-11-plainweave-doctor-binding.md"
+    ).read_text(encoding="utf-8")
+
+    assert "Status: superseded" in design
+    assert "Historical plan — do not execute" in plan
+    assert "REQUIRED SUB-SKILL" not in "\n".join(plan.splitlines()[:12])
 
 
 def test_plainweave_plan_uses_changed_file_format_gate() -> None:

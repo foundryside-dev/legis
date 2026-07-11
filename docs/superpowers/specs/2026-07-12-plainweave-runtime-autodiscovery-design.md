@@ -43,11 +43,12 @@ Plainweave command, root, URL, fixed project working directory, or other
 project identity.
 
 Legis will not create a new binding manifest. The existing project-local
-Plainweave signals are the binding contract:
-
-1. `.plainweave/plainweave.db` establishes initialized Plainweave state; and
-2. a valid local `.mcp.json` Plainweave stdio entry selects the executable, or
-   a trusted non-project-local `plainweave-mcp` on `PATH` is the fallback.
+Plainweave signals form two alternative discovery paths. Discovery accepts
+either a valid root-pinned local Plainweave MCP entry by itself, or
+`.plainweave/plainweave.db` plus a trusted non-project-local `plainweave-mcp` on
+`PATH`. The local entry establishes applicability and selects the executable in
+one signal. Without that entry, the direct database file establishes
+initialized state and permits the trusted `PATH` fallback.
 
 The existing `discover_plainweave(root)` boundary already resolves those
 signals into a canonical root-pinned command while enforcing bounded,
@@ -120,13 +121,19 @@ discovered command. It will inspect only the global Legis entry:
 - legacy key absent and no fixed `cwd`: healthy;
 - fixed `cwd`: operator-owned error because it prevents the process from
   inheriting the active project's working directory; and
-- malformed, mixed-transport, unsupported, or unsafe configuration:
+- malformed, mixed-transport, or unsupported configuration:
   operator-owned error, unchanged.
 
 During `--fix`, Legis removes only `PLAINWEAVE_MCP_CMD`. It does not delete a
 fixed `cwd` or rewrite the operator's global Legis invocation. Removing an
 operator-authored `cwd` changes unrelated launch semantics and therefore
 requires explicit operator action.
+
+Project repair refuses unsafe or secret-bearing `.mcp.json` environment tables
+and leaves the file unchanged. Global remove-only repair accepts string-valued
+environment entries and preserves every unrelated entry, including
+secret-shaped names. It refuses malformed, unsupported, or mixed-transport
+global shapes.
 
 The check is independent of whether the current project has initialized
 Plainweave state. A stale global project binding is globally invalid and must
@@ -164,7 +171,9 @@ and unrelated-mutation comparison remains in force.
 - Missing or malformed local state disables advisory enrichment rather than
   changing governance behavior or crashing MCP startup.
 - Doctor never executes a discovered Plainweave command.
-- Doctor never repairs malformed or secret-bearing operator configuration.
+- Doctor never repairs malformed/unsafe project configuration or
+  malformed/unsupported global shapes. Secret-shaped string values in unrelated
+  global environment entries are preserved rather than classified as unsafe.
 - A fixed global Codex `cwd` is surfaced, not silently removed.
 - The existing Plainweave advisory-boundary byte-identity invariant remains a
   blocking regression gate.

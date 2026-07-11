@@ -3,6 +3,12 @@
 Date: 2026-06-27   Status: accepted   Author: claude (opus) — **executed in a parallel legis session** (commit `27f12da`, John Morrissey, 2026-06-27 22:08); recorded here for workspace continuity
 Supersedes: —   Related: commit `27f12da`; Plainweave producer `plainweave_preflight_facts_get` / envelope `weft.plainweave.preflight_facts.v1` (Plainweave ADR-006); GV-LG-3; [[0003-federation-read-doctrine]]; [[0006-warpline-preflight-conform-to-extant-mcp-envelope]]
 
+> **2026-07-12 amendment — current composition:** The runtime
+> `PLAINWEAVE_MCP_CMD` binding recorded below was retired in favor of
+> active-project runtime autodiscovery. This updates composition, not the
+> accepted advisory-only decision or its historical implementation record. See
+> the [Plainweave runtime autodiscovery design](../../superpowers/specs/2026-07-12-plainweave-runtime-autodiscovery-design.md).
+
 ## Context
 Plainweave is a Weft sibling whose only implemented producer (`plainweave_preflight_facts_get`, envelope `weft.plainweave.preflight_facts.v1`) had **no sibling consumer** and had never been exercised end-to-end. A parallel legis session landed legis as a read-only **advisory consumer** of it, mirroring the existing warpline advisory-preflight read (PDR-0006) exactly. This is a *different* federation seam from PDR-0007's `governance_read.v1`: there legis is the **producer** (warpline consumes); here legis is the **consumer** (Plainweave produces).
 

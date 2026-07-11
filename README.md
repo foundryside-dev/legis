@@ -19,10 +19,10 @@ The transport-agnostic service layer (WP-M1) and the agent-facing MCP surface on
 Legis stands itself up with `legis install`: instruction block, `legis-workflow` skill pack, SessionStart hook, `.mcp.json` registration, and the Legis-only `.weft/legis/` ignore rule. `legis doctor [--fix]` provides an operator health view and safe repair for the install + config layer, tagging each problem `[auto-fixable]` or `[operator]` so it is clear what `--fix` will and will not touch. Doctor names enablement paths when governance is unwired (policy cells, Wardline routing), but it reports rather than auto-enabling policy surfaces or touching signing keys.
 
 Legis MCP runtime autodiscovery resolves Plainweave once at startup from the
-active project working directory. It uses the existing local
-`.plainweave/plainweave.db` plus either a valid local Plainweave `.mcp.json`
-entry or a trusted global `plainweave-mcp` on `PATH`; it creates no new
-manifest. Global Codex Legis configuration stays tool-only and
+active project working directory. It accepts either a valid root-pinned local
+Plainweave MCP entry by itself, or `.plainweave/plainweave.db` plus a trusted
+non-project-local `plainweave-mcp` on `PATH`. It creates no new manifest.
+Global Codex Legis configuration stays tool-only and
 project-agnostic: it carries no Plainweave root, fixed `cwd`, or
 `PLAINWEAVE_MCP_CMD`, which is a retired 1.5.0 legacy migration key rather than
 active configuration.
@@ -34,10 +34,13 @@ retired key. `legis doctor --fix` semantically changes only the retired
 reserializes the whole `.mcp.json` document with two-space indentation. It
 preserves unrelated JSON values, the detected newline sequence, final-newline
 presence, and file mode; it does not preserve arbitrary whitespace formatting.
-Global Codex TOML removal is text-surgical. `install.mcp_json` continues to own
-project registration; the global check inspects only an existing registration
-and never creates one. Doctor leaves a fixed global `cwd` and malformed or
-unsafe config operator-owned. A combined cleanup can report
+Project repair refuses unsafe or secret-bearing `.mcp.json` environment tables
+and leaves the file unchanged. Global remove-only repair accepts string-valued
+environment entries and preserves every unrelated entry, including
+secret-shaped names; it refuses malformed, unsupported, or mixed-transport
+shapes. `install.mcp_json` continues to own project registration; the global
+check inspects only an existing registration and never creates one. Doctor
+leaves a fixed global `cwd` operator-owned. A combined cleanup can report
 `[fixed] [operator]`: remove the reported fixed `cwd` manually, reconnect or
 restart the MCP client, and rerun doctor. See the
 [Plainweave runtime-autodiscovery configuration guide](docs/guide/configuration.md#plainweave-mcp-runtime-autodiscovery-and-legacy-migration)

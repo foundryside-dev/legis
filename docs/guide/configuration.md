@@ -154,17 +154,15 @@ stay fail-closed.
 Legis MCP uses runtime autodiscovery once at startup from the active project
 cwd. It calls the hardened local Plainweave discovery boundary with the
 existing project signals; it does not create or read a new binding manifest.
-The required signals are:
+It accepts either a valid root-pinned local Plainweave MCP entry by itself, or
+`.plainweave/plainweave.db` plus a trusted non-project-local `plainweave-mcp` on
+`PATH`.
 
-1. a direct `.plainweave/plainweave.db` regular file, which establishes
-   initialized Plainweave state; and
-2. either a valid local `.mcp.json` Plainweave stdio entry or a trusted,
-   non-project-local `plainweave-mcp` executable on global `PATH`.
-
-The local `.mcp.json` entry must resolve to an executable and contain exactly
-one `--root` that resolves to the active project root. A global `PATH`
-executable is only a fallback for an initialized project; it does not initialize
-or wire a project by itself.
+The local entry must resolve to an executable and contain exactly one `--root`
+that resolves to the active project root. It establishes applicability and
+supplies the executable without requiring the database signal. The `PATH`
+executable is only a fallback when the direct database file establishes an
+initialized project; it does not initialize or wire a project by itself.
 
 This integration has a POSIX-only safety boundary. Runtime discovery, binding
 inspection/removal, and the shared configuration-writer lock require
@@ -243,9 +241,11 @@ legacy `PLAINWEAVE_MCP_CMD` key, but it reserializes the whole
 detected newline sequence, final-newline presence, and file mode are preserved;
 arbitrary indentation and other whitespace formatting are normalized. The
 global Codex TOML removal is text-surgical and preserves its surrounding
-comments and formatting. Both repairs remove the key only from safe Legis
-environment tables; malformed, mixed-transport, secret-bearing, or otherwise
-unsafe configuration remains unchanged and `[operator]`.
+comments and formatting. Project repair refuses unsafe or secret-bearing
+`.mcp.json` environment tables and leaves the file unchanged. Global
+remove-only repair accepts string-valued environment entries and preserves
+every unrelated entry, including secret-shaped names. It refuses malformed,
+unsupported, or mixed-transport shapes and leaves them `[operator]`.
 
 Legis serializes its own `.mcp.json` writers through the persistent
 `/.mcp.json.legis.lock` sidecar (created with mode `0600` and ignored by the
@@ -282,7 +282,7 @@ Use this migration sequence:
 
 Legis MCP then performs runtime autodiscovery once during startup. Doctor does
 not restart clients, initialize Plainweave, remove fixed `cwd`, or repair
-malformed/unsafe operator configuration.
+malformed/unsafe project configuration or malformed/unsupported global shapes.
 
 For machine-readable inspection, run `legis doctor --format json`. The MCP
 `doctor_get` tool returns the same report shape, but it is report-only and never
