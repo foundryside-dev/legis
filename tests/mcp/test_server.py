@@ -3,6 +3,8 @@ import json
 import logging
 import sqlite3
 
+import pytest
+
 from legis.canonical import canonical_json, content_hash
 from legis.checks.models import CheckOutcome, CheckRun
 from legis.checks.surface import CheckSurface
@@ -3265,6 +3267,101 @@ def test_doctor_get_returns_the_same_json_payload_the_cli_emits(tmp_path):
     # A bare directory is missing every install artifact — the read must say so.
     assert payload["ok"] is False
     assert payload["next_actions"]
+
+
+@pytest.mark.parametrize("control", ["\x00", "\x1b", "\x7f", "\u202e"])
+def test_doctor_get_rejects_filigree_url_control_characters(
+    tmp_path,
+    control,
+):
+    from legis.mcp import McpRuntime, call_tool
+
+    marker = "mcp-control-injection-marker"
+    url = f"https://central.example/api/weft/scan-results{control}{marker}"
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "wardline": {
+                        "args": ["mcp", "--filigree-url", url],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    runtime = McpRuntime(
+        agent_id="agent-1",
+        initialized=True,
+        source_root=str(tmp_path),
+    )
+
+    result = call_tool(runtime, "doctor_get", {})
+
+    assert not result.get("isError")
+    rendered = json.dumps(result["structuredContent"], ensure_ascii=False)
+    assert marker not in rendered
+    assert control not in rendered
+
+
+def test_doctor_get_uses_final_filigree_project_query_value(tmp_path):
+    from legis.mcp import McpRuntime, call_tool
+
+    url = "https://central.example/api/weft/scan-results?project=legis&project="
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {"mcpServers": {"wardline": {"args": ["mcp", "--filigree-url", url]}}}
+        ),
+        encoding="utf-8",
+    )
+    runtime = McpRuntime(
+        agent_id="agent-1",
+        initialized=True,
+        source_root=str(tmp_path),
+    )
+
+    result = call_tool(runtime, "doctor_get", {})
+
+    checks = result["structuredContent"]["checks"]
+    scope = next(check for check in checks if check["id"] == "install.filigree_scope")
+    assert scope["status"] == "warn"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://alice:mcp-secret-marker@central.example/api/weft/scan-results",
+        (
+            "https://central.example/api/weft/scan-results"
+            "?token=mcp-secret-marker#fragment-mcp-secret-marker"
+        ),
+        "https://central.example/api/weft/%0Amcp-secret-marker",
+        "https://central.example/api/weft/%ZZmcp-secret-marker",
+    ],
+)
+def test_doctor_get_never_exposes_filigree_url_secrets_or_encoded_controls(
+    tmp_path,
+    url,
+):
+    from legis.mcp import McpRuntime, call_tool
+
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {"mcpServers": {"wardline": {"args": ["mcp", "--filigree-url", url]}}}
+        ),
+        encoding="utf-8",
+    )
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
+
+    result = call_tool(runtime, "doctor_get", {})
+
+    assert not result.get("isError")
+    assert "mcp-secret-marker" not in json.dumps(
+        result["structuredContent"], ensure_ascii=False
+    )
+    assert "mcp-secret-marker" not in result["content"][0]["text"]
 
 
 def test_doctor_get_is_report_only_and_never_repairs(tmp_path, monkeypatch):

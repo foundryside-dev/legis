@@ -203,6 +203,13 @@ Plainweave discovery treats `.mcp.json` as untrusted input. It reads at most
 never used; when no independently resolved safe fallback applies, doctor
 reports a generic configuration error without echoing hostile values.
 
+Legis install and doctor readers apply the same 1 MiB accepted-size limit to
+the project `.mcp.json` before currentness, repair-blocker, or cross-server
+binding checks. They may read one additional sentinel byte to detect overflow;
+special files and oversized input are rejected with the target `.mcp.json`
+unchanged. Ordinary install may create the persistent `.mcp.json.legis.lock`
+sidecar described below before it refuses the target.
+
 | Check ID | Target | Scope |
 |---|---|---|
 | `install.plainweave_project_binding` | `.mcp.json` → `mcpServers.legis.env.PLAINWEAVE_MCP_CMD` | Checks the current project's Legis registration. If that registration is missing or stale, `install.mcp_json` owns its repair. |

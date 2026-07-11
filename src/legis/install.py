@@ -14,6 +14,7 @@ This mirrors filigree's mechanism (``filigree/src/filigree/install.py`` and
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import importlib.metadata
 import importlib.resources
@@ -363,6 +364,8 @@ def _config_writer_lock_support_error() -> str | None:
         return "platform does not support advisory configuration writer locks"
     if getattr(os, "O_NOFOLLOW", None) is None or not hasattr(os, "fchmod"):
         return "platform does not support safe configuration lock files"
+    if getattr(os, "O_NONBLOCK", None) is None:
+        return "platform does not support safe project MCP configuration reads"
     return None
 
 
@@ -1040,6 +1043,55 @@ def gitignore_rules_present(project_root: Path) -> bool:
 
 
 _MAX_MCP_JSON_DEPTH = 100
+_MAX_PROJECT_MCP_JSON_BYTES = 1024 * 1024
+
+
+class _McpJsonNotRegularError(OSError):
+    """A project MCP configuration descriptor is not a regular file."""
+
+
+class _McpJsonReadSupportError(OSError):
+    """The platform lacks a primitive required for safe project MCP reads."""
+
+
+def _mcp_json_read_flags() -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    if nofollow is None or nonblock is None:
+        raise _McpJsonReadSupportError(
+            "platform does not support safe project MCP configuration reads"
+        )
+    return os.O_RDONLY | nofollow | nonblock | getattr(os, "O_CLOEXEC", 0)
+
+
+def _read_project_mcp_json_fd(fd: int) -> tuple[bytes, os.stat_result]:
+    target_stat = os.fstat(fd)
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise _McpJsonNotRegularError("project .mcp.json is not a regular file")
+    remaining = _MAX_PROJECT_MCP_JSON_BYTES + 1
+    chunks: list[bytes] = []
+    while remaining:
+        chunk = os.read(fd, min(64 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    content = b"".join(chunks)
+    if len(content) > _MAX_PROJECT_MCP_JSON_BYTES:
+        raise ValueError("project .mcp.json exceeds the 1 MiB size limit")
+    return content, target_stat
+
+
+def _read_mcp_json_path(path: Path) -> tuple[bytes, os.stat_result] | None:
+    """Read one project MCP snapshot without blocking on special files."""
+    try:
+        fd = os.open(path, _mcp_json_read_flags())
+    except FileNotFoundError:
+        return None
+    try:
+        return _read_project_mcp_json_fd(fd)
+    finally:
+        os.close(fd)
 
 
 def _json_nesting_is_bounded(
@@ -1147,11 +1199,12 @@ def mcp_entry_is_current(project_root: Path) -> bool:
         path = project_path(project_root, ".mcp.json")
     except UnsafeInstallPathError:
         return False
-    if not path.is_file():
-        return False
     try:
-        data = _strict_json_loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, ValueError):
+        snapshot = _read_mcp_json_path(path)
+        if snapshot is None:
+            return False
+        data = _strict_json_loads(snapshot[0].decode("utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
         return False
     return _parsed_mcp_entry_is_current(project_root, data, check_env=True)
 
@@ -1462,17 +1515,21 @@ def mcp_json_doctor_repair_blocker(project_root: Path) -> str | None:
     except (OSError, UnsafeInstallPathError) as exc:
         return f"project .mcp.json path is unsafe or unreadable: {exc}"
     try:
-        path_stat = path.lstat()
-    except FileNotFoundError:
-        return None
-    except OSError:
-        return "project .mcp.json is unreadable; refusing automatic repair"
-    if stat.S_ISLNK(path_stat.st_mode):
-        return "project .mcp.json is a symlink; refusing automatic repair"
-    if not stat.S_ISREG(path_stat.st_mode):
+        snapshot = _read_mcp_json_path(path)
+    except _McpJsonReadSupportError as exc:
+        return str(exc)
+    except _McpJsonNotRegularError:
         return "project .mcp.json is not a regular file; refusing automatic repair"
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return "project .mcp.json is a symlink; refusing automatic repair"
+        return "project .mcp.json is unreadable; refusing automatic repair"
+    except ValueError:
+        return "project .mcp.json is unreadable; fix it by hand"
+    if snapshot is None:
+        return None
     try:
-        parsed: Any = _strict_json_loads(path.read_text(encoding="utf-8"))
+        parsed: Any = _strict_json_loads(snapshot[0].decode("utf-8"))
     except (json.JSONDecodeError, ValueError):
         return "project .mcp.json is malformed JSON; fix it by hand"
     except (OSError, UnicodeDecodeError):
@@ -1525,19 +1582,16 @@ def _directory_fd_still_names_path(
 def _read_anchored_mcp_json(
     directory_fd: int,
 ) -> tuple[bytes, os.stat_result] | None:
-    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
     try:
-        fd = os.open(".mcp.json", flags, dir_fd=directory_fd)
+        fd = os.open(
+            ".mcp.json",
+            _mcp_json_read_flags(),
+            dir_fd=directory_fd,
+        )
     except FileNotFoundError:
         return None
     try:
-        target_stat = os.fstat(fd)
-        if not stat.S_ISREG(target_stat.st_mode):
-            raise OSError("project .mcp.json is not a regular file")
-        chunks: list[bytes] = []
-        while chunk := os.read(fd, 64 * 1024):
-            chunks.append(chunk)
-        return b"".join(chunks), target_stat
+        return _read_project_mcp_json_fd(fd)
     finally:
         os.close(fd)
 
@@ -1693,21 +1747,17 @@ def _register_mcp_json_unlocked(
     data: dict[str, Any] = {}
     snapshot: bytes | None = None
     snapshot_identity: tuple[int, int] | None = None
-    anchored_snapshot: tuple[bytes, os.stat_result] | None = None
-    if root_fd is not None:
+    try:
+        config_snapshot = (
+            _read_anchored_mcp_json(root_fd)
+            if root_fd is not None
+            else _read_mcp_json_path(path)
+        )
+    except (OSError, ValueError):
+        return False, ".mcp.json present but unreadable; fix or remove it by hand"
+    if config_snapshot is not None:
         try:
-            anchored_snapshot = _read_anchored_mcp_json(root_fd)
-        except OSError:
-            return False, ".mcp.json present but unreadable; fix or remove it by hand"
-    if anchored_snapshot is not None or (root_fd is None and path.exists()):
-        try:
-            if anchored_snapshot is None:
-                path_stat = path.lstat()
-                snapshot = path.read_bytes()
-            else:
-                snapshot, path_stat = anchored_snapshot
-            if doctor_safe and not stat.S_ISREG(path_stat.st_mode):
-                return False, "project .mcp.json is unsafe; refusing automatic repair"
+            snapshot, path_stat = config_snapshot
             snapshot_identity = (path_stat.st_dev, path_stat.st_ino)
             parsed = _strict_json_loads(snapshot.decode("utf-8"))
         except (json.JSONDecodeError, OSError, ValueError):
@@ -1731,7 +1781,7 @@ def _register_mcp_json_unlocked(
             anchored_root_identity = root_identity
             try:
                 current_snapshot = _read_anchored_mcp_json(anchored_root_fd)
-            except OSError:
+            except (OSError, ValueError):
                 return (
                     False,
                     "project .mcp.json changed during automatic repair; rerun doctor",

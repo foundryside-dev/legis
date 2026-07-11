@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import sqlite3
 import tomllib
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
 from sqlalchemy.engine import make_url
 
@@ -1113,6 +1115,130 @@ _FEDERATION_WRITE_PATHS = frozenset(
     }
 )
 
+_URL_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+_MAX_FILIGREE_QUERY_FIELDS = 100
+
+
+def _strict_percent_decode(value: str, *, component: str) -> str:
+    index = 0
+    while index < len(value):
+        if value[index] == "%":
+            if (
+                index + 2 >= len(value)
+                or value[index + 1] not in _URL_HEX_DIGITS
+                or value[index + 2] not in _URL_HEX_DIGITS
+            ):
+                raise ValueError(
+                    f"invalid percent escape in --filigree-url {component}"
+                )
+            index += 3
+            continue
+        index += 1
+    try:
+        return unquote(value, encoding="utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ValueError(f"invalid UTF-8 in --filigree-url {component}") from exc
+
+
+def _has_unsafe_url_characters(value: str, *, whitespace: bool) -> bool:
+    return any(
+        (whitespace and character.isspace())
+        or unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+        for character in value
+    )
+
+
+def _decoded_normalized_url_path(path: str) -> str:
+    """Return an unambiguous path for security-sensitive route matching."""
+    decoded = _strict_percent_decode(path, component="path")
+    if (
+        "\\" in decoded
+        or "//" in decoded
+        or _has_unsafe_url_characters(decoded, whitespace=True)
+    ):
+        raise ValueError("unsafe character in --filigree-url path")
+    return posixpath.normpath("/" + decoded.lstrip("/"))
+
+
+def _query_has_project_scope(query: str) -> bool:
+    decoded = _strict_percent_decode(query, component="query")
+    if _has_unsafe_url_characters(decoded, whitespace=False):
+        raise ValueError("unsafe character in --filigree-url query")
+    project_values = parse_qs(
+        query,
+        keep_blank_values=True,
+        encoding="utf-8",
+        errors="strict",
+        max_num_fields=_MAX_FILIGREE_QUERY_FIELDS,
+    ).get("project", [])
+    if not project_values:
+        return False
+    effective_value = project_values[-1]
+    return bool(
+        effective_value.strip()
+        and not _has_unsafe_url_characters(effective_value, whitespace=False)
+    )
+
+
+def _validate_url_fragment(fragment: str) -> None:
+    decoded = _strict_percent_decode(fragment, component="fragment")
+    if _has_unsafe_url_characters(decoded, whitespace=False):
+        raise ValueError("unsafe character in --filigree-url fragment")
+
+
+def _validate_url_authority(authority: str) -> None:
+    decoded = _strict_percent_decode(authority, component="authority")
+    if (
+        _has_unsafe_url_characters(decoded, whitespace=True)
+        or "\\" in decoded
+        or any(delimiter in decoded for delimiter in "/?#@")
+    ):
+        raise ValueError("unsafe character in --filigree-url authority")
+
+
+def _validated_filigree_url(value: str) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or value.startswith("-")
+        or any(character.isspace() for character in value)
+        or any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value
+        )
+    ):
+        raise ValueError("project .mcp.json has an invalid --filigree-url value")
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(
+            "project .mcp.json has an invalid --filigree-url value"
+        ) from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("project .mcp.json --filigree-url must be an HTTP(S) URL")
+    _validate_url_authority(parsed.netloc)
+    _decoded_normalized_url_path(parsed.path)
+    _query_has_project_scope(parsed.query)
+    _validate_url_fragment(parsed.fragment)
+    return value
+
+
+def _filigree_url_for_diagnostics(value: str) -> str:
+    """Keep destination origin/path while removing credential-bearing parts."""
+    parsed = urlsplit(value)
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+
 
 def _filigree_binding_urls(root: Path) -> list[str]:
     """Every ``--filigree-url`` value across the .mcp.json server entries.
@@ -1121,37 +1247,53 @@ def _filigree_binding_urls(root: Path) -> list[str]:
     that actually emits scan-results — deliberately, because that is the binding
     subject to filigree's N1 fail-closed server-mode write."""
     path = root / ".mcp.json"
-    if not path.exists():
+    snapshot = _install._read_mcp_json_path(path)
+    if snapshot is None:
         return []
-    try:
-        data = _install._strict_json_loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError, ValueError):
-        return []
+    data = _install._strict_json_loads(snapshot[0].decode("utf-8"))
     if not isinstance(data, dict):
+        raise ValueError("project .mcp.json top level is not an object")
+    if "mcpServers" not in data:
         return []
-    servers = data.get("mcpServers")
+    servers = data["mcpServers"]
     if not isinstance(servers, dict):
-        return []
+        raise ValueError("project .mcp.json mcpServers is not an object")
     urls: list[str] = []
     for entry in servers.values():
-        args = entry.get("args") if isinstance(entry, dict) else None
-        if not isinstance(args, list):
+        if not isinstance(entry, dict):
+            raise ValueError("project .mcp.json server entry is not an object")
+        if "args" not in entry:
             continue
-        for i, arg in enumerate(args):
-            if (
-                arg == "--filigree-url"
-                and i + 1 < len(args)
-                and isinstance(args[i + 1], str)
-            ):
-                urls.append(args[i + 1])
+        args = entry["args"]
+        if not isinstance(args, list) or not all(
+            isinstance(argument, str) for argument in args
+        ):
+            raise ValueError("project .mcp.json server args is not a string list")
+        index = 0
+        while index < len(args):
+            argument = args[index]
+            if argument == "--":
+                break
+            if argument == "--filigree-url":
+                if index + 1 >= len(args):
+                    raise ValueError("project .mcp.json has a dangling --filigree-url")
+                value = _validated_filigree_url(args[index + 1])
+                urls.append(value)
+                index += 2
+                continue
+            prefix = "--filigree-url="
+            if argument.startswith(prefix):
+                value = _validated_filigree_url(argument[len(prefix) :])
+                urls.append(value)
+            index += 1
     return urls
 
 
 def _is_unscoped_federation_write(url: str) -> bool:
     """True iff *url* targets a federation-write path WITHOUT a project scope."""
     parsed = urlsplit(url)
-    path = parsed.path
-    if path.startswith("/api/p/") or "project" in parse_qs(parsed.query):
+    path = _decoded_normalized_url_path(parsed.path)
+    if path.startswith("/api/p/") or _query_has_project_scope(parsed.query):
         return False  # scoped (path mount or ?project=)
     norm = path.rstrip("/")
     return path.startswith("/api/weft/") or norm in _FEDERATION_WRITE_PATHS
@@ -1176,19 +1318,31 @@ def check_filigree_binding_scope(root: Path) -> DoctorCheck:
     report-only (``repairable=False``) and names the operator action rather than
     auto-fixing."""
     cid = "install.filigree_scope"
-    urls = _filigree_binding_urls(root)
+    try:
+        urls = _filigree_binding_urls(root)
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
+        return DoctorCheck(
+            cid,
+            "error",
+            message=(
+                "could not inspect project .mcp.json for filigree binding scope; "
+                "configuration is malformed, unreadable, or unsafe"
+            ),
+            repairable=False,
+        )
     if not urls:
         return DoctorCheck(
             cid, "ok", message="no filigree scan-results binding in .mcp.json"
         )
     unscoped = [u for u in urls if _is_unscoped_federation_write(u)]
     if unscoped:
+        safe_unscoped = [_filigree_url_for_diagnostics(url) for url in unscoped]
         return DoctorCheck(
             cid,
             "warn",
             message=(
                 "filigree binding not project-scoped: "
-                + ", ".join(unscoped)
+                + ", ".join(safe_unscoped)
                 + " — this --filigree-url is operator-pinned in wardline's .mcp.json entry "
                 "(legis never writes it; filigree doctor doesn't manage it). A server-mode "
                 "filigree daemon fail-closes unscoped federation writes (HTTP 400), so scans "
@@ -1196,7 +1350,12 @@ def check_filigree_binding_scope(root: Path) -> DoctorCheck:
                 "/api/p/<project>/weft/scan-results (or add ?project=<project>)"
             ),
         )
-    return DoctorCheck(cid, "ok", message="project-scoped: " + ", ".join(urls))
+    return DoctorCheck(
+        cid,
+        "ok",
+        message="project-scoped: "
+        + ", ".join(_filigree_url_for_diagnostics(url) for url in urls),
+    )
 
 
 def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -369,6 +370,23 @@ def test_mcp_json_without_writer_lock_is_operator_only(
     assert check.fixed is False
     assert check.message is not None and "platform" in check.message.lower()
     assert not (tmp_path / ".mcp.json").exists()
+
+
+def test_mcp_json_missing_nonblock_is_reported_as_platform_capability(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    (tmp_path / ".mcp.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(install.os, "O_NONBLOCK", None)
+
+    check = check_mcp_json(tmp_path, repair=False)
+
+    assert check.status == "error"
+    assert check.repairable is False
+    assert check.message is not None
+    assert "platform" in check.message.lower()
+    assert "project mcp" in check.message.lower()
+    assert "read" in check.message.lower()
 
 
 def test_mcp_json_repair_fixes_it(tmp_path):
@@ -1680,6 +1698,262 @@ def test_filigree_scope_ok_on_query_scoped_binding(tmp_path):
     assert c.status == "ok"
 
 
+@pytest.mark.parametrize(
+    ("url", "expected_status"),
+    [
+        ("https://central.example/api/weft/scan-results", "warn"),
+        ("https://central.example/api/p/project/weft/scan-results", "ok"),
+    ],
+)
+def test_filigree_scope_parses_equals_form_url(
+    tmp_path,
+    url,
+    expected_status,
+):
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "wardline": {
+                        "command": "wardline",
+                        "args": ["mcp", f"--filigree-url={url}"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == expected_status
+    assert url in (c.message or "")
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_status"),
+    [
+        ("/%61pi/weft/scan-results", "warn"),
+        ("/api%2Fweft%2Fscan-results", "warn"),
+        ("/%61pi/p/project/weft/scan-results", "ok"),
+        ("/api%2Fp%2Fproject%2Fweft%2Fscan-results", "ok"),
+        ("/api/p/fake/../../weft/scan-results", "warn"),
+        ("/api/p/fake/%2e%2e/%2e%2e/weft/scan-results", "warn"),
+        ("/api/other/../p/project/weft/scan-results", "ok"),
+    ],
+)
+def test_filigree_scope_classifies_decoded_normalized_paths(
+    tmp_path,
+    path,
+    expected_status,
+):
+    url = f"https://central.example{path}"
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "wardline": {
+                        "args": ["mcp", f"--filigree-url={url}"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == expected_status
+    assert path in (c.message or "")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected_status"),
+    [
+        ("https://central.example/api/p//weft/scan-results", "error"),
+        ("https://central.example/api%2Fp%2F%2Fweft%2Fscan-results", "error"),
+        ("https://central.example/api/weft/scan-results?project=", "warn"),
+        ("https://central.example/api/weft/scan-results?project=%20", "warn"),
+        ("https://central.example/api/weft/scan-results?project=%00", "error"),
+        ("https://central.example/api/weft/scan-results?project=legis", "ok"),
+        (
+            "https://central.example/api/weft/scan-results?project=legis&project=",
+            "warn",
+        ),
+        (
+            "https://central.example/api/weft/scan-results?project=legis&project=%20",
+            "warn",
+        ),
+        (
+            "https://central.example/api/weft/scan-results?project=&project=legis",
+            "ok",
+        ),
+    ],
+)
+def test_filigree_scope_requires_nonempty_safe_project_identity(
+    tmp_path,
+    url,
+    expected_status,
+):
+    _write_mcp_with_filigree_url(tmp_path, url)
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == expected_status
+
+
+@pytest.mark.parametrize(
+    ("field_count", "expected_status"),
+    [(100, "ok"), (101, "error")],
+)
+def test_filigree_scope_bounds_project_query_fields(
+    tmp_path,
+    field_count,
+    expected_status,
+):
+    filler = [f"f{index}=x" for index in range(field_count - 1)]
+    query = "&".join([*filler, "project=legis"])
+    _write_mcp_with_filigree_url(
+        tmp_path,
+        f"https://central.example/api/weft/scan-results?{query}",
+    )
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == expected_status
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["mcp", "--filigree-url"],
+        ["mcp", "--filigree-url", ""],
+        ["mcp", "--filigree-url", "   "],
+        ["mcp", "--filigree-url", "--other"],
+        ["mcp", "--filigree-url="],
+        ["mcp", "--filigree-url=   "],
+        ["mcp", "--filigree-url=--other"],
+        ["mcp", "--filigree-url", "not-a-url"],
+        ["mcp", "--filigree-url=not-a-url"],
+        ["mcp", "--filigree-url=ftp://host/api/weft/scan-results"],
+        ["mcp", "--filigree-url=https:///api/weft/scan-results"],
+        ["mcp", "--filigree-url=https://host:bad/api/weft/scan-results"],
+        ["mcp", "--filigree-url=https://host/api/weft/scan results"],
+        ["mcp", "--filigree-url=https://host/api/weft/%ZZ"],
+        ["mcp", "--filigree-url=https://host/api/weft/%FF"],
+        ["mcp", "--filigree-url=https://ho%ZZst.example/api/weft/scan-results"],
+        ["mcp", "--filigree-url=https://%FF.example/api/weft/scan-results"],
+        ["mcp", "--filigree-url=https://host%0Aevil.example/api/weft/scan-results"],
+        ["mcp", "--filigree-url=https://host\\evil.example/api/weft/scan-results"],
+    ],
+)
+def test_filigree_scope_rejects_missing_or_invalid_url_value(tmp_path, args):
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"wardline": {"command": "wardline", "args": args}}}),
+        encoding="utf-8",
+    )
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == "error"
+    assert c.repairable is False
+    assert c.message is not None and "could not inspect" in c.message.lower()
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_status"),
+    [
+        (
+            [
+                "mcp",
+                "--filigree-url=https://alice:s3cr3t@central.example/api/weft/scan-results",
+            ],
+            "error",
+        ),
+        (
+            [
+                "mcp",
+                "--filigree-url",
+                "https://central.example/api/weft/scan-results?token=s3cr3t",
+            ],
+            "warn",
+        ),
+        (
+            [
+                "mcp",
+                "--filigree-url=https://central.example/api/weft/scan-results"
+                "?project=legis&token=s3cr3t#fragment-secret",
+            ],
+            "ok",
+        ),
+    ],
+)
+def test_filigree_scope_never_exposes_url_credentials(
+    tmp_path,
+    args,
+    expected_status,
+):
+    (tmp_path / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"wardline": {"args": args}}}),
+        encoding="utf-8",
+    )
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == expected_status
+    message = c.message or ""
+    assert "s3cr3t" not in message
+    assert "fragment-secret" not in message
+    assert "alice" not in message
+    if expected_status != "error":
+        assert "central.example/api/weft/scan-results" in message
+
+
+@pytest.mark.parametrize("fmt", ["text", "json"])
+def test_rendered_doctor_output_redacts_filigree_url_credentials(
+    tmp_path,
+    capsys,
+    fmt,
+):
+    secret = "rendered-secret-value"
+    url = (
+        "https://central.example/api/weft/scan-results"
+        f"?token={secret}#fragment-{secret}"
+    )
+    _write_mcp_with_filigree_url(tmp_path, url)
+
+    run_doctor(tmp_path, repair=False, fmt=fmt)
+    rendered = capsys.readouterr().out
+
+    assert secret not in rendered
+    assert f"fragment-{secret}" not in rendered
+    assert "central.example/api/weft/scan-results" in rendered
+
+
+@pytest.mark.parametrize("fmt", ["text", "json"])
+@pytest.mark.parametrize("control", ["\x00", "\x1b", "\x7f", "\u202e"])
+def test_rendered_doctor_output_rejects_url_control_characters(
+    tmp_path,
+    capsys,
+    fmt,
+    control,
+):
+    marker = "control-injection-marker"
+    url = f"https://central.example/api/weft/scan-results{control}{marker}"
+    _write_mcp_with_filigree_url(tmp_path, url)
+
+    check = check_filigree_binding_scope(tmp_path)
+    assert check.status == "error"
+    assert marker not in (check.message or "")
+    assert control not in (check.message or "")
+
+    run_doctor(tmp_path, repair=False, fmt=fmt)
+    rendered = capsys.readouterr().out
+
+    assert marker not in rendered
+    assert control not in rendered
+
+
 def test_filigree_scope_ok_when_no_binding_present(tmp_path):
     _mark_filigree_installed(tmp_path)
     _write_mcp_with_filigree_url(tmp_path, None)
@@ -1702,11 +1976,46 @@ def test_filigree_scope_ignores_non_federation_path(tmp_path):
     assert c.status == "ok"
 
 
-def test_filigree_scope_survives_malformed_mcp_json(tmp_path):
+def test_filigree_scope_reports_malformed_mcp_json_as_unavailable(tmp_path):
     _mark_filigree_installed(tmp_path)
     (tmp_path / ".mcp.json").write_text("{not json", encoding="utf-8")
     c = check_filigree_binding_scope(tmp_path)
-    assert c.status == "ok"
+    assert c.status == "error"
+    assert c.repairable is False
+    assert c.message is not None and "could not inspect" in c.message.lower()
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"mcpServers": None},
+        {"mcpServers": []},
+        {"mcpServers": {"wardline": None}},
+        {"mcpServers": {"wardline": {"args": "not-a-list"}}},
+        {"mcpServers": {"wardline": {"args": ["--filigree-url", 42]}}},
+    ],
+)
+def test_filigree_scope_reports_malformed_server_shapes_as_unavailable(
+    tmp_path,
+    document,
+):
+    (tmp_path / ".mcp.json").write_text(json.dumps(document), encoding="utf-8")
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == "error"
+    assert c.repairable is False
+    assert c.message is not None and "could not inspect" in c.message.lower()
+
+
+def test_filigree_scope_reports_fifo_mcp_json_as_unavailable(tmp_path):
+    os.mkfifo(tmp_path / ".mcp.json")
+
+    c = check_filigree_binding_scope(tmp_path)
+
+    assert c.status == "error"
+    assert c.repairable is False
+    assert c.message is not None and "could not inspect" in c.message.lower()
 
 
 def test_collect_checks_includes_filigree_scope(tmp_path):

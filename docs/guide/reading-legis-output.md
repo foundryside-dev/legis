@@ -177,6 +177,21 @@ Each problem line is tagged so you know who fixes it:
 doctor reports the governance surface; it never auto-enables a cell or touches a
 signing key.
 
+`install.filigree_scope` inspects every valid `--filigree-url VALUE` or
+`--filigree-url=VALUE` in project MCP server arguments. Values must be
+whitespace-free HTTP(S) URLs with a host; URL userinfo is rejected. Doctor uses
+the full validated URL for scope classification. Route matching strictly
+percent-decodes UTF-8 and normalizes path dot-segments, so encoded route bytes,
+slashes, or traversal cannot disguise an unscoped write. Doctor rejects invalid
+escapes, ambiguous empty path segments, raw or encoded control/format characters,
+empty or whitespace-only project identities, and queries over 100 fields. It
+displays the normalized scheme/host/port plus the original encoded path. URL
+userinfo is rejected, and query values and fragments are omitted from diagnostics;
+opaque path data is retained for route diagnosis and is therefore not a secret
+field. A missing file or valid configuration with no such option is healthy
+checked-empty; malformed, unreadable, special-file, or invalid-URL input is an
+`[operator]` error rather than an earned absence.
+
 For Plainweave launch wiring, read the two check IDs separately:
 
 | Check ID | What it means |

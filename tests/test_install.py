@@ -730,6 +730,67 @@ def test_register_mcp_json_uses_shared_writer_lock(tmp_path, monkeypatch) -> Non
     assert locked_paths == [tmp_path / ".mcp.json"]
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["install", "doctor-register", "doctor-binding-scan"],
+)
+def test_mcp_json_fifo_is_rejected_without_blocking(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    os.mkfifo(tmp_path / ".mcp.json")
+    script = """
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+operation = sys.argv[2]
+if operation == "install":
+    from legis.install import register_mcp_json
+    result = register_mcp_json(root)
+elif operation == "doctor-register":
+    from legis.install import register_mcp_json
+    result = register_mcp_json(root, doctor_safe=True)
+else:
+    from legis.doctor import check_filigree_binding_scope
+    check = check_filigree_binding_scope(root)
+    result = (check.status, check.repairable, check.message)
+print(repr(result))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), operation],
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    if operation == "doctor-binding-scan":
+        assert completed.stdout.startswith("('error', False,")
+    else:
+        assert completed.stdout.startswith("(False,")
+    assert stat.S_ISFIFO((tmp_path / ".mcp.json").stat().st_mode)
+
+
+@pytest.mark.parametrize("extra_byte", [False, True], ids=["exact-limit", "over-limit"])
+def test_project_mcp_reader_size_limit(
+    tmp_path: Path,
+    extra_byte: bool,
+) -> None:
+    config = tmp_path / ".mcp.json"
+    payload = b"{}" + b" " * (install._MAX_PROJECT_MCP_JSON_BYTES - 2 + int(extra_byte))
+    config.write_bytes(payload)
+
+    if extra_byte:
+        with pytest.raises(ValueError, match="1 MiB"):
+            install._read_mcp_json_path(config)
+    else:
+        snapshot = install._read_mcp_json_path(config)
+        assert snapshot is not None and snapshot[0] == payload
+
+
 def test_doctor_safe_register_rejects_project_root_swap(
     tmp_path: Path,
     monkeypatch,
@@ -799,6 +860,49 @@ def test_doctor_safe_register_rechecks_project_root_immediately_before_write(
     assert "changed" in message.lower()
     assert not (external / ".mcp.json").exists()
     assert not (moved / ".mcp.json").exists()
+
+
+def test_doctor_safe_register_contains_oversized_final_recheck(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = tmp_path / ".mcp.json"
+    config.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    real_read = install._read_anchored_mcp_json
+    oversized = b"{}" + b" " * (install._MAX_PROJECT_MCP_JSON_BYTES - 1)
+    reads = 0
+
+    def replace_before_second_read(directory_fd: int):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            config.write_bytes(oversized)
+        return real_read(directory_fd)
+
+    monkeypatch.setattr(
+        install,
+        "_read_anchored_mcp_json",
+        replace_before_second_read,
+    )
+
+    ok, message = install.register_mcp_json(tmp_path, doctor_safe=True)
+
+    assert reads == 2
+    assert ok is False
+    assert "changed" in message.lower()
+    assert config.read_bytes() == oversized
+
+
+def test_missing_nonblock_reports_mcp_reader_capability(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(install.os, "O_NONBLOCK", None)
+
+    error = install._config_writer_lock_support_error()
+
+    assert error is not None
+    assert "project mcp" in error.lower()
+    assert "read" in error.lower()
 
 
 def test_doctor_safe_register_closes_project_fd_when_initial_fstat_fails(
