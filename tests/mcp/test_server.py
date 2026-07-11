@@ -185,7 +185,9 @@ def test_build_runtime_wires_env_configured_openrouter_judge(tmp_path, monkeypat
     assert result.judge_model == "openrouter:test-model"
 
 
-def test_build_runtime_wires_env_judge_for_simple_coached_override(tmp_path, monkeypatch):
+def test_build_runtime_wires_env_judge_for_simple_coached_override(
+    tmp_path, monkeypatch
+):
     from legis.enforcement.llm_client import OpenRouterLLMClient
     from legis.mcp import build_runtime
 
@@ -268,7 +270,12 @@ def test_initialize_and_tools_list_exposes_full_agent_surface(tmp_path):
     runtime.initialized = False
     responses = _run(
         _messages(
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}},
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26"},
+            },
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         ),
         runtime,
@@ -544,9 +551,7 @@ def test_policy_list_cells_do_not_carry_policy_known(tmp_path):
 
 def test_policy_list_complex_tier_enabled_when_gates_wired(tmp_path):
     runtime, store = _runtime(tmp_path)
-    runtime.signoff_gate = SignoffGate(
-        store, FixedClock("2026-06-02T12:00:00+00:00")
-    )
+    runtime.signoff_gate = SignoffGate(store, FixedClock("2026-06-02T12:00:00+00:00"))
     runtime.protected_gate = ProtectedGate(
         store,
         FixedClock("2026-06-02T12:00:00+00:00"),
@@ -704,7 +709,9 @@ def test_override_submit_rejects_entity_sei_for_unrelated_locator(tmp_path):
     assert store.read_all() == []
 
 
-def test_override_submit_unresolvable_entity_sei_records_nothing_with_weft_reason(tmp_path):
+def test_override_submit_unresolvable_entity_sei_records_nothing_with_weft_reason(
+    tmp_path,
+):
     # A non-resolving entity_sei returns UNRESOLVED_INPUT (weft-reason
     # unresolved_input {cause, fix}) and creates NOTHING — never an
     # unbound-but-looks-bound record.
@@ -743,7 +750,9 @@ def test_override_submit_unresolvable_entity_sei_records_nothing_with_weft_reaso
     assert store.read_all() == []  # NOTHING recorded
 
 
-def test_n3_acceptance_chill_is_reachable_keyless_via_build_runtime(tmp_path, monkeypatch):
+def test_n3_acceptance_chill_is_reachable_keyless_via_build_runtime(
+    tmp_path, monkeypatch
+):
     # N3 (weft-df8d2ef454) acceptance branch 1: a fresh stdio launch CAN reach a
     # configured non-secret governance surface. Pins the claim our errors/docs
     # assert as fact — chill/coached are reachable WITHOUT LEGIS_HMAC_KEY — end to
@@ -825,9 +834,7 @@ def test_override_submit_idempotency_key_is_scoped_to_exact_request(tmp_path):
         _ScriptedJudge(JudgeOpinion(Verdict.ACCEPTED, "judge@protected", "ok")),
         b"secret",
     )
-    runtime.signoff_gate = SignoffGate(
-        store, FixedClock("2026-06-02T12:00:00+00:00")
-    )
+    runtime.signoff_gate = SignoffGate(store, FixedClock("2026-06-02T12:00:00+00:00"))
 
     first = _run(
         _messages(
@@ -899,7 +906,9 @@ def test_override_submit_idempotency_key_is_scoped_to_exact_request(tmp_path):
 
     assert protected_reuse["isError"] is True
     assert protected_reuse["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
-    assert "different override request" in protected_reuse["structuredContent"]["message"]
+    assert (
+        "different override request" in protected_reuse["structuredContent"]["message"]
+    )
 
     structured_reuse = _run(
         _messages(
@@ -956,7 +965,9 @@ def test_tools_call_rejects_unexpected_arguments(tmp_path):
     assert store.read_all() == []
 
 
-def test_override_submit_non_chill_cell_returns_cell_not_enabled_without_write(tmp_path):
+def test_override_submit_non_chill_cell_returns_cell_not_enabled_without_write(
+    tmp_path,
+):
     runtime, store = _runtime(tmp_path)
     runtime.cell_registry = PolicyCellRegistry(
         default_cell="chill",
@@ -1060,12 +1071,12 @@ def test_override_submit_coached_accepts_and_blocks_with_reason_code(tmp_path):
     assert len(store.read_all()) == 2
 
 
-def test_override_submit_structured_escalates_and_status_poll_reflects_signoff(tmp_path):
+def test_override_submit_structured_escalates_and_status_poll_reflects_signoff(
+    tmp_path,
+):
     runtime, store = _runtime(tmp_path, agent_id="agent-structured")
     runtime.cell_registry = PolicyCellRegistry(default_cell="structured")
-    runtime.signoff_gate = SignoffGate(
-        store, FixedClock("2026-06-02T12:00:00+00:00")
-    )
+    runtime.signoff_gate = SignoffGate(store, FixedClock("2026-06-02T12:00:00+00:00"))
 
     responses = _run(
         _messages(
@@ -1268,7 +1279,9 @@ def test_policy_evaluate_returns_unknown_distinct_from_clear(tmp_path):
     assert responses[1]["result"]["structuredContent"]["provenance_gap"] is True
 
 
-def test_scan_route_requires_exactly_one_cell_spec_and_routes_findings(tmp_path, monkeypatch):
+def test_scan_route_requires_exactly_one_cell_spec_and_routes_findings(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING", "1")
     runtime, store = _runtime(tmp_path)
     scan = _active_scan()
@@ -1692,11 +1705,11 @@ def test_scan_route_fail_on_threshold_routes_each_finding(tmp_path, monkeypatch)
                 "method": "tools/call",
                 "params": {
                     "name": "scan_route",
-                        "arguments": {
-                            "scan": scan,
-                            "cell": "surface_override",
-                            "fail_on": "ERROR",
-                        },
+                    "arguments": {
+                        "scan": scan,
+                        "cell": "surface_override",
+                        "fail_on": "ERROR",
+                    },
                 },
             }
         ),
@@ -1829,12 +1842,16 @@ def test_read_tools_return_git_pull_checks_and_override_rate(tmp_path, git_repo)
         runtime,
     )
 
-    assert {b["name"] for b in responses[0]["result"]["structuredContent"]["branches"]} == {
+    assert {
+        b["name"] for b in responses[0]["result"]["structuredContent"]["branches"]
+    } == {
         "main",
         "feature",
     }
     assert responses[1]["result"]["structuredContent"]["commit"]["sha"] == head
-    assert responses[2]["result"]["structuredContent"]["renames"][0]["old_path"] == "a.txt"
+    assert (
+        responses[2]["result"]["structuredContent"]["renames"][0]["old_path"] == "a.txt"
+    )
     pr = responses[3]["result"]["structuredContent"]
     assert pr["number"] == 7
     assert pr["checks"][0]["check_name"] == "unit"
@@ -2017,9 +2034,7 @@ def test_non_wp_m3_tool_names_are_not_callable(tmp_path):
 def test_tools_call_with_non_object_params_returns_invalid_argument(tmp_path):
     runtime, _store = _runtime(tmp_path)
     responses = _run(
-        _messages(
-            {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": "bad"}
-        ),
+        _messages({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": "bad"}),
         runtime,
     )
 
@@ -2108,7 +2123,9 @@ def test_c8_no_agent_reachable_enablement_or_signing_surface():
     forbidden = ("enable", "provision", "grant", "hmac", "sign_key", "set_key")
     for name in _TOOL_HANDLERS:
         low = name.lower()
-        assert not any(tok in low for tok in forbidden), f"C-8: suspicious tool {name!r}"
+        assert not any(tok in low for tok in forbidden), (
+            f"C-8: suspicious tool {name!r}"
+        )
 
     # scan_route must not have grown a dirty-govern / key / cell-override knob:
     # the dirty-snapshot opt-in (LEGIS_WARDLINE_ALLOW_DIRTY) and the artifact key
@@ -2132,8 +2149,12 @@ def test_warpline_tools_introduce_no_new_error_codes(tmp_path):
     from legis.mcp import call_tool
 
     runtime, _store = _runtime(tmp_path)
-    assert not call_tool(runtime, "warpline_preflight_get", {"base": "x"}).get("isError")
-    assert not call_tool(runtime, "plainweave_preflight_get", {"base": "x"}).get("isError")
+    assert not call_tool(runtime, "warpline_preflight_get", {"base": "x"}).get(
+        "isError"
+    )
+    assert not call_tool(runtime, "plainweave_preflight_get", {"base": "x"}).get(
+        "isError"
+    )
     assert not call_tool(runtime, "attestation_get", {"sei": "x#1"}).get("isError")
 
 
@@ -2150,7 +2171,9 @@ def test_git_rename_feed_get_returns_committed_renames(git_repo, monkeypatch):
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(git_repo))
     runtime = build_runtime("agent-1")
 
-    result = call_tool(runtime, "git_rename_feed_get", {"base": "HEAD~1", "head": "HEAD"})
+    result = call_tool(
+        runtime, "git_rename_feed_get", {"base": "HEAD~1", "head": "HEAD"}
+    )
 
     assert result["structuredContent"]["committed"][0]["new_path"] == "renamed.txt"
     assert result["structuredContent"]["status"] == "committed_only"
@@ -2223,9 +2246,9 @@ def test_policy_explain_description_documents_policy_known():
     # N-9: agents must learn the policy_known semantics from tools/list alone.
     from legis.mcp import tool_definitions
 
-    description = next(
-        t for t in tool_definitions() if t["name"] == "policy_explain"
-    )["description"]
+    description = next(t for t in tool_definitions() if t["name"] == "policy_explain")[
+        "description"
+    ]
     assert "policy_known" in description
     assert "default_cell" in description
 
@@ -2269,6 +2292,7 @@ def test_filigree_closure_gate_get_surfaces_integrity_failure(monkeypatch, tmp_p
 
 # --- roadmap 14: stdin JSON-RPC line-size bound ---
 
+
 def test_run_jsonrpc_rejects_oversized_line_and_stays_framed(tmp_path, monkeypatch):
     # A single line over the bound is rejected with -32700 and does not consume
     # the following request — framing realigns at the next newline.
@@ -2276,13 +2300,19 @@ def test_run_jsonrpc_rejects_oversized_line_and_stays_framed(tmp_path, monkeypat
     runtime, _store = _runtime(tmp_path)
     runtime.initialized = False
     oversized = {
-        "jsonrpc": "2.0", "id": 99, "method": "tools/list",
+        "jsonrpc": "2.0",
+        "id": 99,
+        "method": "tools/list",
         "params": {"pad": "A" * 2000},
     }
     responses = _run(
         _messages(
-            {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-             "params": {"protocolVersion": "2025-03-26"}},
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26"},
+            },
             oversized,
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         ),
@@ -2322,7 +2352,9 @@ def test_read_bounded_line_enforces_bytes_not_chars():
     # ~4×. The record AFTER it must stay framed.
     from legis.mcp import _read_bounded_line
 
-    multibyte = "中" * 200  # 200 chars, 600 UTF-8 bytes — under 400 chars, over 400 bytes
+    multibyte = (
+        "中" * 200
+    )  # 200 chars, 600 UTF-8 bytes — under 400 chars, over 400 bytes
     stream = io.StringIO(f"{multibyte}\n" + '{"next":true}\n')
 
     line, overflow = _read_bounded_line(stream, 400)
@@ -2392,18 +2424,31 @@ def test_service_error_does_not_log_expected_typed_errors(caplog):
 
 # --- legis-428f05c9ca: signoff_bind_issue + binding read over pure MCP ---
 
+
 class _FakeFiligree:
     def __init__(self):
         self.attached = []
 
-    def attach(self, issue_id, entity_id, content_hash, *, actor,
-               signoff_seq=None, signature=None):
+    def attach(
+        self,
+        issue_id,
+        entity_id,
+        content_hash,
+        *,
+        actor,
+        signoff_seq=None,
+        signature=None,
+    ):
         self.attached.append(
             (issue_id, entity_id, content_hash, actor, signoff_seq, signature)
         )
-        return {"issue_id": issue_id, "loomweave_entity_id": entity_id,
-                "content_hash_at_attach": content_hash, "attached_at": "t",
-                "attached_by": actor}
+        return {
+            "issue_id": issue_id,
+            "loomweave_entity_id": entity_id,
+            "content_hash_at_attach": content_hash,
+            "attached_at": "t",
+            "attached_by": actor,
+        }
 
     def associations_for_entity(self, entity_id):
         return []
@@ -2430,8 +2475,13 @@ def _cleared_sei_request(gate, *, content_hash="blake3"):
         entity_key=EntityKey.from_sei("loomweave:eid:abc"),
         rationale="needs a human",
         agent_id="agent-1",
-        extensions={"loomweave": {"content_hash": content_hash, "alive": True,
-                                  "lineage_snapshot": None}},
+        extensions={
+            "loomweave": {
+                "content_hash": content_hash,
+                "alive": True,
+                "lineage_snapshot": None,
+            }
+        },
     )
     gate.sign_off(request_seq=req.seq, operator_id="op-1")
     return req
@@ -2465,7 +2515,11 @@ def test_signoff_bind_issue_completes_the_pure_mcp_closure_flow(tmp_path):
     # from the caller (same governed sourcing as the HTTP bind-issue route).
     issue_id, entity_id, chash, actor, seq, signature = runtime.filigree.attached[0]
     assert (issue_id, entity_id, chash, actor, seq) == (
-        "ISSUE-1", "loomweave:eid:abc", "blake3", "legis", req.seq
+        "ISSUE-1",
+        "loomweave:eid:abc",
+        "blake3",
+        "legis",
+        req.seq,
     )
     assert signature is not None  # binding_key wired -> signed attestation
 
@@ -2722,6 +2776,7 @@ def test_build_runtime_leaves_filigree_unwired_without_env(tmp_path, monkeypatch
 
 # --- legis-62c7c58ae4: SEI lineage-honesty reads over MCP ---
 
+
 class _FakeLoomweave:
     """Duck-typed LoomweaveIdentity read client (mirrors tests/api FakeClient)."""
 
@@ -2733,8 +2788,12 @@ class _FakeLoomweave:
         return True
 
     def resolve_locator(self, locator):
-        return {"sei": "loomweave:eid:abc123", "current_locator": locator,
-                "content_hash": "h", "alive": True}
+        return {
+            "sei": "loomweave:eid:abc123",
+            "current_locator": locator,
+            "content_hash": "h",
+            "alive": True,
+        }
 
     def resolve_sei(self, sei):
         if self._alive:
@@ -2811,8 +2870,11 @@ def test_identity_gap_list_surfaces_orphaned_attestation(tmp_path):
     payload = result["structuredContent"]
     assert payload["status"] == "checked"
     assert payload["gaps"] == [
-        {"sei": "loomweave:eid:abc123", "reason": "orphaned",
-         "lineage": [{"event": "orphaned"}]}
+        {
+            "sei": "loomweave:eid:abc123",
+            "reason": "orphaned",
+            "lineage": [{"event": "orphaned"}],
+        }
     ]
 
 
@@ -2827,16 +2889,26 @@ def test_lineage_integrity_get_three_way_status_precedence(tmp_path):
     runtime.identity = IdentityResolver(_FakeLoomweave(lineage=lineage))
 
     # verified: snapshot is a prefix of the current lineage
-    store.append(_sei_record(loomweave_ext={
-        "lineage_snapshot": {"length": 1, "hash": content_hash(lineage)},
-    }))
+    store.append(
+        _sei_record(
+            loomweave_ext={
+                "lineage_snapshot": {"length": 1, "hash": content_hash(lineage)},
+            }
+        )
+    )
     verified = call_tool(runtime, "lineage_integrity_get", {})["structuredContent"]
     assert verified == {"status": "verified", "divergences": [], "unavailable": []}
 
     # unverified: a second SEI recorded with no snapshot
-    store.append(_sei_record("loomweave:eid:nosnap", loomweave_ext={
-        "lineage_snapshot": None, "lineage_snapshot_status": "unavailable",
-    }))
+    store.append(
+        _sei_record(
+            "loomweave:eid:nosnap",
+            loomweave_ext={
+                "lineage_snapshot": None,
+                "lineage_snapshot_status": "unavailable",
+            },
+        )
+    )
     unverified = call_tool(runtime, "lineage_integrity_get", {})["structuredContent"]
     assert unverified["status"] == "unverified"
     assert unverified["divergences"] == []
@@ -2845,9 +2917,14 @@ def test_lineage_integrity_get_three_way_status_precedence(tmp_path):
     ]
 
     # diverged beats unverified: a third SEI whose recorded prefix no longer holds
-    store.append(_sei_record("loomweave:eid:diverged", loomweave_ext={
-        "lineage_snapshot": {"length": 1, "hash": "not-the-recorded-prefix"},
-    }))
+    store.append(
+        _sei_record(
+            "loomweave:eid:diverged",
+            loomweave_ext={
+                "lineage_snapshot": {"length": 1, "hash": "not-the-recorded-prefix"},
+            },
+        )
+    )
     diverged = call_tool(runtime, "lineage_integrity_get", {})["structuredContent"]
     assert diverged["status"] == "diverged"
     assert diverged["divergences"] == [
@@ -2920,20 +2997,25 @@ def test_lineage_honesty_reads_fail_closed_on_tampered_protected_trail(tmp_path)
 
 # --- legis-e5c57dedd1: check_report write + pull_request_record named decision ---
 
+
 def test_check_report_records_launch_bound_agent_and_reads_back(tmp_path):
     from legis.mcp import call_tool
 
     checks = CheckSurface(f"sqlite:///{tmp_path / 'checks.db'}")
     runtime, _store = _runtime(tmp_path, agent_id="agent-ci", check_surface=checks)
 
-    result = call_tool(runtime, "check_report", {
-        "check_name": "pytest",
-        "run_id": "run-1",
-        "commit_sha": "c" * 40,
-        "outcome": "fail",
-        "branch": "rc5",
-        "pr": 7,
-    })
+    result = call_tool(
+        runtime,
+        "check_report",
+        {
+            "check_name": "pytest",
+            "run_id": "run-1",
+            "commit_sha": "c" * 40,
+            "outcome": "fail",
+            "branch": "rc5",
+            "pr": 7,
+        },
+    )
 
     assert not result.get("isError")
     payload = result["structuredContent"]
@@ -2960,10 +3042,16 @@ def test_check_report_rejects_unknown_outcome_without_recording(tmp_path):
     checks = CheckSurface(f"sqlite:///{tmp_path / 'checks.db'}")
     runtime, _store = _runtime(tmp_path, check_surface=checks)
 
-    result = call_tool(runtime, "check_report", {
-        "check_name": "pytest", "run_id": "run-1",
-        "commit_sha": "c" * 40, "outcome": "green",
-    })
+    result = call_tool(
+        runtime,
+        "check_report",
+        {
+            "check_name": "pytest",
+            "run_id": "run-1",
+            "commit_sha": "c" * 40,
+            "outcome": "green",
+        },
+    )
 
     assert result["isError"] is True
     sc = result["structuredContent"]
@@ -2983,10 +3071,17 @@ def test_check_report_rejects_caller_supplied_identity(tmp_path):
     runtime, _store = _runtime(tmp_path, check_surface=checks)
 
     for forged in ({"agent_id": "someone-else"}, {"recorded_by": "someone-else"}):
-        result = call_tool(runtime, "check_report", {
-            "check_name": "pytest", "run_id": "run-1",
-            "commit_sha": "c" * 40, "outcome": "pass", **forged,
-        })
+        result = call_tool(
+            runtime,
+            "check_report",
+            {
+                "check_name": "pytest",
+                "run_id": "run-1",
+                "commit_sha": "c" * 40,
+                "outcome": "pass",
+                **forged,
+            },
+        )
         assert result["isError"] is True, forged
         assert result["structuredContent"]["error_code"] == "INVALID_ARGUMENT"
     assert checks.for_commit("c" * 40) == []
@@ -3002,10 +3097,16 @@ def test_check_report_records_on_fresh_runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("LEGIS_CHECK_DB", db)
     runtime = McpRuntime(agent_id="agent-fresh", initialized=True)
 
-    result = call_tool(runtime, "check_report", {
-        "check_name": "ruff", "run_id": "run-9",
-        "commit_sha": "d" * 40, "outcome": "pass",
-    })
+    result = call_tool(
+        runtime,
+        "check_report",
+        {
+            "check_name": "ruff",
+            "run_id": "run-9",
+            "commit_sha": "d" * 40,
+            "outcome": "pass",
+        },
+    )
 
     assert not result.get("isError")
     recorded = CheckSurface(db).for_commit("d" * 40)
@@ -3152,7 +3253,9 @@ def test_doctor_get_returns_the_same_json_payload_the_cli_emits(tmp_path):
     from legis.doctor import collect_checks, render_json
     from legis.mcp import McpRuntime, call_tool
 
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     result = call_tool(runtime, "doctor_get", {})
 
@@ -3180,10 +3283,25 @@ def test_doctor_get_is_report_only_and_never_repairs(tmp_path, monkeypatch):
     executable.chmod(0o755)
     project_config = root / ".mcp.json"
     project_config.write_text(
-        json.dumps({"mcpServers": {
-            "plainweave": {"type": "stdio", "command": str(executable), "args": ["--root", str(root)]},
-            "legis": {"type": "stdio", "command": str(executable), "args": ["mcp", "--agent-id", "operator"], "env": {}},
-        }}, indent=2) + "\n",
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plainweave": {
+                        "type": "stdio",
+                        "command": str(executable),
+                        "args": ["--root", str(root)],
+                    },
+                    "legis": {
+                        "type": "stdio",
+                        "command": str(executable),
+                        "args": ["mcp", "--agent-id", "operator"],
+                        "env": {},
+                    },
+                }
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     codex_home = tmp_path / "codex-home"
@@ -3225,7 +3343,9 @@ def test_policy_boundary_check_pass_on_clean_tree(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "clean.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     result = call_tool(runtime, "policy_boundary_check", {})
 
@@ -3244,12 +3364,12 @@ def test_policy_boundary_check_reports_findings(tmp_path):
     src = tmp_path / "src"
     src.mkdir()
     (src / "guarded.py").write_text(
-        '@policy_boundary(suppresses=("no-eval",))\n'
-        "def f():\n"
-        "    pass\n",
+        '@policy_boundary(suppresses=("no-eval",))\ndef f():\n    pass\n',
         encoding="utf-8",
     )
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     result = call_tool(runtime, "policy_boundary_check", {})
 
@@ -3266,12 +3386,12 @@ def test_policy_boundary_check_resolves_relative_roots_against_repo_root(tmp_pat
     lib = tmp_path / "pkg" / "lib"
     lib.mkdir(parents=True)
     (lib / "x.py").write_text(
-        '@policy_boundary(suppresses=("no-eval",))\n'
-        "def g():\n"
-        "    pass\n",
+        '@policy_boundary(suppresses=("no-eval",))\ndef g():\n    pass\n',
         encoding="utf-8",
     )
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     result = call_tool(
         runtime, "policy_boundary_check", {"root": "lib", "repo_root": "pkg"}
@@ -3295,7 +3415,9 @@ def test_policy_boundary_check_no_root_when_default_src_missing(tmp_path):
     # repo_root resolves to tmp_path (no src/ layout) -> default <repo_root>/src
     # does not exist. Must NOT read as a clean PASS.
     (tmp_path / "code.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     result = call_tool(runtime, "policy_boundary_check", {})
 
@@ -3313,7 +3435,9 @@ def test_policy_boundary_check_no_root_when_root_has_zero_source_files(tmp_path)
     src = tmp_path / "src"
     src.mkdir()
     (src / "README.md").write_text("# docs only, no python\n", encoding="utf-8")
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     result = call_tool(runtime, "policy_boundary_check", {})
 
@@ -3325,7 +3449,9 @@ def test_policy_boundary_check_no_root_when_root_has_zero_source_files(tmp_path)
 def test_policy_boundary_check_no_root_when_explicit_root_nonexistent(tmp_path):
     from legis.mcp import McpRuntime, call_tool
 
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     result = call_tool(
         runtime, "policy_boundary_check", {"root": str(tmp_path / "nope")}
@@ -3383,7 +3509,9 @@ def test_policy_boundary_check_rejects_absolute_repo_root_outside_source_root(tm
     assert "scanned_root" not in result["structuredContent"]
 
 
-def test_policy_boundary_check_rejects_repo_root_outside_even_when_root_inside(tmp_path):
+def test_policy_boundary_check_rejects_repo_root_outside_even_when_root_inside(
+    tmp_path,
+):
     # Discriminating case: repo_root is OUT of bounds while root is an explicit
     # IN-bounds absolute path. Only the repo_root candidate is out of bounds, so
     # this fails iff repo_root is actually contained — it pins the repo_root
@@ -3428,7 +3556,9 @@ def test_policy_boundary_check_allows_absolute_root_inside_source_root(tmp_path)
     src = tmp_path / "src"
     src.mkdir()
     (src / "clean.py").write_text("def f():\n    return 1\n", encoding="utf-8")
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    runtime = McpRuntime(
+        agent_id="agent-1", initialized=True, source_root=str(tmp_path)
+    )
 
     # An ABSOLUTE root that IS inside the boundary must still scan normally.
     result = call_tool(runtime, "policy_boundary_check", {"root": str(src)})
@@ -3502,9 +3632,7 @@ def test_check_list_target_type_schema_declares_enum_matching_handler(tmp_path):
         )
         assert not result.get("isError"), target_type
     # ...and the rejection message names the same set.
-    rejected = call_tool(
-        runtime, "check_list", {"target_type": "tag", "target": "v1"}
-    )
+    rejected = call_tool(runtime, "check_list", {"target_type": "tag", "target": "v1"})
     assert rejected["isError"] is True
     for value in _CHECK_TARGET_TYPES:
         assert value in rejected["structuredContent"]["message"]
@@ -3521,7 +3649,9 @@ def test_build_runtime_wires_warpline_from_env(monkeypatch, tmp_path):
 
     monkeypatch.setenv("WARPLINE_MCP_CMD", "echo")
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
-    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)  # engine-only: no protected gate
+    monkeypatch.delenv(
+        "LEGIS_HMAC_KEY", raising=False
+    )  # engine-only: no protected gate
     # NOTE: build_runtime(agent_id) takes ONLY agent_id (mcp.py:200); source root
     # and DBs are env-driven (LEGIS_SOURCE_ROOT, mcp.py:275). There is NO
     # source_root= kwarg — passing one raises TypeError before any assertion.
@@ -3543,7 +3673,9 @@ def test_build_runtime_degrades_warpline_to_none_on_bad_cmd(monkeypatch, tmp_pat
     # at startup; it degrades to no advisory context (governance unaffected).
     from legis.mcp import build_runtime
 
-    monkeypatch.setenv("WARPLINE_MCP_CMD", "   ")  # blank after shlex.split -> fail-safe None
+    monkeypatch.setenv(
+        "WARPLINE_MCP_CMD", "   "
+    )  # blank after shlex.split -> fail-safe None
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
     runtime = build_runtime("agent-x")
@@ -3587,7 +3719,9 @@ def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
 
     runtime, _store = _runtime(tmp_path)
     runtime.warpline = _FakeWarpline()
-    result = call_tool(runtime, "warpline_preflight_get", {"base": "aaa", "head": "bbb"})
+    result = call_tool(
+        runtime, "warpline_preflight_get", {"base": "aaa", "head": "bbb"}
+    )
     assert not result.get("isError")
     sc = result["structuredContent"]
     assert sc["status"] == "checked"
@@ -3624,7 +3758,9 @@ def test_build_runtime_degrades_plainweave_to_none_on_bad_cmd(monkeypatch, tmp_p
     # at startup; it degrades to no advisory context (governance unaffected).
     from legis.mcp import build_runtime
 
-    monkeypatch.setenv("PLAINWEAVE_MCP_CMD", "   ")  # blank after shlex.split -> fail-safe None
+    monkeypatch.setenv(
+        "PLAINWEAVE_MCP_CMD", "   "
+    )  # blank after shlex.split -> fail-safe None
     monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
     monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
     runtime = build_runtime("agent-x")
@@ -3668,7 +3804,9 @@ def test_plainweave_preflight_get_checked_with_injected_client(tmp_path):
 
     runtime, _store = _runtime(tmp_path)
     runtime.plainweave = _FakePlainweave()
-    result = call_tool(runtime, "plainweave_preflight_get", {"base": "aaa", "head": "bbb"})
+    result = call_tool(
+        runtime, "plainweave_preflight_get", {"base": "aaa", "head": "bbb"}
+    )
     assert not result.get("isError")
     sc = result["structuredContent"]
     assert sc["status"] == "checked"
@@ -3678,39 +3816,64 @@ def test_plainweave_preflight_get_checked_with_injected_client(tmp_path):
 def test_plainweave_preflight_get_exposes_and_forwards_requirement_page(tmp_path):
     from legis.mcp import call_tool, tool_definitions
 
-    tool = next(tool for tool in tool_definitions() if tool["name"] == "plainweave_preflight_get")
+    tool = next(
+        tool
+        for tool in tool_definitions()
+        if tool["name"] == "plainweave_preflight_get"
+    )
     properties = tool["inputSchema"]["properties"]
-    assert properties["requirement_limit"] == {"type": "integer", "minimum": 1, "maximum": 100}
+    assert properties["requirement_limit"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+    }
     assert properties["requirement_offset"] == {"type": "integer", "minimum": 0}
     calls = []
 
     class _PagedPlainweave:
-        def preflight_facts(self, base, head, *, requirement_limit=None, requirement_offset=None):
+        def preflight_facts(
+            self, base, head, *, requirement_limit=None, requirement_offset=None
+        ):
             calls.append((base, head, requirement_limit, requirement_offset))
             return {
                 "schema": "weft.plainweave.preflight_facts.v1",
                 "ok": True,
                 "data": {
-                    "freshness": "partial", "facts": [],
+                    "freshness": "partial",
+                    "facts": [],
                     "scope": {
-                        "kind": "commit_range", "requirement_ids": ["req-100"],
+                        "kind": "commit_range",
+                        "requirement_ids": ["req-100"],
                         "requirement_page": {
-                            "limit": 50, "offset": 100, "returned": 1, "total": 101,
-                            "has_more": False, "next_offset": None,
+                            "limit": 50,
+                            "offset": 100,
+                            "returned": 1,
+                            "total": 101,
+                            "has_more": False,
+                            "next_offset": None,
                         },
                     },
                     "authority_boundary": {
-                        "local_only": True, "live_peer_calls": False, "governance_verdicts": False,
+                        "local_only": True,
+                        "live_peer_calls": False,
+                        "governance_verdicts": False,
                     },
                 },
-                "warnings": [], "meta": {},
+                "warnings": [],
+                "meta": {},
             }
 
     runtime, _store = _runtime(tmp_path)
     runtime.plainweave = _PagedPlainweave()
     result = call_tool(
-        runtime, "plainweave_preflight_get",
-        {"base": "aaa", "head": "bbb", "requirement_limit": 50, "requirement_offset": 100},
+        runtime,
+        "plainweave_preflight_get",
+        {
+            "base": "aaa",
+            "head": "bbb",
+            "requirement_limit": 50,
+            "requirement_offset": 100,
+        },
     )
 
     assert not result.get("isError")
@@ -3816,7 +3979,9 @@ def test_attestation_get_wired_deployment_admits_genuine_signoff(tmp_path):
 
     runtime, store = _runtime(tmp_path)
     key = b"signoff-key"
-    gate = SignoffGate(store, FixedClock("2026-06-02T12:00:00+00:00"), signer=True, key=key)
+    gate = SignoffGate(
+        store, FixedClock("2026-06-02T12:00:00+00:00"), signer=True, key=key
+    )
     req = gate.request(
         policy="protected.x",
         entity_key=EntityKey(value="loomweave:eid:cleared", identity_stable=True),

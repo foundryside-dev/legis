@@ -96,6 +96,7 @@ def _first_own_open_fence_pos(content: str) -> int:
             inside_foreign = ns
     return -1
 
+
 SKILL_NAME = "legis-workflow"
 """Name of the legis skill pack directory."""
 
@@ -441,7 +442,9 @@ def _install_skill_to(project_root: Path, target_subpath: Path) -> tuple[bool, s
     except UnsafeInstallPathError as exc:
         return False, str(exc)
 
-    staging = Path(tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.installing."))
+    staging = Path(
+        tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.installing.")
+    )
     staging.rmdir()
     staging_consumed = False
     swap_done = False
@@ -449,7 +452,9 @@ def _install_skill_to(project_root: Path, target_subpath: Path) -> tuple[bool, s
     try:
         shutil.copytree(skill_source, staging)
         if target_dir.exists():
-            backup_holder = Path(tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.old."))
+            backup_holder = Path(
+                tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.old.")
+            )
             backup_holder.rmdir()
             try:
                 os.rename(target_dir, backup_holder)
@@ -478,7 +483,10 @@ def _install_skill_to(project_root: Path, target_subpath: Path) -> tuple[bool, s
                         # Could not restore — leave the backup in place (it may
                         # be the only surviving copy) rather than delete it.
                         pass
-                return False, f"Failed to install skill pack to {target_dir}: swap failed"
+                return (
+                    False,
+                    f"Failed to install skill pack to {target_dir}: swap failed",
+                )
     finally:
         if not staging_consumed and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -612,23 +620,36 @@ def _hook_cmd_matches(
         hook_bin = hook_tokens[0]
         if hook_bin == bare_bin:
             return True
-        if _path_head_is_project_local(hook_bin, project_root) and not allow_project_local:
+        if (
+            _path_head_is_project_local(hook_bin, project_root)
+            and not allow_project_local
+        ):
             return False
         if (
-            "/" in hook_bin or "\\" in hook_bin
-        ) and not Path(hook_bin).is_absolute() and not allow_project_local:
+            ("/" in hook_bin or "\\" in hook_bin)
+            and not Path(hook_bin).is_absolute()
+            and not allow_project_local
+        ):
             return False
         hook_base = hook_bin.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         return hook_base.lower() in {bare_bin.lower(), f"{bare_bin.lower()}.exe"}
 
     module_prefixes = (["-m", bare_bin], ["-P", "-m", bare_bin])
     for prefix in module_prefixes:
-        if len(hook_tokens) == n + len(prefix) and hook_tokens[1 : 1 + len(prefix)] == prefix:
-            if _path_head_is_project_local(hook_tokens[0], project_root) and not allow_project_local:
+        if (
+            len(hook_tokens) == n + len(prefix)
+            and hook_tokens[1 : 1 + len(prefix)] == prefix
+        ):
+            if (
+                _path_head_is_project_local(hook_tokens[0], project_root)
+                and not allow_project_local
+            ):
                 return False
             if (
-                "/" in hook_tokens[0] or "\\" in hook_tokens[0]
-            ) and not Path(hook_tokens[0]).is_absolute() and not allow_project_local:
+                ("/" in hook_tokens[0] or "\\" in hook_tokens[0])
+                and not Path(hook_tokens[0]).is_absolute()
+                and not allow_project_local
+            ):
                 return False
             return hook_tokens[1 + len(prefix) :] == bare_tokens[1:]
 
@@ -796,7 +817,10 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
     if not needs_add:
         _atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
         if upgraded:
-            return True, f"Upgraded hook command in .claude/settings.json to use {prefix}"
+            return (
+                True,
+                f"Upgraded hook command in .claude/settings.json to use {prefix}",
+            )
         return True, "Hook already registered in .claude/settings.json"
 
     # A valid top-level object whose "hooks"/"SessionStart" is the wrong type
@@ -804,9 +828,15 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
     # resets below would silently drop that user data — preserve a recoverable
     # copy first.
     existing_hooks = settings.get("hooks")
-    existing_ss = existing_hooks.get("SessionStart") if isinstance(existing_hooks, dict) else None
-    nested_corrupt = (existing_hooks is not None and not isinstance(existing_hooks, dict)) or (
-        isinstance(existing_hooks, dict) and "SessionStart" in existing_hooks and not isinstance(existing_ss, list)
+    existing_ss = (
+        existing_hooks.get("SessionStart") if isinstance(existing_hooks, dict) else None
+    )
+    nested_corrupt = (
+        existing_hooks is not None and not isinstance(existing_hooks, dict)
+    ) or (
+        isinstance(existing_hooks, dict)
+        and "SessionStart" in existing_hooks
+        and not isinstance(existing_ss, list)
     )
     if nested_corrupt and settings_path.exists():
         backup = settings_path.with_suffix(".json.bak")
@@ -834,7 +864,11 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
     # block to find — append a dedicated matcher-less block that fires on every
     # SessionStart source regardless of how neighbouring blocks are scoped.
     session_start.append(
-        {"hooks": [{"type": "command", "command": session_context_cmd, "timeout": 5000}]}
+        {
+            "hooks": [
+                {"type": "command", "command": session_context_cmd, "timeout": 5000}
+            ]
+        }
     )
 
     _atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
@@ -886,7 +920,11 @@ def gitignore_rules_present(project_root: Path) -> bool:
         content = gitignore.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    present = {ln.strip() for ln in content.splitlines() if ln.strip() and not ln.lstrip().startswith("#")}
+    present = {
+        ln.strip()
+        for ln in content.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    }
     return all(rule in present for rule in _LEGIS_IGNORE_RULES)
 
 
@@ -907,7 +945,9 @@ def _parsed_mcp_entry_is_current(
         return False
     if not _mcp_args_are_current(entry.get("args")):
         return False
-    if not _mcp_command_resolves_safely(entry.get("command"), project_root, entry.get("args")):
+    if not _mcp_command_resolves_safely(
+        entry.get("command"), project_root, entry.get("args")
+    ):
         return False
     if not check_env:
         return True
@@ -949,14 +989,18 @@ def ensure_gitignore(project_root: Path) -> tuple[bool, str]:
             return True, "legis config already in .gitignore"
         content = gitignore.read_text(encoding="utf-8")
         present = {
-            line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")
+            line.strip()
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
         }
         missing = [rule for rule in _LEGIS_IGNORE_RULES if rule not in present]
         if not content.endswith("\n"):
             content += "\n"
         # Append only the rules that are actually absent — writing the whole
         # block when one rule is already present would duplicate the other.
-        content += "\n# Legis — local working dir / config (regenerated/local; never commit)\n"
+        content += (
+            "\n# Legis — local working dir / config (regenerated/local; never commit)\n"
+        )
         content += "".join(f"{rule}\n" for rule in missing)
         _atomic_write_text(gitignore, content)
         return True, f"Added {', '.join(missing)} to .gitignore"
@@ -1018,7 +1062,9 @@ operator_session.json
 """
 
 
-def _ensure_nested_gitignore(target_dir: Path, body: str, label: str) -> tuple[bool, str]:
+def _ensure_nested_gitignore(
+    target_dir: Path, body: str, label: str
+) -> tuple[bool, str]:
     """Idempotently ship a nested ``.gitignore`` (*body*) into *target_dir*.
 
     A file already carrying :data:`LEGIS_DIR_GITIGNORE_MARKER` is left untouched;
@@ -1056,7 +1102,9 @@ def ensure_legis_dir_gitignore(project_root: Path) -> tuple[bool, str]:
         legis_dir = ensure_project_dir(project_root, ".weft", "legis")
     except UnsafeInstallPathError as exc:
         return False, str(exc)
-    return _ensure_nested_gitignore(legis_dir, WEFT_LEGIS_GITIGNORE, ".weft/legis/.gitignore")
+    return _ensure_nested_gitignore(
+        legis_dir, WEFT_LEGIS_GITIGNORE, ".weft/legis/.gitignore"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1065,33 +1113,37 @@ def ensure_legis_dir_gitignore(project_root: Path) -> tuple[bool, str]:
 
 _DEFAULT_AGENT_ID = "claude-code"
 
-_UNSAFE_MCP_ENV_KEYS = frozenset({
-    "LEGIS_UNSAFE_DEV_AUTH",
-    "LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING",
-    "LEGIS_ALLOW_INSECURE_REMOTE_HTTP",
-    "LEGIS_ALLOW_UNSCOPED_API_TOKENS",
-    "LEGIS_ALLOW_MISSING_GOVERNANCE_DB",
-    "LEGIS_WARDLINE_ALLOW_DIRTY",
-})
+_UNSAFE_MCP_ENV_KEYS = frozenset(
+    {
+        "LEGIS_UNSAFE_DEV_AUTH",
+        "LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING",
+        "LEGIS_ALLOW_INSECURE_REMOTE_HTTP",
+        "LEGIS_ALLOW_UNSCOPED_API_TOKENS",
+        "LEGIS_ALLOW_MISSING_GOVERNANCE_DB",
+        "LEGIS_WARDLINE_ALLOW_DIRTY",
+    }
+)
 
-_SECRET_MCP_ENV_KEYS = frozenset({
-    "LEGIS_API_SECRET",
-    "LEGIS_API_TOKEN_ACTORS",
-    "LEGIS_HMAC_KEY",
-    "LEGIS_WARDLINE_ARTIFACT_KEY",
-    "LEGIS_LOOMWEAVE_HMAC_KEY",
-    # Retired by G11 (legis->Filigree transport-HMAC dropped) and now inert, but
-    # still secret-shaped: keep scrubbing it so a stale operator-set value is
-    # never copied verbatim into .mcp.json as "safe operator-owned env".
-    "LEGIS_FILIGREE_HMAC_KEY",
-    "OPENROUTER_API_KEY",
-    # The operator-authority key (posture-ratchet, Phase 6). It is minted at
-    # install and handed to a custody backend; it must NEVER be copied into
-    # .mcp.json where the agent process can read it back as plaintext. The
-    # ``LEGIS_OPERATOR_KEY_*`` family (e.g. the age passphrase var) is scrubbed
-    # by prefix in ``_safe_mcp_env``.
-    "LEGIS_OPERATOR_KEY",
-})
+_SECRET_MCP_ENV_KEYS = frozenset(
+    {
+        "LEGIS_API_SECRET",
+        "LEGIS_API_TOKEN_ACTORS",
+        "LEGIS_HMAC_KEY",
+        "LEGIS_WARDLINE_ARTIFACT_KEY",
+        "LEGIS_LOOMWEAVE_HMAC_KEY",
+        # Retired by G11 (legis->Filigree transport-HMAC dropped) and now inert, but
+        # still secret-shaped: keep scrubbing it so a stale operator-set value is
+        # never copied verbatim into .mcp.json as "safe operator-owned env".
+        "LEGIS_FILIGREE_HMAC_KEY",
+        "OPENROUTER_API_KEY",
+        # The operator-authority key (posture-ratchet, Phase 6). It is minted at
+        # install and handed to a custody backend; it must NEVER be copied into
+        # .mcp.json where the agent process can read it back as plaintext. The
+        # ``LEGIS_OPERATOR_KEY_*`` family (e.g. the age passphrase var) is scrubbed
+        # by prefix in ``_safe_mcp_env``.
+        "LEGIS_OPERATOR_KEY",
+    }
+)
 
 # Operator-key family scrubbed by PREFIX in ``_safe_mcp_env`` — any
 # ``LEGIS_OPERATOR_KEY*`` var (the key itself and its passphrase/unlock kin) is
@@ -1296,7 +1348,10 @@ def register_mcp_json(
         except (json.JSONDecodeError, OSError):
             return False, ".mcp.json present but unreadable; fix or remove it by hand"
         if not isinstance(parsed, dict):
-            return False, ".mcp.json present but not a JSON object; fix or remove it by hand"
+            return (
+                False,
+                ".mcp.json present but not a JSON object; fix or remove it by hand",
+            )
         data = parsed
 
     servers = data.get("mcpServers")

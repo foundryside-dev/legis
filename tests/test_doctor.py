@@ -65,10 +65,25 @@ def _plainweave_project(
         state.mkdir()
         (state / "plainweave.db").touch()
     (root / ".mcp.json").write_text(
-        json.dumps({"mcpServers": {
-            "plainweave": {"type": "stdio", "command": str(executable), "args": ["--root", str(root)]},
-            "legis": {"type": "stdio", "command": str(executable), "args": ["mcp", "--agent-id", "operator"], "env": {} if project_env is None else project_env},
-        }}, indent=2) + "\n",
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plainweave": {
+                        "type": "stdio",
+                        "command": str(executable),
+                        "args": ["--root", str(root)],
+                    },
+                    "legis": {
+                        "type": "stdio",
+                        "command": str(executable),
+                        "args": ["mcp", "--agent-id", "operator"],
+                        "env": {} if project_env is None else project_env,
+                    },
+                }
+            },
+            indent=2,
+        )
+        + "\n",
         encoding="utf-8",
     )
     codex_home = tmp_path / "codex-home"
@@ -116,7 +131,12 @@ def test_render_json_shape():
     checks = [DoctorCheck("a", "ok"), DoctorCheck("b", "error", message="bad")]
     payload = json.loads(render_json(checks))
     assert payload["ok"] is False
-    assert payload["checks"][0] == {"id": "a", "status": "ok", "fixed": False, "repairable": False}
+    assert payload["checks"][0] == {
+        "id": "a",
+        "status": "ok",
+        "fixed": False,
+        "repairable": False,
+    }
     assert payload["next_actions"] == ["b: bad"]
 
 
@@ -125,20 +145,22 @@ def test_render_text_lists_only_problems_when_healthy_says_ok():
     assert render_text([DoctorCheck("a", "ok")]) == "legis doctor: ok"
 
     # error present: no "ok" in headline, error listed
-    out = render_text([DoctorCheck("a", "ok"), DoctorCheck("b", "error", message="bad")])
+    out = render_text(
+        [DoctorCheck("a", "ok"), DoctorCheck("b", "error", message="bad")]
+    )
     assert "b: error" in out
     assert "legis doctor: ok" not in out
 
     # warn-only: banner present with warning count AND warn check is listed
-    out_warn = render_text([DoctorCheck("a", "ok"), DoctorCheck("b", "warn", message="heads up")])
+    out_warn = render_text(
+        [DoctorCheck("a", "ok"), DoctorCheck("b", "warn", message="heads up")]
+    )
     assert "legis doctor: ok" in out_warn
     assert "b: warn" in out_warn
 
 
 def test_render_text_tags_auto_fixable_and_footer():
-    out = render_text(
-        [DoctorCheck("install.x", "error", message="m", repairable=True)]
-    )
+    out = render_text([DoctorCheck("install.x", "error", message="m", repairable=True)])
     assert "install.x: error — m [auto-fixable]" in out
     assert "Run `legis doctor --fix` to repair auto-fixable items." in out
     # no operator items => no operator footer
@@ -158,7 +180,9 @@ def test_render_text_tags_operator_and_footer():
 def test_render_text_tags_fixed():
     # A repaired check carries fixed=True; render it directly since the
     # problems-only filter excludes ok checks from a real --fix run.
-    out = render_text([DoctorCheck("install.x", "warn", message="m", fixed=True, repairable=True)])
+    out = render_text(
+        [DoctorCheck("install.x", "warn", message="m", fixed=True, repairable=True)]
+    )
     assert "install.x: warn — m [fixed]" in out
     # [fixed] is not auto-fixable-pending, so no fix footer from it alone
     assert "Run `legis doctor --fix` to repair auto-fixable items." not in out
@@ -174,7 +198,9 @@ def test_render_text_surfaces_realistic_fixed_check():
     out = render_text(
         [
             DoctorCheck("a", "ok"),
-            DoctorCheck("install.x", "ok", message="re-registered", fixed=True, repairable=True),
+            DoctorCheck(
+                "install.x", "ok", message="re-registered", fixed=True, repairable=True
+            ),
         ]
     )
     assert "install.x:" in out and "[fixed]" in out  # the repaired item is listed
@@ -213,8 +239,11 @@ def test_run_doctor_json_format(tmp_path, capsys, monkeypatch):
     # (PDR-0023) adds runtime.wardline_artifact_key to that set: keyless dev is a
     # legitimate warn (verification DISABLED), the recruiting advisory.
     for var in (
-        "LEGIS_POLICY_CELLS", "LEGIS_DEV_DEFAULT_CELLS", "LEGIS_SOURCE_ROOT",
-        "LEGIS_WARDLINE_CELL", "LEGIS_WARDLINE_CELL_BY_SEVERITY",
+        "LEGIS_POLICY_CELLS",
+        "LEGIS_DEV_DEFAULT_CELLS",
+        "LEGIS_SOURCE_ROOT",
+        "LEGIS_WARDLINE_CELL",
+        "LEGIS_WARDLINE_CELL_BY_SEVERITY",
         "LEGIS_WARDLINE_ARTIFACT_KEY",
     ):
         monkeypatch.delenv(var, raising=False)
@@ -349,7 +378,9 @@ def test_mcp_json_stale_command_is_error_then_repaired(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_plainweave_independent_missing_bindings_are_auto_fixable(tmp_path, monkeypatch):
+def test_plainweave_independent_missing_bindings_are_auto_fixable(
+    tmp_path, monkeypatch
+):
     root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
     project = check_plainweave_project_binding(root, repair=False)
     codex = check_plainweave_codex_binding(root, repair=False)
@@ -383,9 +414,7 @@ def test_plainweave_missing_project_registration_is_auto_fixable(tmp_path, monke
         "legis_list",
     ],
 )
-def test_doctor_refuses_operator_owned_mcp_json_unchanged(
-    tmp_path, monkeypatch, case
-):
+def test_doctor_refuses_operator_owned_mcp_json_unchanged(tmp_path, monkeypatch, case):
     root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
     path = root / ".mcp.json"
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -459,7 +488,9 @@ def test_doctor_repairs_safe_stale_command_and_preserves_operator_env(
     assert PLAINWEAVE_ENV in env
 
 
-def test_plainweave_binding_repair_is_ordered_post_verified_and_idempotent(tmp_path, monkeypatch):
+def test_plainweave_binding_repair_is_ordered_post_verified_and_idempotent(
+    tmp_path, monkeypatch
+):
     root, _executable, config = _plainweave_project(tmp_path, monkeypatch)
     data = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
     del data["mcpServers"]["legis"]
@@ -467,11 +498,18 @@ def test_plainweave_binding_repair_is_ordered_post_verified_and_idempotent(tmp_p
 
     repaired = collect_checks(root, repair=True)
     ids = [check.id for check in repaired]
-    assert ids.index("install.mcp_json") + 1 == ids.index("install.plainweave_project_binding")
-    assert ids.index("install.plainweave_project_binding") + 1 == ids.index("install.plainweave_codex_binding")
+    assert ids.index("install.mcp_json") + 1 == ids.index(
+        "install.plainweave_project_binding"
+    )
+    assert ids.index("install.plainweave_project_binding") + 1 == ids.index(
+        "install.plainweave_codex_binding"
+    )
     by_id = {check.id: check for check in repaired}
     assert by_id["install.mcp_json"].fixed is True
-    for cid in ("install.plainweave_project_binding", "install.plainweave_codex_binding"):
+    for cid in (
+        "install.plainweave_project_binding",
+        "install.plainweave_codex_binding",
+    ):
         assert by_id[cid].status == "ok"
         assert by_id[cid].fixed is True
         assert by_id[cid].repairable is True
@@ -485,7 +523,10 @@ def test_plainweave_binding_repair_is_ordered_post_verified_and_idempotent(tmp_p
     codex_bytes = config.read_bytes()
     current = {check.id: check for check in collect_checks(root, repair=False)}
     second = {check.id: check for check in collect_checks(root, repair=True)}
-    for cid in ("install.plainweave_project_binding", "install.plainweave_codex_binding"):
+    for cid in (
+        "install.plainweave_project_binding",
+        "install.plainweave_codex_binding",
+    ):
         assert current[cid].status == second[cid].status == "ok"
         assert current[cid].fixed is second[cid].fixed is False
     assert (root / ".mcp.json").read_bytes() == project_bytes
@@ -493,8 +534,12 @@ def test_plainweave_binding_repair_is_ordered_post_verified_and_idempotent(tmp_p
     assert PLAINWEAVE_ENV in json.loads(project_bytes)["mcpServers"]["legis"]["env"]
 
 
-def test_plainweave_no_global_legis_registration_is_ok_and_never_created(tmp_path, monkeypatch):
-    root, _executable, config = _plainweave_project(tmp_path, monkeypatch, global_legis=False)
+def test_plainweave_no_global_legis_registration_is_ok_and_never_created(
+    tmp_path, monkeypatch
+):
+    root, _executable, config = _plainweave_project(
+        tmp_path, monkeypatch, global_legis=False
+    )
     check = check_plainweave_codex_binding(root, repair=True)
     assert check.status == "ok" and check.repairable is False and check.fixed is False
     assert "not configured" in (check.message or "")
@@ -502,7 +547,9 @@ def test_plainweave_no_global_legis_registration_is_ok_and_never_created(tmp_pat
 
 
 def test_uninitialized_installed_plainweave_skips_global_config(tmp_path, monkeypatch):
-    root, _executable, config = _plainweave_project(tmp_path, monkeypatch, initialized=False)
+    root, _executable, config = _plainweave_project(
+        tmp_path, monkeypatch, initialized=False
+    )
     data = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
     del data["mcpServers"]["plainweave"]
     (root / ".mcp.json").write_text(json.dumps(data), encoding="utf-8")
@@ -514,11 +561,15 @@ def test_uninitialized_installed_plainweave_skips_global_config(tmp_path, monkey
     codex = check_plainweave_codex_binding(root, repair=True)
     assert project.status == codex.status == "ok"
     assert project.repairable is codex.repairable is False
-    assert "installed" in (project.message or "") and "not initialized" in (project.message or "")
+    assert "installed" in (project.message or "") and "not initialized" in (
+        project.message or ""
+    )
     assert config.read_bytes() == before
 
 
-def test_uninitialized_unconfigured_plainweave_message_is_distinct(tmp_path, monkeypatch):
+def test_uninitialized_unconfigured_plainweave_message_is_distinct(
+    tmp_path, monkeypatch
+):
     root = tmp_path / "project"
     root.mkdir()
     monkeypatch.setenv("PATH", "")
@@ -528,7 +579,9 @@ def test_uninitialized_unconfigured_plainweave_message_is_distinct(tmp_path, mon
     assert "not initialized" not in (check.message or "")
 
 
-def test_initialized_plainweave_without_executable_is_operator_error(tmp_path, monkeypatch):
+def test_initialized_plainweave_without_executable_is_operator_error(
+    tmp_path, monkeypatch
+):
     root = tmp_path / "project"
     (root / ".plainweave").mkdir(parents=True)
     (root / ".plainweave" / "plainweave.db").touch()
@@ -591,13 +644,18 @@ def test_initialized_plainweave_aggregate_and_rendering(tmp_path, monkeypatch):
     root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
     checks = collect_checks(root, repair=False)
     repairable = {check.id for check in checks if check.repairable}
-    assert {"install.plainweave_project_binding", "install.plainweave_codex_binding"} <= repairable
+    assert {
+        "install.plainweave_project_binding",
+        "install.plainweave_codex_binding",
+    } <= repairable
     text = render_text(checks)
     assert "install.plainweave_project_binding:" in text
     assert "install.plainweave_codex_binding:" in text
     assert "[auto-fixable]" in text
     payload = json.loads(render_json(checks))
-    assert all("repairable" in check and "fixed" in check for check in payload["checks"])
+    assert all(
+        "repairable" in check and "fixed" in check for check in payload["checks"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -648,7 +706,11 @@ def test_mcp_entry_is_current_args_without_mcp(tmp_path):
 def test_mcp_entry_is_current_rejects_non_stdio_type(tmp_path):
     _write_mcp_entry(
         tmp_path,
-        {"type": "sse", "command": sys.executable, "args": ["-P", "-m", "legis", "mcp", "--agent-id", "a"]},
+        {
+            "type": "sse",
+            "command": sys.executable,
+            "args": ["-P", "-m", "legis", "mcp", "--agent-id", "a"],
+        },
     )
     assert mcp_entry_is_current(tmp_path) is False
 
@@ -662,7 +724,11 @@ def test_mcp_entry_is_current_requires_mcp_subcommand_and_agent_id(tmp_path):
 
     _write_mcp_entry(
         tmp_path,
-        {"type": "stdio", "command": sys.executable, "args": ["serve", "mcp", "--agent-id", "a"]},
+        {
+            "type": "stdio",
+            "command": sys.executable,
+            "args": ["serve", "mcp", "--agent-id", "a"],
+        },
     )
     assert mcp_entry_is_current(tmp_path) is False
 
@@ -727,7 +793,12 @@ def test_mcp_entry_is_current_rejects_unsafe_or_secret_env(tmp_path):
     ):
         _write_mcp_entry(
             tmp_path,
-            {"type": "stdio", "command": sys.executable, "args": ["mcp", "--agent-id", "a"], "env": env},
+            {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": ["mcp", "--agent-id", "a"],
+                "env": env,
+            },
         )
         assert mcp_entry_is_current(tmp_path) is False
 
@@ -855,7 +926,10 @@ def test_instruction_block_stale_token_is_error_then_repaired(tmp_path):
     fixed = check_instruction_block(tmp_path, "CLAUDE.md", repair=True)
     assert fixed.status == "ok"
     assert fixed.fixed is True
-    assert legis_install._extract_marker_token((tmp_path / "CLAUDE.md").read_text()) == fresh_token
+    assert (
+        legis_install._extract_marker_token((tmp_path / "CLAUDE.md").read_text())
+        == fresh_token
+    )
 
 
 def test_split_brain_block_is_not_reported_fresh(tmp_path):
@@ -978,7 +1052,9 @@ def test_legacy_stray_db_is_warn(tmp_path):
 
 
 def test_audit_chain_absent_db_is_ok(tmp_path):
-    c = check_audit_chain("store.governance_chain", "sqlite:///" + str(tmp_path / "nope.db"))
+    c = check_audit_chain(
+        "store.governance_chain", "sqlite:///" + str(tmp_path / "nope.db")
+    )
     assert c.status == "ok"
     # No-leak invariant: must NOT create the file
     assert not (tmp_path / "nope.db").exists()
@@ -1153,6 +1229,7 @@ def test_n3_checks_never_write_files_or_render_keys(tmp_path, monkeypatch):
     assert all("super-secret-value" not in m for m in msgs)
     # neither check signature takes a `repair` parameter (cannot be coerced to write)
     import inspect
+
     assert "repair" not in inspect.signature(check_policy_cells).parameters
     assert "repair" not in inspect.signature(check_wardline_routing).parameters
 
@@ -1178,7 +1255,10 @@ def test_store_dir_ignores_repo_weft_toml_store_dir(tmp_path, monkeypatch):
 
     # The audit-chain URL must point under root/.weft, not repo weft.toml.
     url = _store_url(root, "legis-governance.db", "LEGIS_GOVERNANCE_DB")
-    assert url == "sqlite:///" + (root / ".weft" / "legis" / "legis-governance.db").as_posix()
+    assert (
+        url
+        == "sqlite:///" + (root / ".weft" / "legis" / "legis-governance.db").as_posix()
+    )
     assert "custom_store" not in url
 
 
@@ -1227,6 +1307,7 @@ def test_json_output_has_no_secret(tmp_path, monkeypatch):
     monkeypatch.setenv("LEGIS_HMAC_KEY", "TOP-SECRET")
     import contextlib
     import io
+
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         run_doctor(tmp_path, repair=False, fmt="json")
@@ -1273,7 +1354,9 @@ def _write_mcp_with_filigree_url(root, url: str | None) -> None:
 
 def test_filigree_scope_warns_on_unscoped_federation_write(tmp_path):
     _mark_filigree_installed(tmp_path)
-    _write_mcp_with_filigree_url(tmp_path, "http://127.0.0.1:8749/api/weft/scan-results")
+    _write_mcp_with_filigree_url(
+        tmp_path, "http://127.0.0.1:8749/api/weft/scan-results"
+    )
     c = check_filigree_binding_scope(tmp_path)
     assert c.status == "warn"
     assert c.repairable is False  # operator-owned; legis never writes the binding
@@ -1284,7 +1367,9 @@ def test_filigree_scope_warns_on_unscoped_federation_write(tmp_path):
     assert "Operator action" in c.message
 
 
-def test_filigree_scope_warns_on_unscoped_remote_binding_without_local_install(tmp_path):
+def test_filigree_scope_warns_on_unscoped_remote_binding_without_local_install(
+    tmp_path,
+):
     # The federation-consumer case: a pure scan-results emitter with NO local
     # filigree marker, pinning an unscoped --filigree-url at a REMOTE server-mode
     # daemon. That remote daemon fail-closes the unscoped federation write (N1,
@@ -1307,7 +1392,9 @@ def test_filigree_scope_conf_only_is_installed_and_warns(tmp_path):
     # would be the exact false-green the governance forbids (a server-mode daemon
     # fail-closes the unscoped write while doctor stays green).
     (tmp_path / ".filigree.conf").write_text("", encoding="utf-8")
-    _write_mcp_with_filigree_url(tmp_path, "http://127.0.0.1:8749/api/weft/scan-results")
+    _write_mcp_with_filigree_url(
+        tmp_path, "http://127.0.0.1:8749/api/weft/scan-results"
+    )
     c = check_filigree_binding_scope(tmp_path)
     assert c.status == "warn"
     assert "8749/api/weft/scan-results" in c.message
@@ -1318,7 +1405,9 @@ def test_filigree_scope_confless_weft_store_is_installed_and_warns(tmp_path):
     # filigree resolves this as installed (core.py:1055-1059); legis must too, or
     # it suppresses a real unscoped-binding warning.
     (tmp_path / ".weft" / "filigree").mkdir(parents=True)
-    _write_mcp_with_filigree_url(tmp_path, "http://127.0.0.1:8749/api/weft/scan-results")
+    _write_mcp_with_filigree_url(
+        tmp_path, "http://127.0.0.1:8749/api/weft/scan-results"
+    )
     c = check_filigree_binding_scope(tmp_path)
     assert c.status == "warn"
     assert "8749/api/weft/scan-results" in c.message
@@ -1330,7 +1419,9 @@ def test_filigree_scope_confless_legacy_dir_is_installed_and_warns(tmp_path):
     # This is the live federation-legacy-path case (legacy .filigree/ dirs exist
     # in this environment).
     (tmp_path / ".filigree").mkdir(parents=True)
-    _write_mcp_with_filigree_url(tmp_path, "http://127.0.0.1:8749/api/weft/scan-results")
+    _write_mcp_with_filigree_url(
+        tmp_path, "http://127.0.0.1:8749/api/weft/scan-results"
+    )
     c = check_filigree_binding_scope(tmp_path)
     assert c.status == "warn"
     assert "8749/api/weft/scan-results" in c.message
@@ -1338,7 +1429,9 @@ def test_filigree_scope_confless_legacy_dir_is_installed_and_warns(tmp_path):
 
 def test_filigree_scope_warns_with_legacy_config_marker(tmp_path):
     _mark_filigree_installed(tmp_path, legacy=True)
-    _write_mcp_with_filigree_url(tmp_path, "http://127.0.0.1:8749/api/weft/scan-results")
+    _write_mcp_with_filigree_url(
+        tmp_path, "http://127.0.0.1:8749/api/weft/scan-results"
+    )
     c = check_filigree_binding_scope(tmp_path)
     assert c.status == "warn"
 

@@ -137,14 +137,19 @@ def check_mcp_json(root: Path, *, repair: bool) -> DoctorCheck:
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         return DoctorCheck(cid, "error", message=msg, repairable=True)
     return DoctorCheck(
-        cid, "error", message="legis server missing or stale (run: legis install --mcp)", repairable=True
+        cid,
+        "error",
+        message="legis server missing or stale (run: legis install --mcp)",
+        repairable=True,
     )
 
 
 def _plainweave_not_applicable_message(*, installed: bool) -> str:
     if installed:
         return "Plainweave is installed but this project is not initialized; launch binding not applicable"
-    return "Plainweave is not configured for this project; launch binding not applicable"
+    return (
+        "Plainweave is not configured for this project; launch binding not applicable"
+    )
 
 
 def _plainweave_discovery_error(
@@ -205,7 +210,9 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
         message = state.error
         if registration_repairable:
             message += "; project registration is owned by install.mcp_json"
-        return DoctorCheck(cid, "error", message=message, repairable=registration_repairable)
+        return DoctorCheck(
+            cid, "error", message=message, repairable=registration_repairable
+        )
     if not state.registered:
         return DoctorCheck(
             cid,
@@ -234,7 +241,9 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
     return DoctorCheck(
         cid,
         "error",
-        message=error or post.error or "project Plainweave launch binding remains stale after repair",
+        message=error
+        or post.error
+        or "project Plainweave launch binding remains stale after repair",
         repairable=True,
     )
 
@@ -282,7 +291,9 @@ def check_plainweave_codex_binding(root: Path, *, repair: bool) -> DoctorCheck:
     return DoctorCheck(
         cid,
         "error",
-        message=error or post.error or "global Codex Plainweave launch binding remains stale after repair",
+        message=error
+        or post.error
+        or "global Codex Plainweave launch binding remains stale after repair",
         repairable=True,
     )
 
@@ -351,8 +362,15 @@ def check_instruction_block(root: Path, filename: str, *, repair: bool) -> Docto
         if ok and _block_fresh(root, filename):
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         return DoctorCheck(cid, "error", message=msg, repairable=True)
-    missing = "missing" if not (root / filename).exists() else "block missing or drifted"
-    return DoctorCheck(cid, "error", message=f"{filename} {missing} (run: legis install)", repairable=True)
+    missing = (
+        "missing" if not (root / filename).exists() else "block missing or drifted"
+    )
+    return DoctorCheck(
+        cid,
+        "error",
+        message=f"{filename} {missing} (run: legis install)",
+        repairable=True,
+    )
 
 
 def _skill_fresh(root: Path, base: str) -> bool:
@@ -361,13 +379,17 @@ def _skill_fresh(root: Path, base: str) -> bool:
     target = root / base / "skills" / _install.SKILL_NAME
     if not source.is_dir() or not target.is_dir():
         return False
-    return _install._skill_tree_fingerprint(target) == _install._skill_tree_fingerprint(source)
+    return _install._skill_tree_fingerprint(target) == _install._skill_tree_fingerprint(
+        source
+    )
 
 
 def check_skill_pack(root: Path, base: str, *, repair: bool) -> DoctorCheck:
     """Check that the legis skill pack under <root>/<base>/skills/ is present and fresh."""
     cid = "install.claude_skill" if base == ".claude" else "install.agents_skill"
-    installer = _install.install_skills if base == ".claude" else _install.install_codex_skills
+    installer = (
+        _install.install_skills if base == ".claude" else _install.install_codex_skills
+    )
     if _skill_fresh(root, base):
         return DoctorCheck(cid, "ok", repairable=True)
     if repair:
@@ -410,7 +432,10 @@ def check_hook(root: Path, *, repair: bool) -> DoctorCheck:
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         return DoctorCheck(cid, "error", message=msg, repairable=True)
     return DoctorCheck(
-        cid, "error", message="SessionStart hook not registered (run: legis install)", repairable=True
+        cid,
+        "error",
+        message="SessionStart hook not registered (run: legis install)",
+        repairable=True,
     )
 
 
@@ -425,7 +450,10 @@ def check_gitignore(root: Path, *, repair: bool) -> DoctorCheck:
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         return DoctorCheck(cid, "error", message=msg, repairable=True)
     return DoctorCheck(
-        cid, "error", message=".weft/legis/ not in .gitignore (run: legis install)", repairable=True
+        cid,
+        "error",
+        message=".weft/legis/ not in .gitignore (run: legis install)",
+        repairable=True,
     )
 
 
@@ -433,7 +461,11 @@ def _nested_gitignore_shipped(legis_dir: Path) -> bool:
     """True iff ``.weft/legis/.gitignore`` carries the legis-managed marker."""
     nested = legis_dir / ".gitignore"
     try:
-        return nested.is_file() and _install.LEGIS_DIR_GITIGNORE_MARKER in nested.read_text(encoding="utf-8")
+        return (
+            nested.is_file()
+            and _install.LEGIS_DIR_GITIGNORE_MARKER
+            in nested.read_text(encoding="utf-8")
+        )
     except (OSError, UnicodeDecodeError):
         return False
 
@@ -462,7 +494,10 @@ def check_dir_gitignore(root: Path, *, repair: bool) -> DoctorCheck:
         # Created lazily; nothing to protect yet (mirrors check_store_dir).
         return DoctorCheck(cid, "ok", repairable=True)
     return DoctorCheck(
-        cid, "error", message=".weft/legis/.gitignore missing (run: legis install)", repairable=True
+        cid,
+        "error",
+        message=".weft/legis/.gitignore missing (run: legis install)",
+        repairable=True,
     )
 
 
@@ -522,20 +557,32 @@ def check_store_dir(root: Path, *, repair: bool = False) -> DoctorCheck:
     store_dir = _store_dir_for(root)
     if store_dir.exists():
         if not os.access(store_dir, os.W_OK):
-            return DoctorCheck(cid, "error", message=f"{store_dir} not writable", repairable=True)
+            return DoctorCheck(
+                cid, "error", message=f"{store_dir} not writable", repairable=True
+            )
         return DoctorCheck(cid, "ok", repairable=True)
     if repair:
         try:
             store_dir.mkdir(parents=True, exist_ok=True)
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         except OSError as exc:
-            return DoctorCheck(cid, "error", message=f"cannot create {store_dir}: {exc}", repairable=True)
+            return DoctorCheck(
+                cid,
+                "error",
+                message=f"cannot create {store_dir}: {exc}",
+                repairable=True,
+            )
     anchor = _nearest_existing(store_dir)
     if not os.access(anchor, os.W_OK):
         return DoctorCheck(
-            cid, "error", message=f"{store_dir} not creatable ({anchor} not writable)", repairable=True
+            cid,
+            "error",
+            message=f"{store_dir} not creatable ({anchor} not writable)",
+            repairable=True,
         )
-    return DoctorCheck(cid, "ok", message="absent (created on first store open)", repairable=True)
+    return DoctorCheck(
+        cid, "ok", message="absent (created on first store open)", repairable=True
+    )
 
 
 def check_db_overrides(root: Path) -> DoctorCheck:  # noqa: ARG001
@@ -562,7 +609,8 @@ def check_legacy_stray_db(root: Path) -> DoctorCheck:
         return DoctorCheck(
             cid,
             "warn",
-            message="legacy DB at repo root (move to .weft/legis/): " + ", ".join(stray),
+            message="legacy DB at repo root (move to .weft/legis/): "
+            + ", ".join(stray),
         )
     return DoctorCheck(cid, "ok")
 
@@ -597,7 +645,9 @@ def _sqlite_audit_schema_error(db: Path) -> str | None:
         ).fetchone()
         if row is None:
             return "audit_log table missing (store may be truncated or erased)"
-        columns = {row[1] for row in con.execute("PRAGMA table_info(audit_log)").fetchall()}
+        columns = {
+            row[1] for row in con.execute("PRAGMA table_info(audit_log)").fetchall()
+        }
     except sqlite3.Error as exc:
         return f"cannot inspect audit_log schema: {exc}"
     finally:
@@ -627,13 +677,17 @@ def check_audit_chain(cid: str, url: str) -> DoctorCheck:
     from legis.store.audit_store import AuditStore
 
     try:
-        intact = AuditStore(url, initialize=False, apply_pragmas=False).verify_integrity()
+        intact = AuditStore(
+            url, initialize=False, apply_pragmas=False
+        ).verify_integrity()
     except Exception as exc:  # noqa: BLE001 — surface any verify failure, never raise from doctor
         return DoctorCheck(cid, "error", message=f"integrity check failed: {exc}")
     if intact:
         return DoctorCheck(cid, "ok")
     return DoctorCheck(
-        cid, "error", message="hash chain verification FAILED (report-only; cannot repair)"
+        cid,
+        "error",
+        message="hash chain verification FAILED (report-only; cannot repair)",
     )
 
 
@@ -670,7 +724,9 @@ def check_policy_cells(root: Path) -> DoctorCheck:
     if default_path.exists():
         return DoctorCheck(cid, "ok", message=f"{default_path}")
     if os.environ.get("LEGIS_DEV_DEFAULT_CELLS") == "1":
-        return DoctorCheck(cid, "ok", message="chill dev default (LEGIS_DEV_DEFAULT_CELLS=1)")
+        return DoctorCheck(
+            cid, "ok", message="chill dev default (LEGIS_DEV_DEFAULT_CELLS=1)"
+        )
     return DoctorCheck(
         cid,
         "warn",
@@ -721,7 +777,9 @@ def check_posture_chain(root: Path) -> DoctorCheck:
     url = _posture_url(root)
     db = _posture_db_path(url)
     if db is not None and (not db.exists() or db.stat().st_size == 0):
-        return DoctorCheck(cid, "ok", message="no ledger yet (floor fail-closed structured)")
+        return DoctorCheck(
+            cid, "ok", message="no ledger yet (floor fail-closed structured)"
+        )
     return check_audit_chain(cid, url)
 
 
@@ -838,6 +896,7 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
     verification result are the only signals)."""
     cid = "store.posture_key_reset"
     if key_provider is None:
+
         def key_provider(fingerprint: str) -> str | None:
             return _operator_key_provider(fingerprint, root=root)
 
@@ -867,7 +926,9 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
             acknowledged = True
             break
     if acknowledged:
-        return DoctorCheck(cid, "ok", message="key epoch reset acknowledged by a signed transition")
+        return DoctorCheck(
+            cid, "ok", message="key epoch reset acknowledged by a signed transition"
+        )
     agent = reset.payload.get("agent_id") or "unknown"
     when = reset.payload.get("recorded_at") or "unknown"
     floor = reset.payload.get("floor") or "structured"
@@ -883,7 +944,9 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
     )
 
 
-def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> DoctorCheck:
+def check_operator_key_accessible(
+    root: Path, *, key_provider: Any = None
+) -> DoctorCheck:
     """Report-only operator-key reachability (Task 10.3).
 
     Reads the current epoch ``key_fingerprint`` (latest GENESIS/KEY_RESET) and
@@ -894,6 +957,7 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
     key. Missing/empty ledger → ``ok`` (nothing to reach yet)."""
     cid = "runtime.operator_key"
     if key_provider is None:
+
         def key_provider(fingerprint: str) -> str | None:
             return _operator_key_provider(fingerprint, root=root)
 
@@ -1032,7 +1096,12 @@ def check_sibling_url(cid: str, env: str) -> DoctorCheck:
 # these silently NON-emits under a multi-project daemon (N1). A path is project-
 # scoped iff it is mounted under /api/p/<key>/ OR carries a ?project= query.
 _FEDERATION_WRITE_PATHS = frozenset(
-    {"/api/scan-results", "/api/observations", "/api/v1/scan-results", "/api/v1/observations"}
+    {
+        "/api/scan-results",
+        "/api/observations",
+        "/api/v1/scan-results",
+        "/api/v1/observations",
+    }
 )
 
 
@@ -1060,7 +1129,11 @@ def _filigree_binding_urls(root: Path) -> list[str]:
         if not isinstance(args, list):
             continue
         for i, arg in enumerate(args):
-            if arg == "--filigree-url" and i + 1 < len(args) and isinstance(args[i + 1], str):
+            if (
+                arg == "--filigree-url"
+                and i + 1 < len(args)
+                and isinstance(args[i + 1], str)
+            ):
                 urls.append(args[i + 1])
     return urls
 
@@ -1096,7 +1169,9 @@ def check_filigree_binding_scope(root: Path) -> DoctorCheck:
     cid = "install.filigree_scope"
     urls = _filigree_binding_urls(root)
     if not urls:
-        return DoctorCheck(cid, "ok", message="no filigree scan-results binding in .mcp.json")
+        return DoctorCheck(
+            cid, "ok", message="no filigree scan-results binding in .mcp.json"
+        )
     unscoped = [u for u in urls if _is_unscoped_federation_write(u)]
     if unscoped:
         return DoctorCheck(
@@ -1134,8 +1209,18 @@ def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:
     checks.append(check_store_dir(root, repair=repair))
     checks.append(check_db_overrides(root))
     checks.append(check_legacy_stray_db(root))
-    checks.append(check_audit_chain("store.governance_chain", _store_url(root, "legis-governance.db", "LEGIS_GOVERNANCE_DB")))
-    checks.append(check_audit_chain("store.binding_chain", _store_url(root, "legis-binding.db", "LEGIS_BINDING_DB")))
+    checks.append(
+        check_audit_chain(
+            "store.governance_chain",
+            _store_url(root, "legis-governance.db", "LEGIS_GOVERNANCE_DB"),
+        )
+    )
+    checks.append(
+        check_audit_chain(
+            "store.binding_chain",
+            _store_url(root, "legis-binding.db", "LEGIS_BINDING_DB"),
+        )
+    )
     checks.append(check_posture_chain(root))
     checks.append(check_posture_ledger(root))
     checks.append(check_posture_key_reset(root))
