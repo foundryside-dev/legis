@@ -488,6 +488,129 @@ def test_doctor_refuses_duplicate_mcp_json_unchanged(tmp_path: Path) -> None:
     assert path.read_bytes() == before
 
 
+def test_doctor_mcp_repair_preserves_secret_added_after_preflight(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / ".mcp.json"
+    _write_mcp_entry(
+        tmp_path,
+        {
+            "type": "stdio",
+            "command": "/definitely/dead",
+            "args": ["mcp", "--agent-id", "operator"],
+            "env": {"KEEP_ME": "operator"},
+        },
+    )
+    original_current = legis_install.mcp_entry_is_current
+    calls = 0
+
+    def add_secret_after_preflight(root: Path) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            data["mcpServers"]["legis"]["env"]["LEGIS_HMAC_KEY"] = "operator-secret"
+            path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+            return False
+        return original_current(root)
+
+    monkeypatch.setattr(
+        legis_install,
+        "mcp_entry_is_current",
+        add_secret_after_preflight,
+    )
+
+    check = check_mcp_json(tmp_path, repair=True)
+    env = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["legis"]["env"]
+
+    assert check.status == "error"
+    assert check.fixed is False
+    assert check.repairable is False
+    assert check.message is not None and "secret" in check.message.lower()
+    assert env == {
+        "KEEP_ME": "operator",
+        "LEGIS_HMAC_KEY": "operator-secret",
+    }
+
+
+def test_doctor_mcp_repair_does_not_overwrite_changed_safe_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / ".mcp.json"
+    _write_mcp_entry(
+        tmp_path,
+        {
+            "type": "stdio",
+            "command": "/definitely/dead",
+            "args": ["mcp", "--agent-id", "operator"],
+            "env": {"KEEP_ME": "operator"},
+        },
+    )
+    original_entry = legis_install._legis_mcp_entry
+    changed: bytes | None = None
+
+    def change_after_register_read(*args, **kwargs):
+        nonlocal changed
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["mcpServers"]["legis"]["env"]["OPERATOR_ADDED"] = "newer"
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        changed = path.read_bytes()
+        return original_entry(*args, **kwargs)
+
+    monkeypatch.setattr(
+        legis_install,
+        "_legis_mcp_entry",
+        change_after_register_read,
+    )
+
+    check = check_mcp_json(tmp_path, repair=True)
+
+    assert check.status == "error"
+    assert check.fixed is False
+    assert check.repairable is True
+    assert check.message is not None and "changed" in check.message.lower()
+    assert changed is not None and path.read_bytes() == changed
+
+
+def test_doctor_mcp_repair_contains_snapshot_recheck_read_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / ".mcp.json"
+    _write_mcp_entry(
+        tmp_path,
+        {
+            "type": "stdio",
+            "command": "/definitely/dead",
+            "args": ["mcp", "--agent-id", "operator"],
+            "env": {"KEEP_ME": "operator"},
+        },
+    )
+    before = path.read_bytes()
+    original_read_bytes = Path.read_bytes
+    reads = 0
+
+    def fail_recheck(target: Path) -> bytes:
+        nonlocal reads
+        if target == path:
+            reads += 1
+            if reads == 2:
+                raise PermissionError("simulated recheck denial")
+        return original_read_bytes(target)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_recheck)
+
+    check = check_mcp_json(tmp_path, repair=True)
+
+    assert check.status == "error"
+    assert check.fixed is False
+    assert check.repairable is True
+    assert check.message is not None and "changed" in check.message.lower()
+    assert path.read_bytes() == before
+
+
 def test_doctor_repairs_safe_stale_command_and_preserves_operator_env(
     tmp_path, monkeypatch
 ):

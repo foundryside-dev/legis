@@ -1269,6 +1269,28 @@ def _safe_mcp_env(env: Any) -> dict[str, str] | None:
     return safe
 
 
+def _mcp_json_doctor_parsed_blocker(parsed: Any) -> str | None:
+    if not isinstance(parsed, dict):
+        return "project .mcp.json top level is not an object; fix it by hand"
+    if "mcpServers" not in parsed:
+        return None
+    servers = parsed["mcpServers"]
+    if not isinstance(servers, dict):
+        return "project .mcp.json mcpServers is not an object; fix it by hand"
+    if "legis" not in servers:
+        return None
+    entry = servers["legis"]
+    if not isinstance(entry, dict):
+        return "project Legis MCP registration is not an object; fix it by hand"
+    raw_env = entry.get("env", {})
+    safe_env = _safe_mcp_env(raw_env)
+    if safe_env is None or not isinstance(raw_env, dict):
+        return "project Legis MCP environment is malformed; fix it by hand"
+    if safe_env != raw_env:
+        return "project Legis MCP environment contains unsafe or secret entries; fix it by hand"
+    return None
+
+
 def mcp_json_doctor_repair_blocker(project_root: Path) -> str | None:
     """Return why doctor must not rewrite an existing operator-owned MCP file.
 
@@ -1297,25 +1319,7 @@ def mcp_json_doctor_repair_blocker(project_root: Path) -> str | None:
         return "project .mcp.json is malformed JSON; fix it by hand"
     except (OSError, UnicodeDecodeError):
         return "project .mcp.json is unreadable; fix it by hand"
-    if not isinstance(parsed, dict):
-        return "project .mcp.json top level is not an object; fix it by hand"
-    if "mcpServers" not in parsed:
-        return None
-    servers = parsed["mcpServers"]
-    if not isinstance(servers, dict):
-        return "project .mcp.json mcpServers is not an object; fix it by hand"
-    if "legis" not in servers:
-        return None
-    entry = servers["legis"]
-    if not isinstance(entry, dict):
-        return "project Legis MCP registration is not an object; fix it by hand"
-    raw_env = entry.get("env", {})
-    safe_env = _safe_mcp_env(raw_env)
-    if safe_env is None or not isinstance(raw_env, dict):
-        return "project Legis MCP environment is malformed; fix it by hand"
-    if safe_env != raw_env:
-        return "project Legis MCP environment contains unsafe or secret entries; fix it by hand"
-    return None
+    return _mcp_json_doctor_parsed_blocker(parsed)
 
 
 def _legis_mcp_entry(
@@ -1340,7 +1344,10 @@ def _legis_mcp_entry(
 
 
 def register_mcp_json(
-    project_root: Path, agent_id: str | None = None
+    project_root: Path,
+    agent_id: str | None = None,
+    *,
+    doctor_safe: bool = False,
 ) -> tuple[bool, str]:
     """Register (or refresh) the legis server in <root>/.mcp.json.
 
@@ -1363,9 +1370,16 @@ def register_mcp_json(
         return False, str(exc)
 
     data: dict[str, Any] = {}
+    snapshot: bytes | None = None
+    snapshot_identity: tuple[int, int] | None = None
     if path.exists():
         try:
-            parsed = _strict_json_loads(path.read_text(encoding="utf-8"))
+            path_stat = path.lstat()
+            if doctor_safe and not stat.S_ISREG(path_stat.st_mode):
+                return False, "project .mcp.json is unsafe; refusing automatic repair"
+            snapshot = path.read_bytes()
+            snapshot_identity = (path_stat.st_dev, path_stat.st_ino)
+            parsed = _strict_json_loads(snapshot.decode("utf-8"))
         except (json.JSONDecodeError, OSError, ValueError):
             return False, ".mcp.json present but unreadable; fix or remove it by hand"
         if not isinstance(parsed, dict):
@@ -1374,6 +1388,41 @@ def register_mcp_json(
                 ".mcp.json present but not a JSON object; fix or remove it by hand",
             )
         data = parsed
+        if doctor_safe:
+            blocker = _mcp_json_doctor_parsed_blocker(parsed)
+            if blocker is not None:
+                return False, blocker
+
+    def write_current_snapshot(message: str) -> tuple[bool, str]:
+        if doctor_safe:
+            try:
+                current_stat = path.lstat()
+                current_bytes = path.read_bytes()
+            except FileNotFoundError:
+                if snapshot is not None:
+                    return (
+                        False,
+                        "project .mcp.json changed during automatic repair; rerun doctor",
+                    )
+            except OSError:
+                return (
+                    False,
+                    "project .mcp.json changed during automatic repair; rerun doctor",
+                )
+            else:
+                current_identity = (current_stat.st_dev, current_stat.st_ino)
+                if (
+                    snapshot is None
+                    or snapshot_identity != current_identity
+                    or not stat.S_ISREG(current_stat.st_mode)
+                    or current_bytes != snapshot
+                ):
+                    return (
+                        False,
+                        "project .mcp.json changed during automatic repair; rerun doctor",
+                    )
+        _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        return True, message
 
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
@@ -1420,8 +1469,9 @@ def register_mcp_json(
         else:
             args += ["--agent-id", keep_agent]
         existing["args"] = args
-        _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-        return True, f"Updated legis agent-id to {keep_agent} in .mcp.json"
+        return write_current_snapshot(
+            f"Updated legis agent-id to {keep_agent} in .mcp.json"
+        )
 
     desired = _legis_mcp_entry(keep_agent, project_root=project_root)
     if isinstance(existing, dict):
@@ -1431,8 +1481,7 @@ def register_mcp_json(
     if existing == desired:
         return True, "legis already registered in .mcp.json"
     servers["legis"] = desired
-    _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-    return True, "Registered legis server in .mcp.json"
+    return write_current_snapshot("Registered legis server in .mcp.json")
 
 
 # ---------------------------------------------------------------------------

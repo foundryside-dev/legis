@@ -132,10 +132,16 @@ def check_mcp_json(root: Path, *, repair: bool) -> DoctorCheck:
     if repair:
         from legis.install import register_mcp_json
 
-        ok, msg = register_mcp_json(root)
+        ok, msg = register_mcp_json(root, doctor_safe=True)
         if ok and _install.mcp_entry_is_current(root):
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
-        return DoctorCheck(cid, "error", message=msg, repairable=True)
+        post_blocker = _install.mcp_json_doctor_repair_blocker(root)
+        return DoctorCheck(
+            cid,
+            "error",
+            message=post_blocker or msg,
+            repairable=post_blocker is None,
+        )
     return DoctorCheck(
         cid,
         "error",
