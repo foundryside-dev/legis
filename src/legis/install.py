@@ -314,7 +314,7 @@ def _own_open_marker_tokens(content: str) -> list[str | None]:
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    """Write *content* to *path* atomically (temp + rename), preserving mode."""
+    """Atomically write text, preserving existing mode or using safe ``0600``."""
     # Refuse-to-empty guard (filigree-04bad2a2bf parity). Every caller of this
     # writer (instruction injection, .gitignore management, settings.json) always
     # has non-empty content; an empty or whitespace-only payload can only be
@@ -339,9 +339,7 @@ def _atomic_write_text(path: Path, content: str) -> None:
             if existing_mode is not None:
                 os.fchmod(f.fileno(), existing_mode)
             else:
-                umask = os.umask(0)
-                os.umask(umask)
-                os.fchmod(f.fileno(), 0o666 & ~umask)
+                os.fchmod(f.fileno(), 0o600)
             os.fsync(f.fileno())
         directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         directory_flags |= getattr(os, "O_CLOEXEC", 0)

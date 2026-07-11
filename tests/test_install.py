@@ -422,6 +422,23 @@ def test_atomic_write_preserves_existing_mode(tmp_path):
     assert mode == 0o640
 
 
+def test_atomic_write_uses_safe_mode_without_touching_process_umask(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "CLAUDE.md"
+
+    def reject_process_umask(_mode: int) -> int:
+        raise AssertionError("process-wide umask must not be changed")
+
+    monkeypatch.setattr(install.os, "umask", reject_process_umask)
+
+    install._atomic_write_text(target, "new content\n")
+
+    assert target.read_text(encoding="utf-8") == "new content\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
 def test_atomic_write_is_file_and_directory_durable(
     tmp_path: Path,
     monkeypatch,

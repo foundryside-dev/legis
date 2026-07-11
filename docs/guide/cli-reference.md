@@ -193,6 +193,10 @@ selector flag installs only the named steps. Each step prints `[OK]` or
 | `--mcp` | register the legis MCP server in `.mcp.json` only |
 | `--agent-id` | agent id stamped in the `.mcp.json` legis entry (default: `claude-code`, or preserve an existing entry's id) |
 
+Atomic updates preserve an existing target's mode. A newly created managed text
+file uses fixed mode `0600`; Legis does not inspect or temporarily change the
+process-wide umask.
+
 **Exit codes**
 
 | code | meaning |
