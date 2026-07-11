@@ -781,7 +781,8 @@ def test_codex_snapshot_change_is_not_overwritten(
         change_after_validation,
     )
 
-    error = plainweave_binding.repair_codex_binding(root, desired)
+    repair_root = None if desired is None else root
+    error = plainweave_binding.repair_codex_binding(repair_root, desired)
 
     assert error and "changed" in error.lower()
     assert changed is not None and config.read_bytes() == changed
@@ -841,7 +842,8 @@ def test_codex_replace_failure_is_safe_and_cleans_temp(
         raise OSError("simulated Codex replace failure")
 
     monkeypatch.setattr(plainweave_binding.os, "replace", fail_replace)
-    error = plainweave_binding.repair_codex_binding(root, desired)
+    repair_root = None if desired is None else root
+    error = plainweave_binding.repair_codex_binding(repair_root, desired)
 
     assert error and "simulated Codex replace failure" in error
     assert config.read_bytes() == before

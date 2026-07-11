@@ -4101,6 +4101,36 @@ def test_build_runtime_warns_when_project_plainweave_config_is_invalid_even_with
     assert "governance unaffected" in caplog.text.lower()
 
 
+def test_build_runtime_warns_and_degrades_when_discovery_command_is_blank(
+    monkeypatch, tmp_path, caplog
+):
+    from legis import plainweave_binding
+    from legis.mcp import build_runtime
+
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    monkeypatch.setattr(
+        plainweave_binding,
+        "discover_plainweave",
+        lambda _root: plainweave_binding.PlainweaveDiscovery(
+            applicable=True,
+            installed=True,
+            command="   ",
+        ),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="legis.mcp"):
+        runtime = build_runtime("agent-x")
+
+    warning = caplog.text.lower()
+    assert runtime.plainweave is None
+    assert "runtime autodiscovery produced an invalid command" in warning
+    assert "command is empty" in warning
+    assert "governance unaffected" in warning
+
+
 def test_plainweave_preflight_get_unavailable_when_unwired(tmp_path):
     from legis.mcp import call_tool
 

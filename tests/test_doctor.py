@@ -685,9 +685,15 @@ def test_plainweave_global_fixed_cwd_is_operator_owned_and_unchanged(
     assert config.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    "cwd_value",
+    ["123", '""', '"   "'],
+    ids=["non-string", "empty", "whitespace"],
+)
 def test_plainweave_global_malformed_cwd_is_operator_owned_and_unchanged(
     tmp_path: Path,
     monkeypatch,
+    cwd_value: str,
 ) -> None:
     root = tmp_path / "project"
     root.mkdir()
@@ -700,7 +706,7 @@ def test_plainweave_global_malformed_cwd_is_operator_owned_and_unchanged(
         "[mcp_servers.legis]\n"
         f"command = {json.dumps(str(executable))}\n"
         'args = ["mcp", "--agent-id", "operator"]\n'
-        "cwd = 123\n"
+        f"cwd = {cwd_value}\n"
         "[mcp_servers.legis.env]\n"
         f'{PLAINWEAVE_ENV} = "legacy"\n',
         encoding="utf-8",
@@ -714,6 +720,7 @@ def test_plainweave_global_malformed_cwd_is_operator_owned_and_unchanged(
     assert check.fixed is False
     assert "cwd" in (check.message or "").lower()
     assert "malformed" in (check.message or "").lower()
+    assert "[operator]" in render_text([check])
     assert config.read_bytes() == before
 
 
