@@ -208,6 +208,12 @@ reports a generic configuration error without echoing hostile values.
 | `install.plainweave_project_binding` | `.mcp.json` → `mcpServers.legis.env.PLAINWEAVE_MCP_CMD` | Checks the current project's Legis registration. If that registration is missing or stale, `install.mcp_json` owns its repair. |
 | `install.plainweave_codex_binding` | `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`) → `mcp_servers.legis.env.PLAINWEAVE_MCP_CMD` | Checks only an existing global Codex Legis registration. Doctor never creates one. |
 
+Binding inspection and its final pre-write snapshot recheck accept at most
+1 MiB from either `.mcp.json` or the existing Codex `config.toml`. To distinguish
+an exact-limit file from an oversized one, Legis reads at most one additional
+sentinel byte. An oversized file is reported as operator-owned invalid input and
+is left unchanged; doctor does not truncate or partially parse it.
+
 The checks are independent. A project binding can need repair while the global
 Codex binding is current, absent, or operator-owned, and vice versa.
 

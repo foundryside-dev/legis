@@ -1033,6 +1033,89 @@ def test_malformed_json_is_reported_and_unchanged(tmp_path: Path) -> None:
     assert config.read_bytes() == before
 
 
+@pytest.mark.parametrize("extra_byte", [False, True], ids=["exact-limit", "over-limit"])
+def test_project_binding_read_size_limit(
+    tmp_path: Path,
+    extra_byte: bool,
+) -> None:
+    config = _write_legis_entry(tmp_path)
+    content = config.read_bytes()
+    config.write_bytes(
+        content
+        + b" "
+        * (
+            plainweave_binding._MAX_BINDING_CONFIG_BYTES
+            - len(content)
+            + int(extra_byte)
+        )
+    )
+
+    state = plainweave_binding.inspect_project_binding(tmp_path, "desired")
+
+    if extra_byte:
+        assert state.error is not None and "size limit" in state.error.lower()
+    else:
+        assert state.registered is True
+        assert state.error is None
+
+
+@pytest.mark.parametrize("extra_byte", [False, True], ids=["exact-limit", "over-limit"])
+def test_codex_binding_read_size_limit(
+    tmp_path: Path,
+    monkeypatch,
+    extra_byte: bool,
+) -> None:
+    config = _codex_config(tmp_path, monkeypatch)
+    content = config.read_bytes()
+    config.write_bytes(
+        content
+        + b" "
+        * (
+            plainweave_binding._MAX_BINDING_CONFIG_BYTES
+            - len(content)
+            + int(extra_byte)
+        )
+    )
+
+    state = plainweave_binding.inspect_codex_binding(tmp_path, "desired")
+
+    if extra_byte:
+        assert state.error is not None and "size limit" in state.error.lower()
+    else:
+        assert state.registered is True
+        assert state.error is None
+
+
+def test_project_binding_recheck_refuses_oversized_replacement(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _write_legis_entry(tmp_path)
+    original_gate = plainweave_binding.install._parsed_mcp_entry_is_current
+    oversized: bytes | None = None
+
+    def replace_with_oversized_config(*args, **kwargs) -> bool:
+        nonlocal oversized
+        current = original_gate(*args, **kwargs)
+        content = config.read_bytes()
+        oversized = content + b" " * (
+            plainweave_binding._MAX_BINDING_CONFIG_BYTES - len(content) + 1
+        )
+        config.write_bytes(oversized)
+        return current
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "_parsed_mcp_entry_is_current",
+        replace_with_oversized_config,
+    )
+
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert error is not None and "size limit" in error.lower()
+    assert oversized is not None and config.read_bytes() == oversized
+
+
 def test_duplicate_project_json_is_reported_and_unchanged(tmp_path: Path) -> None:
     config = tmp_path / ".mcp.json"
     command = json.dumps(sys.executable)

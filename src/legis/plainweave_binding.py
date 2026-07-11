@@ -26,6 +26,7 @@ _MALFORMED_CONFIG = "project .mcp.json is malformed or unreadable"
 _INVALID_ENTRY = "project .mcp.json Plainweave entry is invalid"
 _MAX_PLAINWEAVE_CONFIG_BYTES = 1024 * 1024
 _MAX_PLAINWEAVE_JSON_DEPTH = 100
+_MAX_BINDING_CONFIG_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,10 +78,18 @@ def _close_root_fd(inspection: _BindingInspection) -> None:
 
 
 def _read_fd(fd: int) -> bytes:
+    remaining = _MAX_BINDING_CONFIG_BYTES + 1
     chunks: list[bytes] = []
-    while chunk := os.read(fd, 64 * 1024):
+    while remaining:
+        chunk = os.read(fd, min(64 * 1024, remaining))
+        if not chunk:
+            break
         chunks.append(chunk)
-    return b"".join(chunks)
+        remaining -= len(chunk)
+    content = b"".join(chunks)
+    if len(content) > _MAX_BINDING_CONFIG_BYTES:
+        raise ValueError("configuration file exceeds the 1 MiB size limit")
+    return content
 
 
 def _anchored_io_support_error() -> str | None:
@@ -146,7 +155,7 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
 
     try:
         root_stat = os.fstat(root_fd)
-    except (OSError, NotImplementedError) as exc:
+    except (OSError, NotImplementedError, ValueError) as exc:
         return fail(f"could not inspect resolved project root safely: {exc}")
 
     target_flags = (
@@ -166,7 +175,7 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
         if not stat.S_ISREG(target_stat.st_mode):
             return fail("project .mcp.json is not a regular file")
         snapshot = _read_fd(target_fd)
-    except (OSError, NotImplementedError) as exc:
+    except (OSError, NotImplementedError, ValueError) as exc:
         return fail(f"project .mcp.json is unreadable: {exc}")
     finally:
         try:
@@ -600,7 +609,7 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
         if not stat.S_ISREG(target_stat.st_mode):
             return fail("Codex config.toml is not a regular file")
         snapshot = _read_fd(target_fd)
-    except (OSError, NotImplementedError) as exc:
+    except (OSError, NotImplementedError, ValueError) as exc:
         return fail(f"Codex config.toml is unreadable: {exc}")
     finally:
         try:
