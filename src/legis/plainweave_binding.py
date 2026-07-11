@@ -12,6 +12,9 @@ from typing import Any
 
 PLAINWEAVE_ENV = "PLAINWEAVE_MCP_CMD"
 
+_MALFORMED_CONFIG = "project .mcp.json is malformed or unreadable"
+_INVALID_ENTRY = "project .mcp.json Plainweave entry is invalid"
+
 
 @dataclass(frozen=True, slots=True)
 class PlainweaveDiscovery:
@@ -30,60 +33,87 @@ def _resolve_executable(command: object) -> str | None:
         return None
 
 
-def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, bool]:
+def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     config = root / ".mcp.json"
     if not config.exists():
-        return None, False
+        return None, None
+    if config.is_symlink() or not config.is_file():
+        return None, _MALFORMED_CONFIG
 
     try:
         data: Any = json.loads(config.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeError):
-        return None, True
+        return None, _MALFORMED_CONFIG
 
     if not isinstance(data, dict):
-        return None, True
+        return None, _MALFORMED_CONFIG
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
-        return None, True
+        return None, _MALFORMED_CONFIG
     if "plainweave" not in servers:
-        return None, False
+        return None, None
 
     entry = servers["plainweave"]
     if not isinstance(entry, dict):
-        return None, True
+        return None, _INVALID_ENTRY
     if entry.get("type", "stdio") != "stdio":
-        return None, True
+        return None, _INVALID_ENTRY
 
     executable = _resolve_executable(entry.get("command"))
     args = entry.get("args")
     if executable is None or not isinstance(args, list):
-        return None, True
+        return None, _INVALID_ENTRY
     if not all(isinstance(arg, str) for arg in args):
-        return None, True
+        return None, _INVALID_ENTRY
 
-    root_indexes = [index for index, arg in enumerate(args) if arg == "--root"]
-    if len(root_indexes) != 1 or root_indexes[0] + 1 >= len(args):
-        return None, True
+    root_values: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        option = arg.partition("=")[0]
+        if arg == "--root":
+            if index + 1 >= len(args):
+                return None, _INVALID_ENTRY
+            root_values.append(args[index + 1])
+            index += 2
+            continue
+        if arg.startswith("--root="):
+            value = arg.partition("=")[2]
+            if not value:
+                return None, _INVALID_ENTRY
+            root_values.append(value)
+        elif len(option) > 2 and "--root".startswith(option):
+            return None, _INVALID_ENTRY
+        index += 1
 
-    root_value = Path(args[root_indexes[0] + 1])
+    if len(root_values) != 1:
+        return None, _INVALID_ENTRY
+
+    root_value = Path(root_values[0])
     if not root_value.is_absolute():
         root_value = root / root_value
     try:
         if root_value.resolve() != root:
-            return None, True
+            return None, _INVALID_ENTRY
     except (OSError, RuntimeError):
-        return None, True
+        return None, _INVALID_ENTRY
 
-    return [executable, *args], False
+    return [executable, *args], None
 
 
 def discover_plainweave(root: Path) -> PlainweaveDiscovery:
     """Return a usable Plainweave command only for an initialized project."""
     resolved_root = root.resolve()
-    database = resolved_root / ".plainweave" / "plainweave.db"
-    initialized = database.is_file() and not database.is_symlink()
+    state_directory = resolved_root / ".plainweave"
+    database = state_directory / "plainweave.db"
+    initialized = (
+        state_directory.is_dir()
+        and not state_directory.is_symlink()
+        and database.is_file()
+        and not database.is_symlink()
+    )
 
-    project_argv, invalid_project_entry = _project_plainweave_argv(resolved_root)
+    project_argv, project_issue = _project_plainweave_argv(resolved_root)
     fallback = _resolve_executable("plainweave-mcp")
 
     if project_argv is not None:
@@ -104,6 +134,6 @@ def discover_plainweave(root: Path) -> PlainweaveDiscovery:
         )
 
     error = "Plainweave project has no executable available"
-    if invalid_project_entry:
-        error += "; the project .mcp.json Plainweave entry is invalid"
+    if project_issue is not None:
+        error += f"; {project_issue}"
     return PlainweaveDiscovery(applicable=True, installed=False, error=error)

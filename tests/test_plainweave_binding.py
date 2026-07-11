@@ -144,7 +144,7 @@ def test_malformed_mcp_json_is_invalid_for_initialized_project(
     assert result.installed is False
     assert result.command is None
     assert result.error is not None
-    assert "invalid" in result.error.lower()
+    assert "malformed" in result.error.lower()
     assert "no executable" in result.error.lower()
 
 
@@ -206,6 +206,56 @@ def test_project_entry_with_mismatched_root_is_invalid(
     assert "no executable" in result.error.lower()
 
 
+def test_project_entry_rejects_later_equals_root_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    command = _make_executable(tmp_path / "bin" / "plainweave")
+    _write_entry(
+        root,
+        str(command),
+        ["serve", "--root", str(root), "--quiet", f"--root={other_root}"],
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None
+    assert "invalid" in result.error.lower()
+
+
+def test_project_entry_rejects_later_abbreviated_root_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    other_root = tmp_path / "other"
+    other_root.mkdir()
+    command = _make_executable(tmp_path / "bin" / "plainweave")
+    _write_entry(
+        root,
+        str(command),
+        ["--root", str(root), f"--roo={other_root}", "--quiet"],
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None
+    assert "invalid" in result.error.lower()
+
+
 def test_project_entry_with_dead_command_is_invalid(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
     root.mkdir()
@@ -237,4 +287,58 @@ def test_command_path_with_spaces_round_trips_exactly(tmp_path: Path, monkeypatc
     assert result.installed is True
     assert result.command is not None
     assert shlex.split(result.command) == [str(command), *args]
+    assert result.error is None
+
+
+def test_symlinked_project_config_cannot_establish_applicability(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    command = _make_executable(tmp_path / "bin" / "plainweave")
+    external_config = outside / ".mcp.json"
+    external_config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plainweave": {
+                        "type": "stdio",
+                        "command": str(command),
+                        "args": ["--root", str(root)],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / ".mcp.json").symlink_to(external_config)
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is False
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is None
+
+
+def test_symlinked_state_directory_cannot_recruit_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    external_state = tmp_path / "external-state"
+    external_state.mkdir()
+    (external_state / "plainweave.db").touch()
+    (root / ".plainweave").symlink_to(external_state, target_is_directory=True)
+    fallback = _make_executable(tmp_path / "fallback-bin" / "plainweave-mcp")
+    monkeypatch.setenv("PATH", str(fallback.parent))
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is False
+    assert result.installed is True
+    assert result.command is None
     assert result.error is None
