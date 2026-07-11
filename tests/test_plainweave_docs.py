@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 
 _PLAINWEAVE_DOCS = (
     Path("CHANGELOG.md"),
@@ -52,6 +54,51 @@ def _normalize(text: str) -> str:
 
 def _paragraphs(text: str) -> list[str]:
     return [paragraph for paragraph in text.split("\n\n") if paragraph.strip()]
+
+
+_FORWARD_RUNTIME_READ_CLAIM = re.compile(
+    r"\b(?:the\s+)?runtime\b"
+    r"(?P<negation>(?:(?!\bruntime\b|\bread(?:s)?\b|plainweavemcpcmd|[.;!?]).){0,80})"
+    r"\bread(?:s)?\b"
+    r"(?:(?!\bruntime\b|\bread(?:s)?\b|[.;!?]).){0,100}"
+    r"\bplainweavemcpcmd\b"
+)
+_PASSIVE_RUNTIME_READ_CLAIM = re.compile(
+    r"\bplainweavemcpcmd\b"
+    r"(?P<negation>(?:(?!plainweavemcpcmd|\bruntime\b|\bread\b|[.;!?]).){0,100})"
+    r"\bread\s+by\s+(?:the\s+)?runtime\b"
+)
+
+
+def _assert_no_active_plainweave_runtime_claims(text: str) -> None:
+    normalized = _normalize(text)
+    claims = [
+        (match.start(), "forward", match)
+        for match in _FORWARD_RUNTIME_READ_CLAIM.finditer(normalized)
+    ]
+    claims.extend(
+        (match.start(), "passive", match)
+        for match in _PASSIVE_RUNTIME_READ_CLAIM.finditer(normalized)
+    )
+
+    active_claims: list[str] = []
+    for _position, direction, match in sorted(claims, key=lambda item: item[0]):
+        negation = " ".join(match.group("negation").split())
+        if direction == "forward":
+            directly_negated = bool(
+                re.search(
+                    r"(?:(?:does|will|must|should|can)\s+not|no\s+longer)$",
+                    negation,
+                )
+            )
+        else:
+            directly_negated = bool(
+                re.search(r"(?:is\s+not|is\s+no\s+longer)$", negation)
+            )
+        if not directly_negated:
+            active_claims.append(match.group(0))
+
+    assert not active_claims, f"active Plainweave runtime claims: {active_claims}"
 
 
 def test_operator_docs_explain_plainweave_runtime_autodiscovery_migration() -> None:
@@ -123,29 +170,33 @@ def test_current_docs_distinguish_project_and_global_secret_handling() -> None:
         assert global_contract.search(text), path
 
 
+def test_plainweave_runtime_claim_scanner_checks_every_claim() -> None:
+    rejected = (
+        "The runtime reads PLAINWEAVE_MCP_CMD as active configuration while "
+        "doctor removes a legacy key.",
+        "The runtime does not read PLAINWEAVE_MCP_CMD. Later, the runtime reads "
+        "PLAINWEAVE_MCP_CMD as active configuration.",
+    )
+    accepted = (
+        "The runtime does not read PLAINWEAVE_MCP_CMD.",
+        "PLAINWEAVE_MCP_CMD is retired and is not read by the runtime.",
+    )
+
+    for text in rejected:
+        with pytest.raises(AssertionError, match="active Plainweave runtime claims"):
+            _assert_no_active_plainweave_runtime_claims(text)
+
+    for text in accepted:
+        _assert_no_active_plainweave_runtime_claims(text)
+
+
 def test_current_docs_do_not_restore_plainweave_environment_runtime_config() -> None:
     current_docs = (*_CANONICAL_DISCOVERY_DOCS, _PLAINWEAVE_PDR)
     for path in current_docs:
         text = path.read_text(encoding="utf-8")
-        normalized = _normalize(text)
 
         assert "PLAINWEAVE_MCP_CMD" in text, path
-        if path != _PLAINWEAVE_PDR:
-            positive_runtime_claim = re.search(
-                r"(?:runtime plainweave|mcp processes?|runtime).{0,60}"
-                r"(?:from|reads?|configured via).{0,40}plainweavemcpcmd",
-                normalized,
-            )
-            if positive_runtime_claim is not None:
-                context = normalized[
-                    max(
-                        0, positive_runtime_claim.start() - 100
-                    ) : positive_runtime_claim.end() + 100
-                ]
-                assert any(
-                    marker in context
-                    for marker in ("retired", "legacy", "1.5.0", "will not")
-                ), (path, context)
+        _assert_no_active_plainweave_runtime_claims(text)
 
     pdr = _PLAINWEAVE_PDR.read_text(encoding="utf-8")
     amendment, _context = pdr.split("## Context", maxsplit=1)
