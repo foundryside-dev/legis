@@ -89,11 +89,13 @@ def _anchored_io_support_error() -> str | None:
         return lock_error
     directory_flag = getattr(os, "O_DIRECTORY", None)
     nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    nonblock_flag = getattr(os, "O_NONBLOCK", None)
     supported: Collection[object] = getattr(os, "supports_dir_fd", frozenset())
     replace_supported = os.replace in supported or os.rename in supported
     if (
         directory_flag is None
         or nofollow_flag is None
+        or nonblock_flag is None
         or not hasattr(os, "fchmod")
         or os.open not in supported
         or os.unlink not in supported
@@ -147,7 +149,9 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
     except (OSError, NotImplementedError) as exc:
         return fail(f"could not inspect resolved project root safely: {exc}")
 
-    target_flags = os.O_RDONLY | nofollow_flag | getattr(os, "O_CLOEXEC", 0)
+    target_flags = (
+        os.O_RDONLY | nofollow_flag | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
         target_fd = os.open(".mcp.json", target_flags, dir_fd=root_fd)
     except OSError as exc:
@@ -328,23 +332,23 @@ def _anchored_replace_unlocked(
         os.close(temp_fd)
         temp_fd = None
 
-        current_flags = os.O_RDONLY | nofollow_flag | getattr(os, "O_CLOEXEC", 0)
+        current_flags = (
+            os.O_RDONLY | nofollow_flag | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+        )
         try:
             current_fd = os.open(target_name, current_flags, dir_fd=root_fd)
         except (OSError, NotImplementedError, TypeError) as exc:
             return f"{subject} changed after inspection: {exc}"
         try:
             current_stat = os.fstat(current_fd)
+            if not stat.S_ISREG(current_stat.st_mode):
+                return f"{subject} changed after inspection; refusing to overwrite it"
             current = _read_fd(current_fd)
         finally:
             os.close(current_fd)
 
         current_identity = (current_stat.st_dev, current_stat.st_ino)
-        if (
-            not stat.S_ISREG(current_stat.st_mode)
-            or current_identity != identity
-            or current != snapshot
-        ):
+        if current_identity != identity or current != snapshot:
             return f"{subject} changed after inspection; refusing to overwrite it"
 
         container_error = _anchored_container_changed(inspection)
@@ -573,7 +577,9 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
             pass
         return _binding_error(error, registered=registered)
 
-    target_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    target_flags = (
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0)
+    )
     try:
         target_fd = os.open(config_path.name, target_flags, dir_fd=root_fd)
     except FileNotFoundError:

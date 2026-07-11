@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import subprocess
 import sys
 import threading
 import tomllib
@@ -1071,6 +1072,132 @@ def test_symlinked_project_config_is_reported_and_unchanged(tmp_path: Path) -> N
     assert state.error and "symlink" in state.error.lower()
     assert error and "symlink" in error.lower()
     assert external.read_bytes() == before
+
+
+def test_project_binding_inspection_rejects_fifo_without_blocking(
+    tmp_path: Path,
+) -> None:
+    os.mkfifo(tmp_path / ".mcp.json")
+    script = (
+        "from pathlib import Path; "
+        "from legis.plainweave_binding import inspect_project_binding; "
+        "state = inspect_project_binding(Path(__import__('sys').argv[1]), 'desired'); "
+        "print(state.error or 'no error')"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "not a regular file" in completed.stdout.lower()
+
+
+def test_codex_binding_inspection_rejects_fifo_without_blocking(
+    tmp_path: Path,
+) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    os.mkfifo(codex_home / "config.toml")
+    script = (
+        "from pathlib import Path; "
+        "from legis.plainweave_binding import inspect_codex_binding; "
+        "state = inspect_codex_binding(Path(__import__('sys').argv[1]), 'desired'); "
+        "print(state.error or 'no error')"
+    )
+    env = os.environ.copy()
+    env["CODEX_HOME"] = str(codex_home)
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+        env=env,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "not a regular file" in completed.stdout.lower()
+
+
+def test_project_binding_recheck_rejects_fifo_without_blocking(
+    tmp_path: Path,
+) -> None:
+    script = """
+import json
+import os
+import sys
+from pathlib import Path
+from legis import plainweave_binding
+
+root = Path(sys.argv[1])
+config = root / ".mcp.json"
+config.write_text(json.dumps({"mcpServers": {"legis": {
+    "type": "stdio",
+    "command": sys.executable,
+    "args": ["-P", "-m", "legis", "mcp", "--agent-id", "operator"],
+    "env": {},
+}}}), encoding="utf-8")
+original_gate = plainweave_binding.install._parsed_mcp_entry_is_current
+def replace_with_fifo(*args, **kwargs):
+    current = original_gate(*args, **kwargs)
+    config.unlink()
+    os.mkfifo(config)
+    return current
+plainweave_binding.install._parsed_mcp_entry_is_current = replace_with_fifo
+print(plainweave_binding.repair_project_binding(root, "desired") or "no error")
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path)],
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "changed after inspection" in completed.stdout.lower()
+
+
+def test_project_binding_recheck_rejects_fifo_before_reading(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _write_legis_entry(tmp_path)
+    original_gate = plainweave_binding.install._parsed_mcp_entry_is_current
+    original_read = plainweave_binding._read_fd
+    reads = 0
+
+    def replace_with_fifo(*args, **kwargs) -> bool:
+        current = original_gate(*args, **kwargs)
+        config.unlink()
+        os.mkfifo(config)
+        return current
+
+    def reject_second_read(fd: int) -> bytes:
+        nonlocal reads
+        reads += 1
+        if reads > 1:
+            raise AssertionError("non-regular final target was read")
+        return original_read(fd)
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "_parsed_mcp_entry_is_current",
+        replace_with_fifo,
+    )
+    monkeypatch.setattr(plainweave_binding, "_read_fd", reject_second_read)
+
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert reads == 1
+    assert error is not None and "changed after inspection" in error.lower()
 
 
 @pytest.mark.parametrize(
