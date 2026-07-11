@@ -13,22 +13,26 @@ _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 laun
 
 ### Added
 
-- **`legis doctor` checks and safely repairs Plainweave MCP launch bindings.**
-  Independent project and existing-global-Codex checks detect missing or stale
-  `PLAINWEAVE_MCP_CMD` targets for applicable projects. Each binding-specific
-  repair semantically changes only the nested target value, post-verifies, and
-  tells operators to reconnect. Project `.mcp.json` repair reserializes the
-  whole document with two-space indentation while preserving unrelated JSON
-  values, the detected newline sequence, final-newline presence, and file mode
-  rather than arbitrary whitespace; global Codex TOML repair is text-surgical.
-  Earlier in the same `--fix` run, `install.mcp_json` may create or rebuild a
-  missing or stale project Legis registration before binding it. Operators
-  inspect
-  `[fixed]` on both `install.mcp_json` and
-  `install.plainweave_project_binding` when that happens. Unsafe or unsupported
-  config remains unchanged and operator-owned. Installed-but-uninitialized
-  projects stay healthy and non-applicable, and doctor neither initializes
-  Plainweave nor creates a global Codex Legis registration.
+- **Plainweave runtime autodiscovery restores multi-project convergence and
+  removes binding oscillation (legis-3622e80f2e).** Legis MCP now discovers
+  Plainweave once at startup from the active project cwd, using
+  `.plainweave/plainweave.db` plus a valid local Plainweave `.mcp.json` entry or
+  trusted global `PATH` fallback. The global
+  Codex Legis registration stays tool-only and never carries a Plainweave root.
+  This converges across projects instead of rewriting one global project target
+  back and forth. `PLAINWEAVE_MCP_CMD` is now a retired 1.5.0 legacy migration
+  key. `install.plainweave_project_binding` verifies active-project discovery
+  and its absence while `install.mcp_json` retains project-registration
+  ownership. `install.plainweave_codex_binding` independently inspects only an
+  existing global registration; absence is healthy and it never creates one.
+  `legis doctor --fix` semantically changes only the retired key, post-verifies,
+  and requests an MCP reconnect or restart. Project `.mcp.json` removal
+  reserializes the whole document with two-space indentation while preserving
+  unrelated JSON values, the detected newline sequence, final-newline presence,
+  and file mode rather than arbitrary whitespace; global Codex TOML removal is
+  text-surgical. Fixed global `cwd`, malformed config, and unsafe config remain
+  operator-owned and unchanged, including the partial `[fixed] [operator]`
+  outcome when legacy cleanup succeeds but a fixed `cwd` remains.
 
 ### Changed
 
@@ -159,8 +163,9 @@ advisory-preflight **consumer**.
   mirroring the Warpline advisory-preflight read exactly: injectable
   `PlainweaveMcpClient` + `StdioMcpInvoke`, every fault fails closed →
   `unavailable`, GV-LG-3 validated against Plainweave's real `authority_boundary`
-  shape, configured via `PLAINWEAVE_MCP_CMD` (default unconfigured →
-  `unavailable`). Enrich-only; governance verdicts stay byte-identical with or
+  shape, originally configured via the now-retired legacy
+  `PLAINWEAVE_MCP_CMD` key (default unconfigured → `unavailable`). Enrich-only;
+  governance verdicts stay byte-identical with or
   without Plainweave. The conformance oracle drives a constructed golden (live
   end-to-end capture is a flagged follow-up).
 

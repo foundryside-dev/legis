@@ -18,21 +18,29 @@ The transport-agnostic service layer (WP-M1) and the agent-facing MCP surface on
 
 Legis stands itself up with `legis install`: instruction block, `legis-workflow` skill pack, SessionStart hook, `.mcp.json` registration, and the Legis-only `.weft/legis/` ignore rule. `legis doctor [--fix]` provides an operator health view and safe repair for the install + config layer, tagging each problem `[auto-fixable]` or `[operator]` so it is clear what `--fix` will and will not touch. Doctor names enablement paths when governance is unwired (policy cells, Wardline routing), but it reports rather than auto-enabling policy surfaces or touching signing keys.
 
-For a project with a direct Plainweave database or a valid root-pinned
-Plainweave MCP entry, doctor also checks that the project Legis registration and
-any existing global Codex Legis registration pass the project-scoped command
-through `PLAINWEAVE_MCP_CMD`. A project binding-specific repair semantically
-changes only that nested environment value and verifies it, but it reserializes
-the whole `.mcp.json` document with two-space indentation. It preserves all
-unrelated JSON values, the detected newline sequence, final-newline presence,
-and file mode; it does not preserve arbitrary whitespace formatting. Global
-Codex TOML repair remains text-surgical. In the same `--fix` run, the earlier
-`install.mcp_json` check may create or rebuild a missing or stale project Legis
-registration before the binding check runs. Inspect `[fixed]` on both
-`install.mcp_json` and `install.plainweave_project_binding` when that happens.
-Doctor does not initialize Plainweave, create a global Codex registration, or
-restart an MCP client. Reconnect or restart MCP clients after a repair. See the
-[Plainweave launch-binding configuration guide](docs/guide/configuration.md#plainweave-mcp-launch-binding)
+Legis MCP runtime autodiscovery resolves Plainweave once at startup from the
+active project working directory. It uses the existing local
+`.plainweave/plainweave.db` plus either a valid local Plainweave `.mcp.json`
+entry or a trusted global `plainweave-mcp` on `PATH`; it creates no new
+manifest. Global Codex Legis configuration stays tool-only and
+project-agnostic: it carries no Plainweave root, fixed `cwd`, or
+`PLAINWEAVE_MCP_CMD`, which is a retired 1.5.0 legacy migration key rather than
+active configuration.
+
+`legis doctor` verifies active-project discovery and checks both the project
+Legis registration and any existing global Codex Legis registration for the
+retired key. `legis doctor --fix` semantically changes only the retired
+`PLAINWEAVE_MCP_CMD` key in a safe project Legis environment table, but it
+reserializes the whole `.mcp.json` document with two-space indentation. It
+preserves unrelated JSON values, the detected newline sequence, final-newline
+presence, and file mode; it does not preserve arbitrary whitespace formatting.
+Global Codex TOML removal is text-surgical. `install.mcp_json` continues to own
+project registration; the global check inspects only an existing registration
+and never creates one. Doctor leaves a fixed global `cwd` and malformed or
+unsafe config operator-owned. A combined cleanup can report
+`[fixed] [operator]`: remove the reported fixed `cwd` manually, reconnect or
+restart the MCP client, and rerun doctor. See the
+[Plainweave runtime-autodiscovery configuration guide](docs/guide/configuration.md#plainweave-mcp-runtime-autodiscovery-and-legacy-migration)
 and the [`legis doctor` CLI reference](docs/guide/cli-reference.md#doctor).
 
 ### Platform support

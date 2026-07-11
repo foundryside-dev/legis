@@ -192,42 +192,50 @@ field. A missing file or valid configuration with no such option is healthy
 checked-empty; malformed, unreadable, special-file, or invalid-URL input is an
 `[operator]` error rather than an earned absence.
 
-For Plainweave launch wiring, read the two check IDs separately:
+For Plainweave runtime autodiscovery, read the two check IDs separately:
 
 | Check ID | What it means |
 |---|---|
-| `install.plainweave_project_binding` | The current project's Legis MCP entry needs the project-scoped Plainweave command in `PLAINWEAVE_MCP_CMD`. Project registration repair itself remains `install.mcp_json` work. |
-| `install.plainweave_codex_binding` | An existing global Codex Legis MCP entry needs the same binding. No global registration is a healthy, non-applicable result; doctor never creates one. |
+| `install.plainweave_project_binding` | The active project must be runtime-discoverable and its Legis MCP entry must omit the retired legacy `PLAINWEAVE_MCP_CMD` key. Project registration repair itself remains `install.mcp_json` work. |
+| `install.plainweave_codex_binding` | An existing global Codex Legis MCP entry must be project-agnostic: no retired legacy key and no fixed `cwd`. No global registration is healthy and not applicable; doctor never creates one. |
 
-The checks are independent. Doctor also reports both as healthy and not
-applicable when Plainweave is installed but the current project is not
-initialized, or when Plainweave is not configured for the project. A global
+The project check uses the active project cwd. Runtime discovery requires local
+`.plainweave/plainweave.db` plus either a valid local Plainweave `.mcp.json`
+entry or a trusted, non-project-local `plainweave-mcp` on global `PATH`. It
+creates no new manifest. Doctor reports the project check healthy and not
+applicable when the project is uninitialized or not configured. A global
 executable alone does not initialize or wire the project.
 
-For an applicable project, `[auto-fixable]` can mean either the nested
-`PLAINWEAVE_MCP_CMD` target or the project Legis registration is safely missing
-or stale. `install.mcp_json` owns registration repair and runs before the
-Plainweave binding checks; it may create or rebuild the project's `command`,
-`args`, `type`, and safe `env`. The project binding-specific repair
-semantically changes only the nested `PLAINWEAVE_MCP_CMD` value, but it
-reserializes the whole `.mcp.json` document with two-space indentation. It
-preserves unrelated JSON values, the detected newline sequence, final-newline
-presence, and file mode rather than arbitrary whitespace formatting. Global
-Codex TOML repair remains text-surgical.
+For an applicable project, `[auto-fixable]` can mean either the retired legacy
+`PLAINWEAVE_MCP_CMD` key is present or the project Legis registration is safely
+missing or stale. `install.mcp_json` owns registration repair and runs before
+the Plainweave checks; it may create or rebuild the project's `command`, `args`,
+`type`, and safe `env`. The project cleanup semantically changes only the
+retired key, but it reserializes the whole `.mcp.json` document with two-space
+indentation. It preserves unrelated JSON values, the detected newline sequence,
+final-newline presence, and file mode rather than arbitrary whitespace
+formatting. Global Codex TOML removal remains text-surgical.
 
 `[fixed]` means that check repaired and post-verified its own scope. When the
-same run repairs project registration and then binds Plainweave, inspect
+same run repairs project registration and then removes the legacy key, inspect
 `[fixed]` on both `install.mcp_json` and
 `install.plainweave_project_binding`. Inspect the independent
-`install.plainweave_codex_binding` line as well when a configured global Codex
-entry needed repair. `[operator]` means doctor left the configuration unchanged—for
-example, because project config is unsafe, secret-bearing, or malformed, or
-Codex TOML is malformed or unsupported.
+`install.plainweave_codex_binding` line as well for an existing global Codex
+entry. The global check is independent of project applicability and never
+creates a registration.
 
-After `[fixed]`, reconnect or restart the affected MCP client. Legis MCP
-processes build their runtime once, so the running process does not pick up the
-new `PLAINWEAVE_MCP_CMD`. The `doctor_get` MCP tool is report-only and never
-produces repairs; use `legis doctor --fix` from an operator shell.
+`[operator]` means doctor left operator-owned configuration unchanged. This
+includes a fixed global `cwd` and malformed, unsafe, secret-bearing, or
+unsupported config. Doctor never removes fixed `cwd`. When a safe retired-key
+cleanup succeeds but fixed `cwd` remains, the same line can show
+`[fixed] [operator]`: the partial fix is real, but runtime autodiscovery still
+cannot inherit the active project cwd.
+
+To migrate, run `legis doctor`, run `legis doctor --fix`, manually remove a
+reported fixed global `cwd`, reconnect or restart the affected MCP clients, and
+rerun `legis doctor`. Each new Legis MCP process performs runtime autodiscovery
+once at startup. The `doctor_get` MCP tool is report-only and never produces
+repairs.
 
 ## MCP tool errors (one to never ignore)
 

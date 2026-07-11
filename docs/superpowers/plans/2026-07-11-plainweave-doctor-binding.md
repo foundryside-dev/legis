@@ -1,5 +1,7 @@
 # Plainweave Doctor Binding Implementation Plan
 
+> **Superseded:** The project-rooted environment-binding design in this document was replaced by `../specs/2026-07-12-plainweave-runtime-autodiscovery-design.md`. It remains as the historical 1.5.0 implementation record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `legis doctor` detect and safely repair missing `PLAINWEAVE_MCP_CMD` wiring in project and existing Codex Legis MCP registrations for initialized Plainweave projects.

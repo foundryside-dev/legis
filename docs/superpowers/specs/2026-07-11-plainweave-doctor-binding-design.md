@@ -1,5 +1,7 @@
 # Plainweave binding repair in `legis doctor`
 
+> **Superseded:** The project-rooted environment-binding design in this document was replaced by `2026-07-12-plainweave-runtime-autodiscovery-design.md`. It remains as the historical 1.5.0 implementation record.
+
 Date: 2026-07-11
 
 Status: approved for implementation
