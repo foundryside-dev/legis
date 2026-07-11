@@ -861,7 +861,11 @@ def _resolve_executable(command: object) -> str | None:
         return None
 
 
-def _resolve_plainweave_executable(command: object, root: Path) -> str | None:
+def _resolve_plainweave_executable(
+    command: object,
+    root: Path,
+    args: list[str] | None = None,
+) -> str | None:
     if not isinstance(command, str) or not command:
         return None
     if install._path_head_is_project_local(command, root):
@@ -888,7 +892,10 @@ def _resolve_plainweave_executable(command: object, root: Path) -> str | None:
             continue
         if install._path_head_is_project_local(str(resolved_path), root):
             continue
-        if resolved_path.name.lower() not in {
+        if args is not None and args[:3] == ["-P", "-m", "plainweave.mcp_server"]:
+            if not install._is_python_executable(command, str(resolved_path)):
+                continue
+        elif resolved_path.name.lower() not in {
             "plainweave-mcp",
             "plainweave-mcp.exe",
         }:
@@ -968,11 +975,13 @@ def _project_plainweave_argv(
     raw_command = entry.get("command")
     if isinstance(raw_command, str) and "\0" in raw_command:
         return None, _INVALID_ENTRY
-    executable = _resolve_plainweave_executable(raw_command, root)
     args = entry.get("args")
-    if executable is None or not isinstance(args, list):
+    if not isinstance(args, list):
         return None, _INVALID_ENTRY
     if not all(isinstance(arg, str) and "\0" not in arg for arg in args):
+        return None, _INVALID_ENTRY
+    executable = _resolve_plainweave_executable(raw_command, root, args)
+    if executable is None:
         return None, _INVALID_ENTRY
 
     root_options: list[tuple[int, str, bool]] = []

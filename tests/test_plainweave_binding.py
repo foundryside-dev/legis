@@ -1788,6 +1788,28 @@ def test_root_pinned_project_entry_wins_over_path_fallback(
     assert result.error is None
 
 
+def test_project_entry_accepts_plainweave_python_module_launcher(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    args = ["-P", "-m", "plainweave.mcp_server", "--root", str(root)]
+    _write_entry(root, sys.executable, args)
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is True
+    assert shlex.split(result.command or "") == [
+        str(Path(sys.executable).resolve()),
+        *args,
+    ]
+    assert result.error is None
+
+
 @pytest.mark.parametrize(
     "root_form",
     ["separate-relative", "equals-relative", "separate-alias", "equals-alias"],
