@@ -9,6 +9,8 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.5.0] — 2026-07-12
+
 ### Added
 
 - **`legis doctor` checks and safely repairs Plainweave MCP launch bindings.**
@@ -27,6 +29,17 @@ _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 laun
   config remains unchanged and operator-owned. Installed-but-uninitialized
   projects stay healthy and non-applicable, and doctor neither initializes
   Plainweave nor creates a global Codex Legis registration.
+
+### Changed
+
+- **Platform support narrowed to POSIX.** The package now declares
+  `Operating System :: POSIX` instead of `OS Independent`. Configuration
+  inspection and repair rely on directory-relative, no-follow file operations
+  and advisory `flock` locking, which protect against path swaps and
+  cooperating-writer races on POSIX hosts (including supported Linux and macOS).
+  Windows is not currently supported; on a host lacking these primitives,
+  Plainweave discovery and binding checks fail closed and automatic MCP
+  configuration repair is unavailable.
 
 ## [1.4.0] — 2026-06-29
 
@@ -865,7 +878,8 @@ WP-M1 service-layer extraction, consolidated behind a stable version.
   `HTTPException`, so both HTTP and the forthcoming MCP adapter drive one code
   path. Behavior-preserving; FastAPI handlers are now thin adapters.
 
-[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/foundryside-dev/legis/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/foundryside-dev/legis/compare/v1.2.0...v1.4.0
 [1.2.0]: https://github.com/foundryside-dev/legis/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/foundryside-dev/legis/compare/v1.1.0...v1.1.1

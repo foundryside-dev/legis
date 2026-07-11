@@ -6,7 +6,7 @@ Legis is the fourth Weft product: the git/CI and governance side of the suite's 
 
 ## Status
 
-Legis is at **`1.4.0`** — the current gold release with post-launch posture,
+Legis is at **`1.5.0`** — the current gold release with post-launch posture,
 install, release-gate, policy-boundary, dependency, and package-layering
 hardening. The standalone git/CI surfaces, the graded 2x2 enforcement engine,
 the agent-programmable policy grammar, SEI-keyed attestations, and the
@@ -46,7 +46,7 @@ compatibility. On a host without the required primitives, Plainweave discovery
 and binding checks fail closed and automatic MCP configuration repair is
 unavailable.
 
-Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.4.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication runs live Loomweave conformance when live oracle configuration is provisioned. Missing configuration skips conformance without blocking publish; a provisioned oracle failure blocks the release. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
+Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.5.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication runs live Loomweave conformance when live oracle configuration is provisioned. Missing configuration skips conformance without blocking publish; a provisioned oracle failure blocks the release. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
 
 ### Recent hardening in practical terms
 
