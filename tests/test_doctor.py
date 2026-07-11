@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from legis import install
 from legis.cli import main as cli_main
 from legis.doctor import (
     DoctorCheck,
@@ -333,6 +334,23 @@ def test_mcp_json_absent_is_error(tmp_path):
     assert c.id == "install.mcp_json"
     assert c.status == "error"
     assert c.fixed is False
+
+
+@pytest.mark.parametrize("repair", [False, True], ids=["report", "fix"])
+def test_mcp_json_without_writer_lock_is_operator_only(
+    tmp_path: Path,
+    monkeypatch,
+    repair: bool,
+) -> None:
+    monkeypatch.setattr(install, "fcntl", None)
+
+    check = check_mcp_json(tmp_path, repair=repair)
+
+    assert check.status == "error"
+    assert check.repairable is False
+    assert check.fixed is False
+    assert check.message is not None and "platform" in check.message.lower()
+    assert not (tmp_path / ".mcp.json").exists()
 
 
 def test_mcp_json_repair_fixes_it(tmp_path):

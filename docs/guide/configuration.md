@@ -151,6 +151,14 @@ stay fail-closed.
 
 ### Plainweave MCP launch binding
 
+This integration has a POSIX-only safety boundary. Discovery, binding
+inspection/repair, and the shared configuration-writer lock require
+directory-relative file descriptors, `O_DIRECTORY`, `O_NOFOLLOW`, `fchmod`,
+anchored replacement, and advisory `flock`. On hosts without those primitives,
+doctor reports a non-repairable platform error and leaves configuration
+unchanged; `legis install --mcp` cannot safely update `.mcp.json`. Windows is
+not currently supported.
+
 Plainweave integration applies to the current project when either of these is
 true:
 

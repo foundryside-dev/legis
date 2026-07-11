@@ -103,6 +103,18 @@ def _anchored_io_support_error() -> str | None:
     return None
 
 
+def _discovery_io_support_error() -> str | None:
+    supported: Collection[object] = getattr(os, "supports_dir_fd", frozenset())
+    if (
+        getattr(os, "O_DIRECTORY", None) is None
+        or getattr(os, "O_NOFOLLOW", None) is None
+        or getattr(os, "O_NONBLOCK", None) is None
+        or os.open not in supported
+    ):
+        return "platform does not support race-safe Plainweave discovery"
+    return None
+
+
 def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
     try:
         resolved_root = root.resolve()
@@ -1032,6 +1044,13 @@ def _plainweave_state_is_initialized(root_fd: int) -> bool:
 
 def _discover_plainweave(root: Path) -> PlainweaveDiscovery:
     """Return a usable Plainweave command only for an initialized project."""
+    support_error = _discovery_io_support_error()
+    if support_error is not None:
+        return PlainweaveDiscovery(
+            applicable=True,
+            installed=False,
+            error=support_error,
+        )
     try:
         resolved_root = root.resolve()
         root_fd = _open_directory_path_nofollow(resolved_root)

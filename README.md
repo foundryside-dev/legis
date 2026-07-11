@@ -25,6 +25,17 @@ restart an MCP client. Reconnect or restart MCP clients after a repair. See the
 [Plainweave launch-binding configuration guide](docs/guide/configuration.md#plainweave-mcp-launch-binding)
 and the [`legis doctor` CLI reference](docs/guide/cli-reference.md#doctor).
 
+### Platform support
+
+Legis currently supports POSIX hosts with directory-relative, no-follow file
+operations and advisory `flock` locking (including supported Linux and macOS
+hosts). These primitives protect configuration inspection and repair against
+path swaps and cooperating-writer races. Windows is not currently supported;
+the package metadata therefore declares POSIX rather than OS-independent
+compatibility. On a host without the required primitives, Plainweave discovery
+and binding checks fail closed and automatic MCP configuration repair is
+unavailable.
+
 Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.1.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication runs live Loomweave conformance when live oracle configuration is provisioned. Missing configuration skips conformance without blocking publish; a provisioned oracle failure blocks the release. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
 
 ### Last week in practical terms

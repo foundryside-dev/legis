@@ -22,7 +22,7 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX",
     "Topic :: Software Development :: Version Control :: Git",
     "Topic :: Software Development :: Quality Assurance",
 ]

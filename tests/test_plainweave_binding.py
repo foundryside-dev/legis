@@ -1443,6 +1443,23 @@ def test_missing_dir_fd_support_fails_closed_before_inspection(
     assert state.error and "platform" in state.error.lower()
 
 
+def test_missing_dir_fd_support_fails_closed_before_discovery(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _initialize(tmp_path)
+    supported = set(plainweave_binding.os.supports_dir_fd)
+    supported.discard(plainweave_binding.os.open)
+    monkeypatch.setattr(plainweave_binding.os, "supports_dir_fd", supported)
+
+    result = discover_plainweave(tmp_path)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "platform" in result.error.lower()
+
+
 def test_unsupported_anchored_target_open_returns_error(
     tmp_path: Path,
     monkeypatch,
@@ -1836,7 +1853,10 @@ def test_project_config_swap_is_opened_anchored_nofollow_nonblocking(
             config.symlink_to(external)
         return real_open(path, flags, *args, **kwargs)
 
+    supported = set(plainweave_binding.os.supports_dir_fd)
+    supported.add(swap_before_open)
     monkeypatch.setattr(plainweave_binding.os, "open", swap_before_open)
+    monkeypatch.setattr(plainweave_binding.os, "supports_dir_fd", supported)
     monkeypatch.setenv("PATH", "")
 
     result = discover_plainweave(root)
@@ -1871,7 +1891,10 @@ def test_state_directory_swap_cannot_recruit_fallback(
             state.symlink_to(external, target_is_directory=True)
         return real_open(path, flags, *args, **kwargs)
 
+    supported = set(plainweave_binding.os.supports_dir_fd)
+    supported.add(swap_before_open)
     monkeypatch.setattr(plainweave_binding.os, "open", swap_before_open)
+    monkeypatch.setattr(plainweave_binding.os, "supports_dir_fd", supported)
     monkeypatch.setenv("PATH", str(fallback.parent))
 
     result = discover_plainweave(root)
