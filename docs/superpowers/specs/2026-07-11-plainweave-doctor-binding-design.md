@@ -35,9 +35,13 @@ The following invariants are load-bearing:
 
 1. An uninitialized project is not wired merely because Plainweave is installed
    globally.
-2. Repair changes only `PLAINWEAVE_MCP_CMD` in the target Legis entry.
-3. Repair preserves all other commands, arguments, agent IDs, environment
-   values, sibling servers, comments, newline style, and file mode.
+2. Project repair semantically changes only `PLAINWEAVE_MCP_CMD` in the target
+   Legis entry, while reserializing the whole JSON document with two-space
+   indentation.
+3. Project repair preserves all other commands, arguments, agent IDs,
+   environment values, sibling servers, the detected newline sequence,
+   final-newline presence, and file mode, but not arbitrary JSON whitespace.
+   Global Codex TOML repair additionally preserves comments and formatting.
 4. A missing global Codex Legis registration is not created by this feature.
 5. Ambiguous, malformed, symlinked, or unsupported configuration fails closed
    without being rewritten.
@@ -89,8 +93,10 @@ The project check reads `<root>/.mcp.json` and examines
   unchanged.
 
 Repair performs a nested JSON update and an atomic, mode-preserving write. It
-must retain every unrelated field and sibling entry byte-for-byte where JSON
-formatting permits; semantic preservation is mandatory.
+semantically changes only the target value and retains every unrelated field
+and sibling entry. The whole document is reserialized with two-space
+indentation while preserving the detected newline sequence, final-newline
+presence, and file mode; arbitrary JSON whitespace is intentionally normalized.
 
 ## Global Codex registration check and repair
 
@@ -143,7 +149,9 @@ Implementation follows red-green TDD. Tests cover:
 - PATH fallback adds an explicit resolved `--root`;
 - existing correct bindings are idempotent and byte-identical on a second fix;
 - stale values are replaced without changing unrelated fields, environment
-  values, sibling servers, comments, newline style, or file mode;
+  values, sibling servers, the detected newline sequence, final-newline
+  presence, or file mode; project JSON uses two-space indentation while Codex
+  TOML preserves comments and formatting;
 - malformed JSON/TOML, symlinks, unsafe environment values, inline unsupported
   TOML, dead executables, and mismatched roots remain unchanged and fail closed;
 - `collect_checks`, text/JSON rendering, exit status, and `doctor_get` expose the

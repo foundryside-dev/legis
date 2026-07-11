@@ -2082,6 +2082,42 @@ def test_ambiguous_project_json_cannot_establish_plainweave_discovery(
     assert "malformed" in result.error.lower()
 
 
+@pytest.mark.parametrize(
+    "number",
+    ["1e1000", "1e-1000", "-1e-1000", "1.234567890123456789"],
+)
+def test_project_repair_rejects_lossy_floating_point_unchanged(
+    tmp_path: Path,
+    monkeypatch,
+    number: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    config = root / ".mcp.json"
+    config.write_text(
+        '{"mcpServers":{"plainweave":{'
+        f'"type":"stdio","command":{json.dumps(str(command))},'
+        f'"args":["--root",{json.dumps(str(root))}]'
+        '},"legis":{'
+        f'"type":"stdio","command":{json.dumps(sys.executable)},'
+        '"args":["-P","-m","legis","mcp","--agent-id","operator"],'
+        f'"env":{{}},"unrelated":{number}'
+        "}}}",
+        encoding="utf-8",
+    )
+    before = config.read_bytes()
+    monkeypatch.setenv("PATH", "")
+
+    discovery = discover_plainweave(root)
+    error = plainweave_binding.repair_project_binding(root, "desired")
+
+    assert discovery.error is not None and "malformed" in discovery.error.lower()
+    assert error is not None and "malformed" in error.lower()
+    assert config.read_bytes() == before
+
+
 def test_non_string_project_args_are_invalid(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
     root.mkdir()

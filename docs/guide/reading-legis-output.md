@@ -193,8 +193,12 @@ For an applicable project, `[auto-fixable]` can mean either the nested
 `PLAINWEAVE_MCP_CMD` target or the project Legis registration is safely missing
 or stale. `install.mcp_json` owns registration repair and runs before the
 Plainweave binding checks; it may create or rebuild the project's `command`,
-`args`, `type`, and safe `env`. The binding-specific repair changes only the
-nested `PLAINWEAVE_MCP_CMD` value and preserves surrounding safe config.
+`args`, `type`, and safe `env`. The project binding-specific repair
+semantically changes only the nested `PLAINWEAVE_MCP_CMD` value, but it
+reserializes the whole `.mcp.json` document with two-space indentation. It
+preserves unrelated JSON values, the detected newline sequence, final-newline
+presence, and file mode rather than arbitrary whitespace formatting. Global
+Codex TOML repair remains text-surgical.
 
 `[fixed]` means that check repaired and post-verified its own scope. When the
 same run repairs project registration and then binds Plainweave, inspect

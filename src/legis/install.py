@@ -19,12 +19,14 @@ import importlib.metadata
 import importlib.resources
 import json
 import logging
+import math
 import os
 import re
 import shlex
 import shutil
 import stat
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1010,10 +1012,19 @@ def _strict_json_loads(content: str) -> Any:
     def reject_constant(_value: str) -> Any:
         raise ValueError("non-standard JSON numeric constant")
 
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("non-finite JSON number")
+        if Decimal(str(parsed)) != Decimal(value):
+            raise ValueError("JSON number cannot be represented without loss")
+        return parsed
+
     return json.loads(
         content,
         object_pairs_hook=object_from_pairs,
         parse_constant=reject_constant,
+        parse_float=finite_float,
     )
 
 

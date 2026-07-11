@@ -15,8 +15,12 @@ Legis stands itself up with `legis install`: instruction block, `legis-workflow`
 For a project with a direct Plainweave database or a valid root-pinned
 Plainweave MCP entry, doctor also checks that the project Legis registration and
 any existing global Codex Legis registration pass the project-scoped command
-through `PLAINWEAVE_MCP_CMD`. A binding-specific repair changes only that nested
-environment value and verifies it. In the same `--fix` run, the earlier
+through `PLAINWEAVE_MCP_CMD`. A project binding-specific repair semantically
+changes only that nested environment value and verifies it, but it reserializes
+the whole `.mcp.json` document with two-space indentation. It preserves all
+unrelated JSON values, the detected newline sequence, final-newline presence,
+and file mode; it does not preserve arbitrary whitespace formatting. Global
+Codex TOML repair remains text-surgical. In the same `--fix` run, the earlier
 `install.mcp_json` check may create or rebuild a missing or stale project Legis
 registration before the binding check runs. Inspect `[fixed]` on both
 `install.mcp_json` and `install.plainweave_project_binding` when that happens.

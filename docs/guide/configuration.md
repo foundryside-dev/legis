@@ -228,8 +228,13 @@ legis doctor --fix
 Within that run, `install.mcp_json` runs before the Plainweave binding checks. It
 may create or rebuild a missing or stale project Legis registration, including
 its `command`, `args`, `type`, and safe `env`, before the project binding check
-adds the target. The binding-specific repair then changes only the nested
-`PLAINWEAVE_MCP_CMD` value and preserves the surrounding safe configuration.
+adds the target. The project binding-specific repair semantically changes only
+the nested `PLAINWEAVE_MCP_CMD` value, but it reserializes the whole
+`.mcp.json` document with two-space indentation. Unrelated JSON values, the
+detected newline sequence, final-newline presence, and file mode are preserved;
+arbitrary indentation and other whitespace formatting are normalized. The
+global Codex TOML binding repair is text-surgical and preserves its surrounding
+comments and formatting.
 
 Legis serializes its own `.mcp.json` writers through the persistent
 `/.mcp.json.legis.lock` sidecar (created with mode `0600` and ignored by the

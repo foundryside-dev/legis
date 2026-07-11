@@ -231,7 +231,7 @@ the read-only counterpart — it never repairs; fixes stay on this CLI.)
 | Check or outcome | Meaning |
 |---|---|
 | `install.mcp_json` | Owns missing or stale project Legis registration repair. In a `--fix` run it may create or rebuild `command`, `args`, `type`, and safe `env` before Plainweave binding runs. |
-| `install.plainweave_project_binding` | Checks the project Legis entry's nested `PLAINWEAVE_MCP_CMD`. Its binding-specific repair changes only that target and preserves surrounding safe config. |
+| `install.plainweave_project_binding` | Checks the project Legis entry's nested `PLAINWEAVE_MCP_CMD`. Repair semantically changes only that target, but reserializes the whole `.mcp.json` document with two-space indentation; it preserves unrelated JSON values, the detected newline sequence, final-newline presence, and file mode rather than arbitrary whitespace. |
 | `install.plainweave_codex_binding` | Independently checks only an existing global Codex Legis entry. It never creates a global registration. |
 | `[auto-fixable]` | A safe target or project registration is missing or stale. |
 | `[fixed]` | That check repaired and post-verified its own scope. If registration and binding both changed, inspect `[fixed]` on both `install.mcp_json` and `install.plainweave_project_binding`. |

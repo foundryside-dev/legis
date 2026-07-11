@@ -772,6 +772,17 @@ def test_register_mcp_json_rejects_duplicate_keys_unchanged(tmp_path: Path) -> N
     assert mcp.read_bytes() == before
 
 
+@pytest.mark.parametrize(
+    "number",
+    ["1e1000", "1e-1000", "-1e-1000", "1.234567890123456789"],
+)
+def test_strict_json_rejects_lossy_floating_point_numbers(number: str) -> None:
+    with pytest.raises(ValueError, match="non-finite|without loss"):
+        install._strict_json_loads(f'{{"unrelated": {number}}}')
+
+    assert install._strict_json_loads('{"finite": 1e100}') == {"finite": 1e100}
+
+
 # ---------------------------------------------------------------------------
 # .gitignore
 # ---------------------------------------------------------------------------
