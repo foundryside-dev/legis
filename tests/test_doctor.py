@@ -41,6 +41,21 @@ from legis import install as legis_install
 from legis.plainweave_binding import PLAINWEAVE_ENV
 
 
+@pytest.fixture(autouse=True)
+def _isolate_doctor_codex_home(tmp_path: Path, monkeypatch) -> None:
+    """Keep every doctor inspection and repair away from the user's config."""
+    codex_home = tmp_path / ".codex-test-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+
+def test_doctor_tests_use_isolated_codex_home(tmp_path: Path) -> None:
+    expected_home = tmp_path / ".codex-test-home"
+
+    assert os.environ.get("CODEX_HOME") == str(expected_home)
+    assert plainweave_binding._codex_config_path() == expected_home / "config.toml"
+
+
 def _write_mcp_entry(tmp_path, entry):
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"legis": entry}}))
 
