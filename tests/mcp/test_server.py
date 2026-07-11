@@ -3830,38 +3830,100 @@ def test_warpline_preflight_get_checked_with_injected_client(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_build_runtime_wires_plainweave_from_env(monkeypatch, tmp_path):
+def _initialized_plainweave_project(root):
+    root.mkdir()
+    state = root / ".plainweave"
+    state.mkdir()
+    (state / "plainweave.db").touch()
+    executable = root.parent / f"{root.name}-bin" / "plainweave-mcp"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    (root / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plainweave": {
+                        "type": "stdio",
+                        "command": str(executable),
+                        "args": ["--root", str(root)],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return executable.resolve()
+
+
+def test_build_runtime_discovers_plainweave_from_active_project(monkeypatch, tmp_path):
     from legis.mcp import build_runtime
-    from legis.plainweave_preflight.client import PlainweaveMcpClient
+    from legis.plainweave_preflight.client import PlainweaveMcpClient, StdioMcpInvoke
 
-    monkeypatch.setenv("PLAINWEAVE_MCP_CMD", "echo")
-    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
-    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
-    runtime = build_runtime("agent-x")
-    assert isinstance(runtime.plainweave, PlainweaveMcpClient)
-
-
-def test_build_runtime_leaves_plainweave_unwired_without_env(monkeypatch, tmp_path):
-    from legis.mcp import build_runtime
-
+    root = tmp_path / "project"
+    executable = _initialized_plainweave_project(root)
+    monkeypatch.chdir(root)
     monkeypatch.delenv("PLAINWEAVE_MCP_CMD", raising=False)
-    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+
     runtime = build_runtime("agent-x")
-    assert runtime.plainweave is None
+
+    assert isinstance(runtime.plainweave, PlainweaveMcpClient)
+    assert runtime.plainweave._repo == str(root)
+    assert isinstance(runtime.plainweave._invoke, StdioMcpInvoke)
+    assert runtime.plainweave._invoke._command == [
+        str(executable),
+        "--root",
+        str(root),
+    ]
 
 
-def test_build_runtime_degrades_plainweave_to_none_on_bad_cmd(monkeypatch, tmp_path):
-    # A misconfigured ADVISORY command must NOT crash the sole governance authority
-    # at startup; it degrades to no advisory context (governance unaffected).
+def test_build_runtime_ignores_stale_plainweave_env_for_another_project(
+    monkeypatch, tmp_path
+):
     from legis.mcp import build_runtime
 
+    active_root = tmp_path / "active"
+    active_executable = _initialized_plainweave_project(active_root)
+    stale_root = tmp_path / "stale"
+    stale_executable = _initialized_plainweave_project(stale_root)
+    monkeypatch.chdir(active_root)
     monkeypatch.setenv(
-        "PLAINWEAVE_MCP_CMD", "   "
-    )  # blank after shlex.split -> fail-safe None
-    monkeypatch.setenv("LEGIS_SOURCE_ROOT", str(tmp_path))
-    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+        "PLAINWEAVE_MCP_CMD",
+        f"{stale_executable} --root {stale_root}",
+    )
+
     runtime = build_runtime("agent-x")
+
+    assert runtime.plainweave._repo == str(active_root)
+    assert runtime.plainweave._invoke._command == [
+        str(active_executable),
+        "--root",
+        str(active_root),
+    ]
+
+
+def test_build_runtime_warns_and_degrades_when_plainweave_discovery_fails(
+    monkeypatch, tmp_path, caplog
+):
+    from legis.mcp import build_runtime
+
+    root = tmp_path / "project"
+    root.mkdir()
+    state = root / ".plainweave"
+    state.mkdir()
+    (state / "plainweave.db").touch()
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="legis.mcp"):
+        runtime = build_runtime("agent-x")
+
+    warning = caplog.text.lower()
     assert runtime.plainweave is None
+    assert "runtime autodiscovery failed" in warning
+    assert "governance unaffected" in warning
 
 
 def test_plainweave_preflight_get_unavailable_when_unwired(tmp_path):

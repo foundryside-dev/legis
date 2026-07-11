@@ -231,28 +231,40 @@ def build_runtime(agent_id: str) -> McpRuntime:
                 "disabled (governance unaffected).", exc)
             warpline = None
 
+    import shlex
+    from legis.config import project_root
+    from legis.plainweave_binding import discover_plainweave
+    from legis.plainweave_preflight.client import (
+        PlainweaveError,
+        PlainweaveMcpClient,
+        StdioMcpInvoke as PlainweaveStdioMcpInvoke,
+    )
+
     plainweave = None
-    plainweave_cmd = os.environ.get("PLAINWEAVE_MCP_CMD")
-    if plainweave_cmd:
-        import shlex
-        from legis.plainweave_preflight.client import (
-            PlainweaveError,
-            PlainweaveMcpClient,
-        )
-        from legis.plainweave_preflight.client import (
-            StdioMcpInvoke as PlainweaveStdioMcpInvoke,
-        )
+    root = project_root()
+    discovery = discover_plainweave(root)
+    if discovery.command is not None:
         try:
-            argv = shlex.split(plainweave_cmd)
+            argv = shlex.split(discovery.command)
             if not argv:
-                raise PlainweaveError("PLAINWEAVE_MCP_CMD is blank")
-            from legis.config import project_root
-            plainweave = PlainweaveMcpClient(invoke=PlainweaveStdioMcpInvoke(command=argv), repo=str(project_root()))
+                raise PlainweaveError("plainweave-mcp command is empty")
+            plainweave = PlainweaveMcpClient(
+                invoke=PlainweaveStdioMcpInvoke(command=argv),
+                repo=str(root),
+            )
         except (PlainweaveError, ValueError) as exc:
             logging.getLogger(__name__).warning(
-                "PLAINWEAVE_MCP_CMD is set but invalid (%s); plainweave advisory context "
-                "disabled (governance unaffected).", exc)
+                "Plainweave runtime autodiscovery produced an invalid command (%s); "
+                "plainweave advisory context disabled (governance unaffected).",
+                exc,
+            )
             plainweave = None
+    elif discovery.error is not None:
+        logging.getLogger(__name__).warning(
+            "Plainweave runtime autodiscovery failed (%s); plainweave advisory context "
+            "disabled (governance unaffected).",
+            discovery.error,
+        )
 
     protected_gate = None
     trail_verifier = None

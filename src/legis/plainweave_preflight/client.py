@@ -214,7 +214,7 @@ class StdioMcpInvoke:
 
     def __call__(self, tool: str, arguments: dict) -> dict:
         if not self._command:
-            raise PlainweaveError("plainweave-mcp command is empty (PLAINWEAVE_MCP_CMD blank?)")
+            raise PlainweaveError("plainweave-mcp command is empty")
         msgs = (
             {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "legis", "version": "1"}}},
             {"jsonrpc": "2.0", "method": "notifications/initialized"},
