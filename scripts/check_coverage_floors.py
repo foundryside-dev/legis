@@ -25,15 +25,15 @@ import sys
 # A prefix ending in ".py" matches a single module; otherwise it matches a
 # package subtree. Current coverage (2026-06-06) shown in the trailing comment.
 FLOORS: dict[str, float] = {
-    "src/legis/crypto/": 93.0,       # security-critical: HMAC signing leaf (was under enforcement's floor)
+    "src/legis/crypto/": 93.0,  # security-critical: HMAC signing leaf (was under enforcement's floor)
     "src/legis/enforcement/": 93.0,  # currently ~95.0
-    "src/legis/posture/": 93.0,      # security-critical: signed key-gated floor
-
-    "src/legis/service/": 92.0,      # currently ~94.1
-    "src/legis/governance/": 90.0,   # currently ~92.7
-    "src/legis/api/": 88.0,          # currently ~89.8
-    "src/legis/mcp.py": 80.0,        # currently ~82
-    "src/legis/doctor.py": 88.0,     # currently ~91
+    "src/legis/posture/": 93.0,  # security-critical: signed key-gated floor
+    "src/legis/service/": 92.0,  # currently ~94.1
+    "src/legis/governance/": 90.0,  # currently ~92.7
+    "src/legis/api/": 88.0,  # currently ~89.8
+    "src/legis/mcp.py": 80.0,  # currently ~82
+    "src/legis/doctor.py": 88.0,  # currently ~91
+    "src/legis/plainweave_binding.py": 80.0,  # race-aware config repair
     "src/legis/warpline_preflight/": 88.0,  # currently ~92
     "src/legis/plainweave_preflight/": 88.0,  # advisory sibling consumer
 }
@@ -88,11 +88,11 @@ def main(argv: list[str]) -> int:
             continue
         pct = 100.0 * covered / statements
         status = "ok" if pct >= floor else "FAIL"
-        print(f"  [{status}] {prefix:28} {pct:5.1f}%  (floor {floor:.1f}%, {covered}/{statements})")
+        print(
+            f"  [{status}] {prefix:28} {pct:5.1f}%  (floor {floor:.1f}%, {covered}/{statements})"
+        )
         if pct < floor:
-            failures.append(
-                f"  {prefix}: {pct:.1f}% < floor {floor:.1f}%"
-            )
+            failures.append(f"  {prefix}: {pct:.1f}% < floor {floor:.1f}%")
 
     if failures:
         print("\nCoverage floor breach:", file=sys.stderr)
