@@ -28,6 +28,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Callable
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on non-POSIX hosts
+    fcntl = None  # type: ignore[assignment]
+
 # ``OperatorKeyCustodyError`` now lives in the posture leaf (``posture/errors``)
 # so the posture package can raise/catch it without importing this 1500-LOC
 # setup module (architecture handover B5 / H-2). Re-exported here so existing
@@ -314,6 +319,67 @@ def _atomic_write_text(path: Path, content: str) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+class _ConfigWriterLockError(OSError):
+    """A stable configuration sidecar could not be safely locked."""
+
+
+def _config_writer_lock_support_error() -> str | None:
+    if fcntl is None or not hasattr(fcntl, "flock"):
+        return "platform does not support advisory configuration writer locks"
+    if getattr(os, "O_NOFOLLOW", None) is None or not hasattr(os, "fchmod"):
+        return "platform does not support safe configuration lock files"
+    return None
+
+
+@contextlib.contextmanager
+def _config_writer_lock(path: Path, *, dir_fd: int | None = None):
+    """Serialize cooperating Legis writers through a stable sidecar lock."""
+    support_error = _config_writer_lock_support_error()
+    if support_error is not None:
+        raise _ConfigWriterLockError(support_error)
+
+    lock_name = f"{path.name}.legis.lock"
+    lock_path = path.with_name(lock_name)
+    open_target: str | Path = lock_name if dir_fd is not None else lock_path
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        if dir_fd is None:
+            fd = os.open(open_target, flags, 0o600)
+        else:
+            fd = os.open(open_target, flags, 0o600, dir_fd=dir_fd)
+    except (OSError, NotImplementedError, TypeError, ValueError) as exc:
+        raise _ConfigWriterLockError(str(exc)) from exc
+    try:
+        try:
+            lock_stat = os.fstat(fd)
+            if not stat.S_ISREG(lock_stat.st_mode):
+                raise OSError(f"configuration lock is not a regular file: {lock_path}")
+            if lock_stat.st_nlink != 1:
+                raise OSError(f"configuration lock has unsafe link count: {lock_path}")
+            if hasattr(os, "geteuid") and lock_stat.st_uid != os.geteuid():
+                raise OSError(f"configuration lock has unsafe owner: {lock_path}")
+            if dir_fd is None:
+                path_stat = lock_path.lstat()
+            else:
+                path_stat = os.stat(lock_name, dir_fd=dir_fd, follow_symlinks=False)
+            if (path_stat.st_dev, path_stat.st_ino) != (
+                lock_stat.st_dev,
+                lock_stat.st_ino,
+            ):
+                raise OSError(
+                    f"configuration lock changed while opening it: {lock_path}"
+                )
+            os.fchmod(fd, 0o600)
+            assert fcntl is not None
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        except (OSError, NotImplementedError, TypeError, ValueError) as exc:
+            raise _ConfigWriterLockError(str(exc)) from exc
+        yield
+    finally:
+        os.close(fd)
 
 
 def inject_instructions(file_path: Path) -> tuple[bool, str]:
@@ -899,12 +965,14 @@ _LEGIS_IGNORE_RULES = (
     ".weft/legis/",
     "/.weft/legis/operator_session.json",
     "/.weft/legis/operator.age",
+    "/.mcp.json.legis.lock",
 )
 _LEGIS_IGNORE_BLOCK = (
     "\n# Legis — machine-written runtime state (regenerated/local; never commit)\n"
     ".weft/legis/\n"
     "/.weft/legis/operator_session.json\n"
     "/.weft/legis/operator.age\n"
+    "/.mcp.json.legis.lock\n"
 )
 
 
@@ -1344,6 +1412,28 @@ def _legis_mcp_entry(
 
 
 def register_mcp_json(
+    project_root: Path,
+    agent_id: str | None = None,
+    *,
+    doctor_safe: bool = False,
+) -> tuple[bool, str]:
+    """Register Legis while serializing all cooperating .mcp.json writers."""
+    try:
+        path = project_path(project_root, ".mcp.json")
+    except (OSError, UnsafeInstallPathError) as exc:
+        return False, str(exc)
+    try:
+        with _config_writer_lock(path):
+            return _register_mcp_json_unlocked(
+                project_root,
+                agent_id,
+                doctor_safe=doctor_safe,
+            )
+    except _ConfigWriterLockError as exc:
+        return False, f"could not lock project .mcp.json for update: {exc}"
+
+
+def _register_mcp_json_unlocked(
     project_root: Path,
     agent_id: str | None = None,
     *,

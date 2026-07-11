@@ -82,6 +82,9 @@ def _read_fd(fd: int) -> bytes:
 
 
 def _anchored_io_support_error() -> str | None:
+    lock_error = install._config_writer_lock_support_error()
+    if lock_error is not None:
+        return lock_error
     directory_flag = getattr(os, "O_DIRECTORY", None)
     nofollow_flag = getattr(os, "O_NOFOLLOW", None)
     supported: Collection[object] = getattr(os, "supports_dir_fd", frozenset())
@@ -258,6 +261,24 @@ def _anchored_container_changed(inspection: _BindingInspection) -> str | None:
 
 
 def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | None:
+    container_path = inspection.container_path
+    root_fd = inspection.root_fd
+    if container_path is None or root_fd is None:
+        return f"{inspection.repair_subject} snapshot is incomplete"
+    try:
+        with install._config_writer_lock(
+            container_path / inspection.target_name,
+            dir_fd=root_fd,
+        ):
+            return _anchored_replace_unlocked(inspection, content)
+    except install._ConfigWriterLockError as exc:
+        return f"could not lock {inspection.repair_subject} for update: {exc}"
+
+
+def _anchored_replace_unlocked(
+    inspection: _BindingInspection,
+    content: bytes,
+) -> str | None:
     root_fd = inspection.root_fd
     snapshot = inspection.snapshot
     identity = inspection.identity

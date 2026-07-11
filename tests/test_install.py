@@ -9,6 +9,8 @@ import shutil
 import stat
 import subprocess
 import sys
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -627,6 +629,64 @@ def test_register_mcp_json_creates_file_with_legis_entry(tmp_path, monkeypatch):
     assert entry["command"] == "/usr/bin/python3"
     assert entry["args"] == ["-P", "-m", "legis", "mcp", "--agent-id", "claude-code"]
     assert "--agent-id" in entry["args"]
+    lock = tmp_path / ".mcp.json.legis.lock"
+    assert lock.is_file()
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+
+
+def test_register_mcp_json_uses_shared_writer_lock(tmp_path, monkeypatch) -> None:
+    assert hasattr(install, "_config_writer_lock")
+    locked_paths: list[Path] = []
+
+    @contextmanager
+    def observed_lock(path: Path):
+        locked_paths.append(path)
+        yield
+
+    monkeypatch.setattr(install, "_config_writer_lock", observed_lock)
+
+    ok, _ = install.register_mcp_json(tmp_path)
+
+    assert ok
+    assert locked_paths == [tmp_path / ".mcp.json"]
+
+
+def test_register_mcp_json_rejects_symlinked_writer_lock(tmp_path: Path) -> None:
+    external = tmp_path / "external.lock"
+    external.touch()
+    (tmp_path / ".mcp.json.legis.lock").symlink_to(external)
+
+    ok, message = install.register_mcp_json(tmp_path)
+
+    assert ok is False
+    assert "lock" in message.lower()
+    assert not (tmp_path / ".mcp.json").exists()
+
+
+def test_register_mcp_json_rejects_hardlinked_writer_lock(tmp_path: Path) -> None:
+    victim = tmp_path / "operator-owned"
+    victim.touch()
+    victim.chmod(0o644)
+    os.link(victim, tmp_path / ".mcp.json.legis.lock")
+
+    ok, message = install.register_mcp_json(tmp_path)
+
+    assert ok is False
+    assert "lock" in message.lower()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+    assert not (tmp_path / ".mcp.json").exists()
+
+
+def test_register_mcp_json_returns_error_for_symlinked_target(tmp_path: Path) -> None:
+    external = tmp_path / "external.json"
+    external.write_text("{}\n", encoding="utf-8")
+    (tmp_path / ".mcp.json").symlink_to(external)
+
+    ok, message = install.register_mcp_json(tmp_path)
+
+    assert ok is False
+    assert "symlink" in message.lower()
+    assert external.read_text(encoding="utf-8") == "{}\n"
 
 
 def test_register_mcp_json_preserves_sibling_entries(tmp_path):
@@ -722,6 +782,7 @@ def test_ensure_gitignore_creates_file(tmp_path):
     assert ok
     content = (tmp_path / ".gitignore").read_text()
     assert ".weft/legis/" in content
+    assert "/.mcp.json.legis.lock" in content
     assert ".weft/\n" not in content
 
 
@@ -1043,12 +1104,14 @@ def test_inject_append_keeps_marker_off_users_last_line(tmp_path):
 def test_ensure_gitignore_present_among_other_rules_not_duplicated(tmp_path):
     # All of legis's rules already present alongside unrelated rules → nothing to
     # add. The posture-ratchet operator-secret paths are now part of the rule set
-    # (root-anchored), so a complete .gitignore lists all three.
+    # (root-anchored), and the stable writer lock is local-only, so a complete
+    # .gitignore lists all four.
     (tmp_path / ".gitignore").write_text(
         "*.db\n"
         ".weft/legis/\n"
         "/.weft/legis/operator_session.json\n"
         "/.weft/legis/operator.age\n"
+        "/.mcp.json.legis.lock\n"
     )
     ok, msg = ensure_gitignore(tmp_path)
     assert ok

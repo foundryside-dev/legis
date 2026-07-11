@@ -4,7 +4,9 @@ import json
 import os
 import shlex
 import sys
+import threading
 import tomllib
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -698,6 +700,7 @@ def test_codex_repair_stays_anchored_when_config_directory_is_swapped(
 
     assert error and "directory changed" in error.lower()
     assert external_config.read_bytes() == external_before
+    assert not (external_home / "config.toml.legis.lock").exists()
     assert (moved / "config.toml").read_bytes() == original
 
 
@@ -1212,6 +1215,84 @@ def test_repair_refuses_to_overwrite_changed_validated_snapshot(
     assert config.read_bytes() == newer
 
 
+def test_repair_waits_for_legis_writer_and_rechecks_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _write_legis_entry(tmp_path, env={"KEEP_ME": "original"})
+    assert hasattr(plainweave_binding.install, "_config_writer_lock")
+    real_lock = plainweave_binding.install._config_writer_lock
+    attempting_lock = threading.Event()
+    repair_acquired_lock = threading.Event()
+    writer_in_critical_section = threading.Event()
+    allow_writer = threading.Event()
+    repair_result: list[str | None] = []
+    register_result: list[tuple[bool, str]] = []
+    newer_bytes: list[bytes] = []
+
+    @contextmanager
+    def observed_lock(path: Path, *, dir_fd: int | None = None):
+        if threading.current_thread().name == "binding-repair":
+            attempting_lock.set()
+        with real_lock(path, dir_fd=dir_fd):
+            if threading.current_thread().name == "binding-repair":
+                repair_acquired_lock.set()
+            yield
+
+    def staged_register(*_args, **_kwargs) -> tuple[bool, str]:
+        writer_in_critical_section.set()
+        assert allow_writer.wait(timeout=2)
+        newer = json.loads(config.read_text(encoding="utf-8"))
+        newer["mcpServers"]["legis"]["timeout"] = 99_000
+        newer["mcpServers"]["legis"]["env"]["OPERATOR_ADDED"] = "newer"
+        config.write_text(json.dumps(newer, indent=2) + "\n", encoding="utf-8")
+        newer_bytes.append(config.read_bytes())
+        return True, "cooperating registration updated .mcp.json"
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "_config_writer_lock",
+        observed_lock,
+    )
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "_register_mcp_json_unlocked",
+        staged_register,
+    )
+
+    writer = threading.Thread(
+        name="registration-writer",
+        target=lambda: register_result.append(
+            plainweave_binding.install.register_mcp_json(tmp_path)
+        ),
+    )
+    writer.start()
+    assert writer_in_critical_section.wait(timeout=2)
+    repair = threading.Thread(
+        name="binding-repair",
+        target=lambda: repair_result.append(
+            plainweave_binding.repair_project_binding(tmp_path, "desired")
+        ),
+    )
+    repair.start()
+    assert attempting_lock.wait(timeout=2)
+    assert not repair_acquired_lock.wait(timeout=0.1)
+    allow_writer.set()
+
+    writer.join(timeout=2)
+    repair.join(timeout=2)
+    assert not writer.is_alive()
+    assert not repair.is_alive()
+    assert repair_acquired_lock.is_set()
+    assert register_result and register_result[0][0] is True
+    assert (
+        repair_result
+        and repair_result[0] is not None
+        and "changed" in repair_result[0].lower()
+    )
+    assert newer_bytes and config.read_bytes() == newer_bytes[0]
+
+
 def test_repair_stays_anchored_when_project_path_is_swapped_for_symlink(
     tmp_path: Path,
     monkeypatch,
@@ -1243,6 +1324,7 @@ def test_repair_stays_anchored_when_project_path_is_swapped_for_symlink(
 
     assert error is not None and "directory changed" in error.lower()
     assert external_config.read_bytes() == external_bytes
+    assert not (external / ".mcp.json.legis.lock").exists()
     assert (moved / ".mcp.json").read_bytes() == original_bytes
 
 

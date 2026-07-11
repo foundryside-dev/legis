@@ -218,6 +218,18 @@ its `command`, `args`, `type`, and safe `env`, before the project binding check
 adds the target. The binding-specific repair then changes only the nested
 `PLAINWEAVE_MCP_CMD` value and preserves the surrounding safe configuration.
 
+Legis serializes its own `.mcp.json` writers through the persistent
+`/.mcp.json.legis.lock` sidecar (created with mode `0600` and ignored by the
+managed project `.gitignore`). The same lock covers ordinary MCP registration
+and the Plainweave binding replacement, so a waiting Legis writer rechecks the
+validated file snapshot after the preceding writer completes. The lock is
+advisory: editors and other processes that do not participate in it can still
+write during the final atomic-replace syscall window. Stop those writers while
+running an automatic repair when that distinction matters.
+
+An existing global Codex repair uses the same protocol with a persistent
+`config.toml.legis.lock` beside `$CODEX_HOME/config.toml`.
+
 Each successful repair prints its own `[fixed]` line. When project registration
 and binding both needed repair, inspect `[fixed]` on both `install.mcp_json` and
 `install.plainweave_project_binding`; also inspect
