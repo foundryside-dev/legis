@@ -1241,15 +1241,70 @@ def test_repair_stays_anchored_when_project_path_is_swapped_for_symlink(
 
     error = plainweave_binding.repair_project_binding(project, "desired")
 
+    assert error is not None and "directory changed" in error.lower()
     assert external_config.read_bytes() == external_bytes
-    moved_config = moved / ".mcp.json"
-    if error is None:
-        moved_entry = json.loads(moved_config.read_text(encoding="utf-8"))[
-            "mcpServers"
-        ]["legis"]
-        assert moved_entry["env"] == {"OWNER": "original", PLAINWEAVE_ENV: "desired"}
-    else:
-        assert moved_config.read_bytes() == original_bytes
+    assert (moved / ".mcp.json").read_bytes() == original_bytes
+
+
+def test_repair_rejects_project_symlink_back_to_same_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    original_config = _write_legis_entry(project, env={"OWNER": "original"})
+    original_bytes = original_config.read_bytes()
+    moved = tmp_path / "moved-original"
+    original_gate = plainweave_binding.install._parsed_mcp_entry_is_current
+
+    def swap_root_after_validation(root: Path, *args, **kwargs) -> bool:
+        current = original_gate(root, *args, **kwargs)
+        project.rename(moved)
+        project.symlink_to(moved, target_is_directory=True)
+        return current
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "_parsed_mcp_entry_is_current",
+        swap_root_after_validation,
+    )
+
+    error = plainweave_binding.repair_project_binding(project, "desired")
+
+    assert error is not None and "directory changed" in error.lower()
+    assert project.is_symlink() and project.resolve() == moved
+    assert (moved / ".mcp.json").read_bytes() == original_bytes
+
+
+def test_repair_rejects_symlinked_project_ancestor_back_to_same_tree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    parent = tmp_path / "project-parent"
+    project = parent / "project"
+    project.mkdir(parents=True)
+    original_config = _write_legis_entry(project, env={"OWNER": "original"})
+    original_bytes = original_config.read_bytes()
+    moved_parent = tmp_path / "moved-project-parent"
+    original_gate = plainweave_binding.install._parsed_mcp_entry_is_current
+
+    def swap_parent_after_validation(root: Path, *args, **kwargs) -> bool:
+        current = original_gate(root, *args, **kwargs)
+        parent.rename(moved_parent)
+        parent.symlink_to(moved_parent, target_is_directory=True)
+        return current
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "_parsed_mcp_entry_is_current",
+        swap_parent_after_validation,
+    )
+
+    error = plainweave_binding.repair_project_binding(project, "desired")
+
+    assert error is not None and "directory changed" in error.lower()
+    assert parent.is_symlink() and parent.resolve() == moved_parent
+    assert (moved_parent / "project" / ".mcp.json").read_bytes() == original_bytes
 
 
 def test_failure_after_temp_creation_cleans_temp_and_preserves_destination(

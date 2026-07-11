@@ -125,6 +125,11 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
             pass
         return _binding_error(error, registered=registered)
 
+    try:
+        root_stat = os.fstat(root_fd)
+    except (OSError, NotImplementedError) as exc:
+        return fail(f"could not inspect resolved project root safely: {exc}")
+
     target_flags = os.O_RDONLY | nofollow_flag | getattr(os, "O_CLOEXEC", 0)
     try:
         target_fd = os.open(".mcp.json", target_flags, dir_fd=root_fd)
@@ -193,6 +198,8 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
         data=data,
         entry=entry,
         env=safe_env,
+        container_path=resolved_root,
+        container_identity=(root_stat.st_dev, root_stat.st_ino),
     )
 
 
@@ -214,21 +221,36 @@ def _write_all(fd: int, content: bytes) -> None:
         remaining = remaining[written:]
 
 
+def _open_directory_path_nofollow(path: Path) -> int:
+    if not path.is_absolute():
+        raise ValueError("container path is not absolute")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    parts = path.parts
+    current_fd = os.open(path.anchor, flags)
+    try:
+        for part in parts[1:]:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+    except Exception:
+        os.close(current_fd)
+        raise
+    return current_fd
+
+
 def _anchored_container_changed(inspection: _BindingInspection) -> str | None:
     path = inspection.container_path
     identity = inspection.container_identity
     if path is None or identity is None:
         return None
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    flags |= getattr(os, "O_CLOEXEC", 0)
     try:
-        current_path = path.resolve()
-        current_fd = os.open(current_path, flags)
+        current_fd = _open_directory_path_nofollow(path)
         try:
             current_stat = os.fstat(current_fd)
         finally:
             os.close(current_fd)
-    except (OSError, RuntimeError, NotImplementedError, TypeError) as exc:
+    except (OSError, RuntimeError, NotImplementedError, TypeError, ValueError) as exc:
         return f"{inspection.subject} directory changed after inspection: {exc}"
     if (current_stat.st_dev, current_stat.st_ino) != identity:
         return f"{inspection.subject} directory changed after inspection"
@@ -620,7 +642,7 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
         subject="Codex config.toml",
         repair_subject="global Codex Plainweave binding",
         text=text,
-        container_path=config_path.parent,
+        container_path=config_dir,
         container_identity=(root_stat.st_dev, root_stat.st_ino),
     )
     if not inspection.state.current:
