@@ -12,6 +12,16 @@ The transport-agnostic service layer (WP-M1) and the agent-facing MCP surface on
 
 Legis stands itself up with `legis install`: instruction block, `legis-workflow` skill pack, SessionStart hook, `.mcp.json` registration, and the Legis-only `.weft/legis/` ignore rule. `legis doctor [--fix]` provides an operator health view and safe repair for the install + config layer, tagging each problem `[auto-fixable]` or `[operator]` so it is clear what `--fix` will and will not touch. Doctor names enablement paths when governance is unwired (policy cells, Wardline routing), but it reports rather than auto-enabling policy surfaces or touching signing keys.
 
+For a project with a direct Plainweave database or a valid root-pinned
+Plainweave MCP entry, doctor also checks that the project Legis registration and
+any existing global Codex Legis registration pass the project-scoped command
+through `PLAINWEAVE_MCP_CMD`. `--fix` changes only that nested environment value
+and verifies the repair; it does not initialize Plainweave, create a global
+Codex registration, or restart an MCP client. Reconnect or restart MCP clients
+after a repair. See the
+[Plainweave launch-binding configuration guide](docs/guide/configuration.md#plainweave-mcp-launch-binding)
+and the [`legis doctor` CLI reference](docs/guide/cli-reference.md#doctor).
+
 Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.1.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication is gated on live Loomweave conformance. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
 
 ### Last week in practical terms

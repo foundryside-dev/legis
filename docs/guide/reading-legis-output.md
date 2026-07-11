@@ -177,6 +177,29 @@ Each problem line is tagged so you know who fixes it:
 doctor reports the governance surface; it never auto-enables a cell or touches a
 signing key.
 
+For Plainweave launch wiring, read the two check IDs separately:
+
+| Check ID | What it means |
+|---|---|
+| `install.plainweave_project_binding` | The current project's Legis MCP entry needs the project-scoped Plainweave command in `PLAINWEAVE_MCP_CMD`. Project registration repair itself remains `install.mcp_json` work. |
+| `install.plainweave_codex_binding` | An existing global Codex Legis MCP entry needs the same binding. No global registration is a healthy, non-applicable result; doctor never creates one. |
+
+The checks are independent. Doctor also reports both as healthy and not
+applicable when Plainweave is installed but the current project is not
+initialized, or when Plainweave is not configured for the project. A global
+executable alone does not initialize or wire the project.
+
+For an applicable project, `[auto-fixable]` means the nested
+`PLAINWEAVE_MCP_CMD` value is safely missing or stale. `[fixed]` means doctor
+changed only that value and post-verified it. `[operator]` means doctor left the
+configuration unchanged—for example, because project config is unsafe,
+secret-bearing, or malformed, or Codex TOML is malformed or unsupported.
+
+After `[fixed]`, reconnect or restart the affected MCP client. Legis MCP
+processes build their runtime once, so the running process does not pick up the
+new `PLAINWEAVE_MCP_CMD`. The `doctor_get` MCP tool is report-only and never
+produces repairs; use `legis doctor --fix` from an operator shell.
+
 ## MCP tool errors (one to never ignore)
 
 The agent surface returns typed `error_code`s with `recoverable` and `next_action`

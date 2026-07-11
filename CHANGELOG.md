@@ -9,6 +9,17 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+### Added
+
+- **`legis doctor` checks and safely repairs Plainweave MCP launch bindings.**
+  Independent project and existing-global-Codex checks detect missing or stale
+  `PLAINWEAVE_MCP_CMD` targets for applicable projects. `--fix` changes only the
+  nested target value, preserves surrounding safe configuration, post-verifies
+  the repair, and tells operators to reconnect; unsafe or unsupported config
+  remains unchanged and operator-owned. Installed-but-uninitialized projects
+  stay healthy and non-applicable, and doctor neither initializes Plainweave nor
+  creates a global Codex Legis registration.
+
 ## [1.4.0] — 2026-06-29
 
 Two internal hardenings on top of 1.3.0: a `policy_boundary_check` scan-root

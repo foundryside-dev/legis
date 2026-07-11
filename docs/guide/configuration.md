@@ -147,6 +147,61 @@ stay fail-closed.
 |---|---|
 | `LOOMWEAVE_API_URL` | Loomweave identity API — SEI resolution and lineage. Without it, legis degrades honestly (identity status `unavailable`) rather than guessing. |
 | `FILIGREE_API_URL` | Filigree issue-tracker API — closure-gate and issue context. |
+| `PLAINWEAVE_MCP_CMD` | Project-scoped Plainweave MCP command. A Legis MCP process reads it when it builds its runtime; without it, Plainweave advisory context is unavailable. |
+
+### Plainweave MCP launch binding
+
+Plainweave integration applies to the current project when either of these is
+true:
+
+- `.plainweave/plainweave.db` exists directly under the project root; or
+- the project `.mcp.json` contains a valid, root-pinned
+  `mcpServers.plainweave` entry.
+
+A globally installed `plainweave-mcp` executable alone does not wire an
+uninitialized project. In that state, doctor reports both binding checks as
+healthy and not applicable. It also treats a project with no Plainweave
+configuration as a healthy, non-applicable state.
+
+When Plainweave applies, Legis needs the resolved project command in the Legis
+MCP registration's `PLAINWEAVE_MCP_CMD` value:
+
+| Check ID | Target | Scope |
+|---|---|---|
+| `install.plainweave_project_binding` | `.mcp.json` → `mcpServers.legis.env.PLAINWEAVE_MCP_CMD` | Checks the current project's Legis registration. If that registration is missing or stale, `install.mcp_json` owns its repair. |
+| `install.plainweave_codex_binding` | `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`) → `mcp_servers.legis.env.PLAINWEAVE_MCP_CMD` | Checks only an existing global Codex Legis registration. Doctor never creates one. |
+
+The checks are independent. A project binding can need repair while the global
+Codex binding is current, absent, or operator-owned, and vice versa.
+
+Run the health check before changing configuration:
+
+```bash
+legis doctor
+```
+
+For a safe missing or stale target, doctor prints `[auto-fixable]`. Apply and
+post-verify safe repairs with:
+
+```bash
+legis doctor --fix
+```
+
+For these binding repairs, `--fix` changes only the nested
+`PLAINWEAVE_MCP_CMD` value and preserves the surrounding safe configuration. A
+successful repair prints `[fixed]`. Doctor leaves secret-bearing, unsafe, or
+malformed project configuration unchanged and tags it `[operator]`; it does the
+same for malformed or unsupported Codex TOML.
+
+Legis MCP processes build their runtime once and read `PLAINWEAVE_MCP_CMD` at
+startup. Reconnect or restart the affected MCP client after a repair so it
+launches a new Legis process with the corrected binding. Doctor does not restart
+clients or initialize Plainweave.
+
+For machine-readable inspection, run `legis doctor --format json`. The MCP
+`doctor_get` tool returns the same report shape, but it is report-only and never
+fixes configuration. See the [`doctor` CLI reference](cli-reference.md#doctor)
+for the command workflow and success criteria.
 
 ### API server authentication (`legis serve` only)
 
