@@ -624,6 +624,11 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
         data: Any = tomllib.loads(text)
     except (tomllib.TOMLDecodeError, UnicodeError) as exc:
         return fail(f"Codex config.toml is malformed or unreadable: {exc}")
+    except (RecursionError, MemoryError) as exc:
+        # A pathologically nested (but sub-limit-size) config.toml makes
+        # tomllib recurse past the interpreter limit. Fail closed like the
+        # project-JSON reader's nesting guard instead of crashing doctor.
+        return fail(f"Codex config.toml nesting exceeds safe limits: {exc}")
     if not isinstance(data, dict):
         return fail("Codex config.toml top level is not a table")
 

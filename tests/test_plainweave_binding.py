@@ -133,6 +133,26 @@ def test_codex_missing_stale_and_current_binding(tmp_path: Path, monkeypatch) ->
     )
 
 
+def test_deeply_nested_codex_config_fails_closed_without_crashing(
+    tmp_path: Path, monkeypatch
+) -> None:
+    home = _codex_home(tmp_path, monkeypatch)
+    # A sub-1-MiB but pathologically nested value makes tomllib recurse past the
+    # interpreter limit; doctor must fail closed, not crash with RecursionError.
+    (home / "config.toml").write_bytes(
+        ("probe = " + "[" * 5000 + "]" * 5000 + "\n").encode()
+    )
+    root = tmp_path / "project"
+    root.mkdir()
+
+    state = plainweave_binding.inspect_codex_binding(root, "desired")
+
+    assert state.registered is False
+    assert state.current is False
+    assert state.error is not None
+    assert "nesting" in state.error
+
+
 def test_codex_repair_is_surgical_mode_preserving_and_idempotent(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1808,6 +1828,52 @@ def test_project_entry_accepts_plainweave_python_module_launcher(
         *args,
     ]
     assert result.error is None
+
+
+def test_python_module_launcher_rejects_non_python_command(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The `-P -m plainweave.mcp_server` arg head only trusts a real interpreter:
+    # a non-python command carrying those args must be rejected.
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "outside-bin" / "not-plainweave")
+    _write_entry(
+        root, str(command), ["-P", "-m", "plainweave.mcp_server", "--root", str(root)]
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None
+
+
+def test_python_module_launcher_rejects_non_plainweave_module(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    # The interpreter branch requires the exact `-P -m plainweave.mcp_server`
+    # head; a python launcher for any other module must not be trusted (guards
+    # against loosening the guard to `args[:2] == ["-P", "-m"]`).
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    _write_entry(
+        root, sys.executable, ["-P", "-m", "not_plainweave.evil", "--root", str(root)]
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None
 
 
 @pytest.mark.parametrize(
