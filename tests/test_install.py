@@ -778,6 +778,39 @@ def test_register_mcp_json_rejects_hardlinked_writer_lock(tmp_path: Path) -> Non
     assert not (tmp_path / ".mcp.json").exists()
 
 
+def test_writer_lock_revalidates_path_identity_after_acquiring_flock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / ".mcp.json"
+    lock_path = tmp_path / ".mcp.json.legis.lock"
+    orphaned_lock = tmp_path / "orphaned.lock"
+    real_fchmod = install.os.fchmod
+    swapped = False
+    nested_acquired = False
+    outer_yielded = False
+
+    def swap_lock_during_fchmod(fd: int, mode: int) -> None:
+        nonlocal swapped, nested_acquired
+        real_fchmod(fd, mode)
+        if swapped:
+            return
+        swapped = True
+        lock_path.rename(orphaned_lock)
+        lock_path.touch(mode=0o600)
+        with install._config_writer_lock(target):
+            nested_acquired = True
+
+    monkeypatch.setattr(install.os, "fchmod", swap_lock_during_fchmod)
+
+    with pytest.raises(install._ConfigWriterLockError, match="changed"):
+        with install._config_writer_lock(target):
+            outer_yielded = True
+
+    assert nested_acquired is True
+    assert outer_yielded is False
+
+
 def test_register_mcp_json_returns_error_for_symlinked_target(tmp_path: Path) -> None:
     external = tmp_path / "external.json"
     external.write_text("{}\n", encoding="utf-8")

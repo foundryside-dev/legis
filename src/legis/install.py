@@ -379,13 +379,26 @@ def _config_writer_lock(path: Path, *, dir_fd: int | None = None):
         raise _ConfigWriterLockError(str(exc)) from exc
     try:
         try:
+
+            def validate_lock_stat(lock_stat: os.stat_result) -> None:
+                if not stat.S_ISREG(lock_stat.st_mode):
+                    raise OSError(
+                        f"configuration lock is not a regular file: {lock_path}"
+                    )
+                if lock_stat.st_nlink != 1:
+                    raise OSError(
+                        f"configuration lock has unsafe link count: {lock_path}"
+                    )
+                if hasattr(os, "geteuid") and lock_stat.st_uid != os.geteuid():
+                    raise OSError(f"configuration lock has unsafe owner: {lock_path}")
+
+            validate_lock_stat(os.fstat(fd))
+            assert fcntl is not None
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            validate_lock_stat(os.fstat(fd))
+            os.fchmod(fd, 0o600)
             lock_stat = os.fstat(fd)
-            if not stat.S_ISREG(lock_stat.st_mode):
-                raise OSError(f"configuration lock is not a regular file: {lock_path}")
-            if lock_stat.st_nlink != 1:
-                raise OSError(f"configuration lock has unsafe link count: {lock_path}")
-            if hasattr(os, "geteuid") and lock_stat.st_uid != os.geteuid():
-                raise OSError(f"configuration lock has unsafe owner: {lock_path}")
+            validate_lock_stat(lock_stat)
             if dir_fd is None:
                 path_stat = lock_path.lstat()
             else:
@@ -397,9 +410,6 @@ def _config_writer_lock(path: Path, *, dir_fd: int | None = None):
                 raise OSError(
                     f"configuration lock changed while opening it: {lock_path}"
                 )
-            os.fchmod(fd, 0o600)
-            assert fcntl is not None
-            fcntl.flock(fd, fcntl.LOCK_EX)
         except (OSError, NotImplementedError, TypeError, ValueError) as exc:
             raise _ConfigWriterLockError(str(exc)) from exc
         yield
