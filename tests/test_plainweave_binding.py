@@ -1369,6 +1369,38 @@ def test_root_pinned_project_entry_wins_over_path_fallback(
     assert result.error is None
 
 
+@pytest.mark.parametrize(
+    "root_form",
+    ["separate-relative", "equals-relative", "separate-alias", "equals-alias"],
+)
+def test_project_entry_canonicalizes_validated_root_argument(
+    tmp_path: Path,
+    monkeypatch,
+    root_form: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    command = _make_executable(tmp_path / "project-bin" / "plainweave")
+    alias = tmp_path / "project-alias"
+    alias.symlink_to(root, target_is_directory=True)
+    supplied_root = "." if root_form.endswith("relative") else str(alias)
+    if root_form.startswith("separate"):
+        args = ["serve", "--root", supplied_root, "--quiet"]
+        expected_args = ["serve", "--root", str(root.resolve()), "--quiet"]
+    else:
+        args = ["serve", f"--root={supplied_root}", "--quiet"]
+        expected_args = ["serve", f"--root={root.resolve()}", "--quiet"]
+    _write_entry(root, str(command), args)
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is True
+    assert shlex.split(result.command or "") == [str(command), *expected_args]
+    assert result.error is None
+
+
 def test_path_fallback_adds_explicit_resolved_root(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "project"
     root.mkdir()

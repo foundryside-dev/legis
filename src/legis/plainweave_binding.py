@@ -815,7 +815,7 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     if not all(isinstance(arg, str) for arg in args):
         return None, _INVALID_ENTRY
 
-    root_values: list[str] = []
+    root_options: list[tuple[int, str, bool]] = []
     index = 0
     while index < len(args):
         arg = args[index]
@@ -823,22 +823,23 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
         if arg == "--root":
             if index + 1 >= len(args):
                 return None, _INVALID_ENTRY
-            root_values.append(args[index + 1])
+            root_options.append((index + 1, args[index + 1], False))
             index += 2
             continue
         if arg.startswith("--root="):
             value = arg.partition("=")[2]
             if not value:
                 return None, _INVALID_ENTRY
-            root_values.append(value)
+            root_options.append((index, value, True))
         elif len(option) > 2 and "--root".startswith(option):
             return None, _INVALID_ENTRY
         index += 1
 
-    if len(root_values) != 1:
+    if len(root_options) != 1:
         return None, _INVALID_ENTRY
 
-    root_value = Path(root_values[0])
+    root_index, supplied_root, inline_root = root_options[0]
+    root_value = Path(supplied_root)
     if not root_value.is_absolute():
         root_value = root / root_value
     try:
@@ -847,7 +848,12 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     except (OSError, RuntimeError):
         return None, _INVALID_ENTRY
 
-    return [executable, *args], None
+    canonical_args = list(args)
+    canonical_root = str(root)
+    canonical_args[root_index] = (
+        f"--root={canonical_root}" if inline_root else canonical_root
+    )
+    return [executable, *canonical_args], None
 
 
 def discover_plainweave(root: Path) -> PlainweaveDiscovery:
