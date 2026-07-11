@@ -206,6 +206,12 @@ a valid root-pinned local Plainweave MCP entry by itself, or
 not applicable when neither path applies. A global executable alone does not
 initialize or wire the project.
 
+For an initialized project, a present malformed `.mcp.json` or invalid local
+Plainweave entry fails closed and disables the trusted `PATH` fallback. The
+database-plus-`PATH` fallback is considered only when local config presents no
+Plainweave configuration issue. Treat the resulting project-check error as an
+operator action, not as permission to use the fallback.
+
 For an applicable project, `[auto-fixable]` can mean either the retired legacy
 `PLAINWEAVE_MCP_CMD` key is present or the project Legis registration is safely
 missing or stale. `install.mcp_json` owns registration repair and runs before

@@ -43,11 +43,9 @@ _SECRET_HANDLING_DOCS = (
 )
 
 _FAIL_CLOSED_DISCOVERY_DOCS = (
-    Path("README.md"),
-    Path("docs/guide/configuration.md"),
-    Path(
-        "docs/superpowers/specs/2026-07-12-plainweave-runtime-autodiscovery-design.md"
-    ),
+    # Canonical discovery docs include every _OPERATOR_PLAINWEAVE_DOCS entry,
+    # plus the current changelog claim and approved design.
+    *_CANONICAL_DISCOVERY_DOCS,
     Path("docs/superpowers/plans/2026-07-12-plainweave-runtime-autodiscovery.md"),
 )
 

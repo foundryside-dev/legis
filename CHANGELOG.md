@@ -18,8 +18,11 @@ _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 laun
   Plainweave once at startup from the active project cwd. It accepts either a
   valid root-pinned local Plainweave MCP entry by itself, or
   `.plainweave/plainweave.db` plus a trusted non-project-local
-  `plainweave-mcp` on `PATH`. The global
-  Codex Legis registration stays tool-only and never carries a Plainweave root.
+  `plainweave-mcp` on `PATH`. For an initialized project, a present malformed
+  `.mcp.json` or invalid local Plainweave entry fails closed and disables the
+  trusted `PATH` fallback. The database-plus-`PATH` fallback is considered only
+  when local config presents no Plainweave configuration issue. The global Codex
+  Legis registration stays tool-only and never carries a Plainweave root.
   This converges across projects instead of rewriting one global project target
   back and forth. `PLAINWEAVE_MCP_CMD` is now a retired 1.5.0 legacy migration
   key. `install.plainweave_project_binding` verifies active-project discovery

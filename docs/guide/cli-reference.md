@@ -251,6 +251,10 @@ Legis MCP runtime autodiscovery runs once at startup from the active project
 cwd. It accepts either a valid root-pinned local Plainweave MCP entry by itself,
 or `.plainweave/plainweave.db` plus a trusted non-project-local
 `plainweave-mcp` on `PATH`; no new manifest is created.
+For an initialized project, a present malformed `.mcp.json` or invalid local
+Plainweave entry fails closed and disables the trusted `PATH` fallback. The
+database-plus-`PATH` fallback is considered only when local config presents no
+Plainweave configuration issue.
 Global Codex Legis config is tool-only and carries no Plainweave root, retired
 legacy `PLAINWEAVE_MCP_CMD`, or fixed `cwd`.
 
