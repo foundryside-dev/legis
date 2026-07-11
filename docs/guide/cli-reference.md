@@ -226,53 +226,29 @@ the read-only counterpart — it never repairs; fixes stay on this CLI.)
 | `--fix` / `--repair` | off | apply safe repairs, then re-check |
 | `--format` | `text` | `text` (human) or `json` (machine-readable) |
 
-**Operator workflow**
+**Plainweave checks and outcomes**
 
-1. Inspect the current project without changing it:
+| Check or outcome | Meaning |
+|---|---|
+| `install.mcp_json` | Owns missing or stale project Legis registration repair. In a `--fix` run it may create or rebuild `command`, `args`, `type`, and safe `env` before Plainweave binding runs. |
+| `install.plainweave_project_binding` | Checks the project Legis entry's nested `PLAINWEAVE_MCP_CMD`. Its binding-specific repair changes only that target and preserves surrounding safe config. |
+| `install.plainweave_codex_binding` | Independently checks only an existing global Codex Legis entry. It never creates a global registration. |
+| `[auto-fixable]` | A safe target or project registration is missing or stale. |
+| `[fixed]` | That check repaired and post-verified its own scope. If registration and binding both changed, inspect `[fixed]` on both `install.mcp_json` and `install.plainweave_project_binding`. |
+| `[operator]` | Unsafe, secret-bearing, malformed, or unsupported config remains unchanged. |
+| healthy, non-applicable | Plainweave is installed but this project is uninitialized; Plainweave is not configured; or no global Codex Legis entry exists for the global check. |
 
-   ```bash
-   legis doctor
-   ```
+Run `legis doctor` to inspect, `legis doctor --fix` to apply safe repairs, and
+`legis doctor --format json` for automation. The project and global binding
+checks are independent. Success means no check has `status: "error"`; do not
+depend on an exact check count.
 
-   For an applicable Plainweave project, inspect
-   `install.plainweave_project_binding` and
-   `install.plainweave_codex_binding`. The project and global checks are
-   independent. A globally installed executable does not make an uninitialized
-   project applicable. Healthy output may therefore report installed-but-
-   uninitialized, not configured, or no global Codex Legis registration as
-   non-applicable rather than as an error.
-
-2. Apply safe repairs and have doctor verify them:
-
-   ```bash
-   legis doctor --fix
-   ```
-
-   A successful binding repair prints `[fixed]`. For these two checks, doctor
-   changes only the nested `PLAINWEAVE_MCP_CMD` value and preserves surrounding
-   safe configuration. `install.mcp_json`, not the Plainweave binding check,
-   owns project Legis registration repair. The global check repairs only an
-   existing Codex Legis registration; it never creates one.
-
-   Doctor leaves unsafe, secret-bearing, or malformed project config and
-   malformed or unsupported Codex TOML unchanged as `[operator]` work.
-
-3. Emit the report as JSON for automation:
-
-   ```bash
-   legis doctor --format json
-   ```
-
-   Success means no check has `status: "error"`; do not depend on an exact
-   check count. Each check includes `fixed` and `repairable`, and the document
-   includes `ok` and `next_actions`.
-
-Legis MCP processes build the runtime once and read `PLAINWEAVE_MCP_CMD` during
-startup. After doctor repairs a binding, reconnect or restart the affected MCP
-client. Doctor does not initialize Plainweave, restart clients, or claim
-whole-application Plainweave coverage. See
-[`configuration.md`](configuration.md#plainweave-mcp-launch-binding) for the
-applicability and configuration safety rules.
+Legis MCP processes read `PLAINWEAVE_MCP_CMD` once while building the runtime.
+Reconnect or restart the affected MCP client after repair. `doctor_get` is
+report-only. Doctor does not initialize Plainweave, restart clients, or claim
+whole-application Plainweave coverage. See the
+[Plainweave configuration procedure](configuration.md#plainweave-mcp-launch-binding)
+for prerequisites, remediation, and safety boundaries.
 
 **Exit codes**
 

@@ -13,12 +13,16 @@ _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 laun
 
 - **`legis doctor` checks and safely repairs Plainweave MCP launch bindings.**
   Independent project and existing-global-Codex checks detect missing or stale
-  `PLAINWEAVE_MCP_CMD` targets for applicable projects. `--fix` changes only the
-  nested target value, preserves surrounding safe configuration, post-verifies
-  the repair, and tells operators to reconnect; unsafe or unsupported config
-  remains unchanged and operator-owned. Installed-but-uninitialized projects
-  stay healthy and non-applicable, and doctor neither initializes Plainweave nor
-  creates a global Codex Legis registration.
+  `PLAINWEAVE_MCP_CMD` targets for applicable projects. Each binding-specific
+  repair changes only the nested target value, preserves surrounding safe
+  configuration, post-verifies, and tells operators to reconnect. Earlier in
+  the same `--fix` run, `install.mcp_json` may create or rebuild a missing or
+  stale project Legis registration before binding it. Operators inspect
+  `[fixed]` on both `install.mcp_json` and
+  `install.plainweave_project_binding` when that happens. Unsafe or unsupported
+  config remains unchanged and operator-owned. Installed-but-uninitialized
+  projects stay healthy and non-applicable, and doctor neither initializes
+  Plainweave nor creates a global Codex Legis registration.
 
 ## [1.4.0] — 2026-06-29
 

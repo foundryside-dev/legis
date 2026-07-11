@@ -154,14 +154,38 @@ stay fail-closed.
 Plainweave integration applies to the current project when either of these is
 true:
 
-- `.plainweave/plainweave.db` exists directly under the project root; or
+- `.plainweave` is a direct directory, not a symlink, and
+  `.plainweave/plainweave.db` is a direct regular file, not a symlink; or
 - the project `.mcp.json` contains a valid, root-pinned
-  `mcpServers.plainweave` entry.
+  `mcpServers.plainweave` stdio entry. Its command must resolve to an executable,
+  and its arguments must contain exactly one `--root` that resolves to the
+  current project root.
 
 A globally installed `plainweave-mcp` executable alone does not wire an
 uninitialized project. In that state, doctor reports both binding checks as
 healthy and not applicable. It also treats a project with no Plainweave
 configuration as a healthy, non-applicable state.
+
+An applicable database-only project needs `plainweave-mcp` on `PATH`. Check it
+before running doctor:
+
+```bash
+command -v plainweave-mcp
+# Expected: an absolute path, such as /home/alice/.local/bin/plainweave-mcp
+```
+
+A valid root-pinned project entry can supply its own executable instead. If
+doctor reports `Plainweave project has no executable available`, either install
+or reinstall the Plainweave MCP entry point with the package method used on your
+host so `plainweave-mcp` resolves, or repair the project registration:
+
+```bash
+plainweave install --root . --target project
+```
+
+Then rerun `command -v plainweave-mcp` when using the database-only path and
+rerun `legis doctor`. Do not use `legis doctor --fix` to initialize Plainweave;
+doctor only diagnoses and repairs Legis launch wiring.
 
 When Plainweave applies, Legis needs the resolved project command in the Legis
 MCP registration's `PLAINWEAVE_MCP_CMD` value:
@@ -180,18 +204,27 @@ Run the health check before changing configuration:
 legis doctor
 ```
 
-For a safe missing or stale target, doctor prints `[auto-fixable]`. Apply and
-post-verify safe repairs with:
+Doctor prints `[auto-fixable]` for a safe missing or stale target. A missing or
+stale project Legis registration is also `[auto-fixable]`, but
+`install.mcp_json` owns that repair. Apply and post-verify safe repairs with:
 
 ```bash
 legis doctor --fix
 ```
 
-For these binding repairs, `--fix` changes only the nested
-`PLAINWEAVE_MCP_CMD` value and preserves the surrounding safe configuration. A
-successful repair prints `[fixed]`. Doctor leaves secret-bearing, unsafe, or
-malformed project configuration unchanged and tags it `[operator]`; it does the
-same for malformed or unsupported Codex TOML.
+Within that run, `install.mcp_json` runs before the Plainweave binding checks. It
+may create or rebuild a missing or stale project Legis registration, including
+its `command`, `args`, `type`, and safe `env`, before the project binding check
+adds the target. The binding-specific repair then changes only the nested
+`PLAINWEAVE_MCP_CMD` value and preserves the surrounding safe configuration.
+
+Each successful repair prints its own `[fixed]` line. When project registration
+and binding both needed repair, inspect `[fixed]` on both `install.mcp_json` and
+`install.plainweave_project_binding`; also inspect
+`install.plainweave_codex_binding` when an existing global Codex registration
+needed repair. Doctor leaves secret-bearing, unsafe, or malformed project
+configuration unchanged and tags it `[operator]`; it does the same for malformed
+or unsupported Codex TOML.
 
 Legis MCP processes build their runtime once and read `PLAINWEAVE_MCP_CMD` at
 startup. Reconnect or restart the affected MCP client after a repair so it

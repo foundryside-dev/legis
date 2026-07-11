@@ -189,11 +189,21 @@ applicable when Plainweave is installed but the current project is not
 initialized, or when Plainweave is not configured for the project. A global
 executable alone does not initialize or wire the project.
 
-For an applicable project, `[auto-fixable]` means the nested
-`PLAINWEAVE_MCP_CMD` value is safely missing or stale. `[fixed]` means doctor
-changed only that value and post-verified it. `[operator]` means doctor left the
-configuration unchanged—for example, because project config is unsafe,
-secret-bearing, or malformed, or Codex TOML is malformed or unsupported.
+For an applicable project, `[auto-fixable]` can mean either the nested
+`PLAINWEAVE_MCP_CMD` target or the project Legis registration is safely missing
+or stale. `install.mcp_json` owns registration repair and runs before the
+Plainweave binding checks; it may create or rebuild the project's `command`,
+`args`, `type`, and safe `env`. The binding-specific repair changes only the
+nested `PLAINWEAVE_MCP_CMD` value and preserves surrounding safe config.
+
+`[fixed]` means that check repaired and post-verified its own scope. When the
+same run repairs project registration and then binds Plainweave, inspect
+`[fixed]` on both `install.mcp_json` and
+`install.plainweave_project_binding`. Inspect the independent
+`install.plainweave_codex_binding` line as well when a configured global Codex
+entry needed repair. `[operator]` means doctor left the configuration unchanged—for
+example, because project config is unsafe, secret-bearing, or malformed, or
+Codex TOML is malformed or unsupported.
 
 After `[fixed]`, reconnect or restart the affected MCP client. Legis MCP
 processes build their runtime once, so the running process does not pick up the

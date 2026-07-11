@@ -15,10 +15,13 @@ Legis stands itself up with `legis install`: instruction block, `legis-workflow`
 For a project with a direct Plainweave database or a valid root-pinned
 Plainweave MCP entry, doctor also checks that the project Legis registration and
 any existing global Codex Legis registration pass the project-scoped command
-through `PLAINWEAVE_MCP_CMD`. `--fix` changes only that nested environment value
-and verifies the repair; it does not initialize Plainweave, create a global
-Codex registration, or restart an MCP client. Reconnect or restart MCP clients
-after a repair. See the
+through `PLAINWEAVE_MCP_CMD`. A binding-specific repair changes only that nested
+environment value and verifies it. In the same `--fix` run, the earlier
+`install.mcp_json` check may create or rebuild a missing or stale project Legis
+registration before the binding check runs. Inspect `[fixed]` on both
+`install.mcp_json` and `install.plainweave_project_binding` when that happens.
+Doctor does not initialize Plainweave, create a global Codex registration, or
+restart an MCP client. Reconnect or restart MCP clients after a repair. See the
 [Plainweave launch-binding configuration guide](docs/guide/configuration.md#plainweave-mcp-launch-binding)
 and the [`legis doctor` CLI reference](docs/guide/cli-reference.md#doctor).
 
