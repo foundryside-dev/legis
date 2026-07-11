@@ -358,6 +358,7 @@ _CODEX_HTTP_TRANSPORT_FIELDS = frozenset(
         "bearer_token_env_var",
         "env_http_headers",
         "http_headers",
+        "oauth",
         "oauth_client_id",
         "oauth_resource",
         "scopes",

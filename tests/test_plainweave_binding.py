@@ -278,6 +278,7 @@ def test_empty_codex_home_uses_home_config_not_cwd_config(
         'bearer_token_env_var = "TOKEN"',
         'http_headers = { Authorization = "Bearer token" }',
         'env_http_headers = { Authorization = "TOKEN" }',
+        'oauth = { client_id = "client" }',
         'oauth_client_id = "client"',
         'oauth_resource = "https://example.invalid/"',
         'scopes = ["tools.read"]',
@@ -289,6 +290,7 @@ def test_empty_codex_home_uses_home_config_not_cwd_config(
         "bearer-token",
         "headers",
         "env-headers",
+        "oauth-inline",
         "oauth-client",
         "oauth-resource",
         "scopes",
@@ -302,6 +304,33 @@ def test_codex_stdio_legis_rejects_http_transport_fields(
         config.read_text().replace(
             "[mcp_servers.legis.env]",
             f"{conflict}\n[mcp_servers.legis.env]",
+        )
+    )
+    before = config.read_bytes()
+    root = tmp_path / "project"
+    root.mkdir()
+
+    state = plainweave_binding.inspect_codex_binding(root, "desired")
+    error = plainweave_binding.repair_codex_binding(root, "desired")
+
+    assert state.registered is True
+    assert state.current is False
+    assert state.error and "transport" in state.error.lower()
+    assert error and "transport" in error.lower()
+    assert config.read_bytes() == before
+
+
+def test_codex_stdio_legis_rejects_explicit_oauth_transport_child(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _codex_config(tmp_path, monkeypatch)
+    config.write_text(
+        config.read_text().replace(
+            "[mcp_servers.legis.env]",
+            (
+                '[mcp_servers.legis.oauth]\nclient_id = "client"\n'
+                "[mcp_servers.legis.env]"
+            ),
         )
     )
     before = config.read_bytes()
