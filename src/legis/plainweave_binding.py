@@ -607,7 +607,7 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
             registered=True,
         )
     env = dict(raw_env)
-    return _BindingInspection(
+    inspection = _BindingInspection(
         state=BindingState(True, env.get(PLAINWEAVE_ENV) == desired),
         root_fd=root_fd,
         snapshot=snapshot,
@@ -623,6 +623,11 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
         container_path=config_path.parent,
         container_identity=(root_stat.st_dev, root_stat.st_ino),
     )
+    if not inspection.state.current:
+        _updated_text, edit_error = _updated_codex_text(inspection, desired)
+        if edit_error is not None:
+            return fail(edit_error, registered=True)
+    return inspection
 
 
 def inspect_codex_binding(root: Path, desired: str) -> BindingState:

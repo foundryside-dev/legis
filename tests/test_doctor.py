@@ -664,6 +664,49 @@ def test_malformed_project_and_unsafe_global_are_operator_owned(tmp_path, monkey
     assert config.read_bytes() == global_before
 
 
+@pytest.mark.parametrize("shape", ["inline", "dotted"])
+def test_unsupported_codex_env_shape_is_operator_owned_not_auto_fixable(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    shape: str,
+) -> None:
+    root, executable, config = _plainweave_project(tmp_path, monkeypatch)
+    env_line = (
+        'env = { KEEP_ME = "operator" }'
+        if shape == "inline"
+        else 'env.KEEP_ME = "operator"'
+    )
+    config.write_text(
+        "[mcp_servers.legis]\n"
+        f"command = {json.dumps(str(executable))}\n"
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        f"{env_line}\n",
+        encoding="utf-8",
+    )
+    before = config.read_bytes()
+
+    check = check_plainweave_codex_binding(root, repair=False)
+    exit_code = run_doctor(root, repair=False, fmt="json")
+    payload = json.loads(capsys.readouterr().out)
+    rendered = next(
+        item
+        for item in payload["checks"]
+        if item["id"] == "install.plainweave_codex_binding"
+    )
+
+    assert check.status == "error"
+    assert check.repairable is False
+    assert check.fixed is False
+    assert check.message is not None and "unsupported" in check.message.lower()
+    assert "[operator]" in render_text([check])
+    assert exit_code == 1
+    assert rendered["status"] == "error"
+    assert rendered["repairable"] is False
+    assert rendered["fixed"] is False
+    assert config.read_bytes() == before
+
+
 def test_initialized_plainweave_aggregate_and_rendering(tmp_path, monkeypatch):
     root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
     checks = collect_checks(root, repair=False)
