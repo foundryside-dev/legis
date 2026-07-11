@@ -23,6 +23,7 @@ from sqlalchemy.engine import make_url
 
 from legis import config
 from legis import install as _install
+from legis import plainweave_binding as _plainweave_binding
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +135,148 @@ def check_mcp_json(root: Path, *, repair: bool) -> DoctorCheck:
         return DoctorCheck(cid, "error", message=msg, repairable=True)
     return DoctorCheck(
         cid, "error", message="legis server missing or stale (run: legis install --mcp)", repairable=True
+    )
+
+
+def _plainweave_not_applicable_message(*, installed: bool) -> str:
+    if installed:
+        return "Plainweave is installed but this project is not initialized; launch binding not applicable"
+    return "Plainweave is not configured for this project; launch binding not applicable"
+
+
+def _plainweave_discovery_error(
+    cid: str, discovery: _plainweave_binding.PlainweaveDiscovery
+) -> DoctorCheck | None:
+    if not discovery.applicable:
+        return DoctorCheck(
+            cid,
+            "ok",
+            message=_plainweave_not_applicable_message(installed=discovery.installed),
+            repairable=False,
+        )
+    if discovery.command is None:
+        return DoctorCheck(
+            cid,
+            "error",
+            message=discovery.error or "Plainweave project has no usable command",
+            repairable=False,
+        )
+    return None
+
+
+def _project_registration_is_repairable(
+    state: _plainweave_binding.BindingState,
+) -> bool:
+    return (
+        not state.registered
+        and state.error is not None
+        and (
+            "project Legis MCP registration is missing" in state.error
+            or (
+                "project .mcp.json is missing" in state.error
+                and "No such file or directory" in state.error
+            )
+        )
+    )
+
+
+def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck:
+    """Check the Plainweave command bound to the project Legis MCP entry."""
+    cid = "install.plainweave_project_binding"
+    discovery = _plainweave_binding.discover_plainweave(root)
+    discovery_check = _plainweave_discovery_error(cid, discovery)
+    if discovery_check is not None:
+        return discovery_check
+    desired = discovery.command
+    assert desired is not None
+
+    state = _plainweave_binding.inspect_project_binding(root, desired)
+    if state.current:
+        return DoctorCheck(cid, "ok", repairable=True)
+    if state.error is not None:
+        registration_repairable = _project_registration_is_repairable(state)
+        message = state.error
+        if registration_repairable:
+            message += "; project registration is owned by install.mcp_json"
+        return DoctorCheck(cid, "error", message=message, repairable=registration_repairable)
+    if not state.registered:
+        return DoctorCheck(
+            cid,
+            "error",
+            message="project Legis MCP registration is missing or stale; owned by install.mcp_json",
+            repairable=True,
+        )
+    if not repair:
+        return DoctorCheck(
+            cid,
+            "error",
+            message="project Plainweave launch binding is missing or stale",
+            repairable=True,
+        )
+
+    error = _plainweave_binding.repair_project_binding(root, desired)
+    post = _plainweave_binding.inspect_project_binding(root, desired)
+    if error is None and post.current:
+        return DoctorCheck(
+            cid,
+            "ok",
+            fixed=True,
+            message="project Plainweave launch binding repaired; reconnect or restart the MCP client",
+            repairable=True,
+        )
+    return DoctorCheck(
+        cid,
+        "error",
+        message=error or post.error or "project Plainweave launch binding remains stale after repair",
+        repairable=True,
+    )
+
+
+def check_plainweave_codex_binding(root: Path, *, repair: bool) -> DoctorCheck:
+    """Check the Plainweave command bound to an existing global Codex Legis entry."""
+    cid = "install.plainweave_codex_binding"
+    discovery = _plainweave_binding.discover_plainweave(root)
+    discovery_check = _plainweave_discovery_error(cid, discovery)
+    if discovery_check is not None:
+        return discovery_check
+    desired = discovery.command
+    assert desired is not None
+
+    state = _plainweave_binding.inspect_codex_binding(root, desired)
+    if state.error is not None:
+        return DoctorCheck(cid, "error", message=state.error, repairable=False)
+    if not state.registered:
+        return DoctorCheck(
+            cid,
+            "ok",
+            message="global Codex Legis MCP registration is not configured; launch binding not applicable",
+            repairable=False,
+        )
+    if state.current:
+        return DoctorCheck(cid, "ok", repairable=True)
+    if not repair:
+        return DoctorCheck(
+            cid,
+            "error",
+            message="global Codex Plainweave launch binding is missing or stale",
+            repairable=True,
+        )
+
+    error = _plainweave_binding.repair_codex_binding(root, desired)
+    post = _plainweave_binding.inspect_codex_binding(root, desired)
+    if error is None and post.current:
+        return DoctorCheck(
+            cid,
+            "ok",
+            fixed=True,
+            message="global Codex Plainweave launch binding repaired; reconnect or restart Codex",
+            repairable=True,
+        )
+    return DoctorCheck(
+        cid,
+        "error",
+        message=error or post.error or "global Codex Plainweave launch binding remains stale after repair",
+        repairable=True,
     )
 
 
@@ -975,6 +1118,8 @@ def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:
     checks.append(check_gitignore(root, repair=repair))
     checks.append(check_dir_gitignore(root, repair=repair))
     checks.append(check_mcp_json(root, repair=repair))
+    checks.append(check_plainweave_project_binding(root, repair=repair))
+    checks.append(check_plainweave_codex_binding(root, repair=repair))
     checks.append(check_filigree_binding_scope(root))
     checks.append(check_weft_toml(root))
     checks.append(check_store_dir(root, repair=repair))

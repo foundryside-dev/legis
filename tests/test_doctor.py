@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 from legis.cli import main as cli_main
 from legis.doctor import (
@@ -16,6 +17,8 @@ from legis.doctor import (
     check_legacy_stray_db,
     check_mcp_json,
     check_policy_cells,
+    check_plainweave_codex_binding,
+    check_plainweave_project_binding,
     check_sibling_url,
     check_skill_pack,
     check_store_dir,
@@ -30,10 +33,55 @@ from legis.doctor import (
 )
 from legis.install import mcp_entry_is_current, register_mcp_json as _register_mcp_json
 from legis import install as legis_install
+from legis.plainweave_binding import PLAINWEAVE_ENV
 
 
 def _write_mcp_entry(tmp_path, entry):
     (tmp_path / ".mcp.json").write_text(json.dumps({"mcpServers": {"legis": entry}}))
+
+
+def _make_executable(path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def _plainweave_project(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    initialized: bool = True,
+    project_env: object | None = None,
+    global_legis: bool = True,
+) -> tuple[Path, Path, Path]:
+    root = tmp_path / "project"
+    root.mkdir()
+    executable = _make_executable(tmp_path / "tools" / "legis")
+    if initialized:
+        state = root / ".plainweave"
+        state.mkdir()
+        (state / "plainweave.db").touch()
+    (root / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {
+            "plainweave": {"type": "stdio", "command": str(executable), "args": ["--root", str(root)]},
+            "legis": {"type": "stdio", "command": str(executable), "args": ["mcp", "--agent-id", "operator"], "env": {} if project_env is None else project_env},
+        }}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    config = codex_home / "config.toml"
+    if global_legis:
+        config.write_text(
+            "[mcp_servers.legis]\n"
+            f"command = {json.dumps(str(executable))}\n"
+            'args = ["mcp", "--agent-id", "operator"]\n'
+            "[mcp_servers.legis.env]\n",
+            encoding="utf-8",
+        )
+    return root, executable, config
 
 
 def test_doctorcheck_to_dict_omits_empty_message():
@@ -292,6 +340,173 @@ def test_mcp_json_stale_command_is_error_then_repaired(tmp_path):
     fixed = check_mcp_json(tmp_path, repair=True)
     assert fixed.status == "ok"
     assert fixed.fixed is True
+
+
+# ---------------------------------------------------------------------------
+# Plainweave launch bindings
+# ---------------------------------------------------------------------------
+
+
+def test_plainweave_independent_missing_bindings_are_auto_fixable(tmp_path, monkeypatch):
+    root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
+    project = check_plainweave_project_binding(root, repair=False)
+    codex = check_plainweave_codex_binding(root, repair=False)
+    assert project.id == "install.plainweave_project_binding"
+    assert codex.id == "install.plainweave_codex_binding"
+    assert project.status == codex.status == "error"
+    assert project.repairable is codex.repairable is True
+    assert project.fixed is codex.fixed is False
+
+
+def test_plainweave_missing_project_registration_is_auto_fixable(tmp_path, monkeypatch):
+    root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
+    data = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
+    del data["mcpServers"]["legis"]
+    (root / ".mcp.json").write_text(json.dumps(data), encoding="utf-8")
+    check = check_plainweave_project_binding(root, repair=False)
+    assert check.status == "error" and check.repairable is True
+    assert "install.mcp_json" in (check.message or "")
+
+
+def test_plainweave_binding_repair_is_ordered_post_verified_and_idempotent(tmp_path, monkeypatch):
+    root, _executable, config = _plainweave_project(tmp_path, monkeypatch)
+    data = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
+    del data["mcpServers"]["legis"]
+    (root / ".mcp.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    repaired = collect_checks(root, repair=True)
+    ids = [check.id for check in repaired]
+    assert ids.index("install.mcp_json") + 1 == ids.index("install.plainweave_project_binding")
+    assert ids.index("install.plainweave_project_binding") + 1 == ids.index("install.plainweave_codex_binding")
+    by_id = {check.id: check for check in repaired}
+    assert by_id["install.mcp_json"].fixed is True
+    for cid in ("install.plainweave_project_binding", "install.plainweave_codex_binding"):
+        assert by_id[cid].status == "ok"
+        assert by_id[cid].fixed is True
+        assert by_id[cid].repairable is True
+        assert "reconnect" in (by_id[cid].message or "").lower()
+    fixed_text = render_text(repaired)
+    assert "install.plainweave_project_binding:" in fixed_text
+    assert "install.plainweave_codex_binding:" in fixed_text
+    assert "[fixed]" in fixed_text
+
+    project_bytes = (root / ".mcp.json").read_bytes()
+    codex_bytes = config.read_bytes()
+    current = {check.id: check for check in collect_checks(root, repair=False)}
+    second = {check.id: check for check in collect_checks(root, repair=True)}
+    for cid in ("install.plainweave_project_binding", "install.plainweave_codex_binding"):
+        assert current[cid].status == second[cid].status == "ok"
+        assert current[cid].fixed is second[cid].fixed is False
+    assert (root / ".mcp.json").read_bytes() == project_bytes
+    assert config.read_bytes() == codex_bytes
+    assert PLAINWEAVE_ENV in json.loads(project_bytes)["mcpServers"]["legis"]["env"]
+
+
+def test_plainweave_no_global_legis_registration_is_ok_and_never_created(tmp_path, monkeypatch):
+    root, _executable, config = _plainweave_project(tmp_path, monkeypatch, global_legis=False)
+    check = check_plainweave_codex_binding(root, repair=True)
+    assert check.status == "ok" and check.repairable is False and check.fixed is False
+    assert "not configured" in (check.message or "")
+    assert not config.exists()
+
+
+def test_uninitialized_installed_plainweave_skips_global_config(tmp_path, monkeypatch):
+    root, _executable, config = _plainweave_project(tmp_path, monkeypatch, initialized=False)
+    data = json.loads((root / ".mcp.json").read_text(encoding="utf-8"))
+    del data["mcpServers"]["plainweave"]
+    (root / ".mcp.json").write_text(json.dumps(data), encoding="utf-8")
+    plainweave = _make_executable(tmp_path / "path" / "plainweave-mcp")
+    monkeypatch.setenv("PATH", str(plainweave.parent))
+    config.write_text("invalid = [", encoding="utf-8")
+    before = config.read_bytes()
+    project = check_plainweave_project_binding(root, repair=True)
+    codex = check_plainweave_codex_binding(root, repair=True)
+    assert project.status == codex.status == "ok"
+    assert project.repairable is codex.repairable is False
+    assert "installed" in (project.message or "") and "not initialized" in (project.message or "")
+    assert config.read_bytes() == before
+
+
+def test_uninitialized_unconfigured_plainweave_message_is_distinct(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.setenv("PATH", "")
+    check = check_plainweave_project_binding(root, repair=False)
+    assert check.status == "ok" and check.repairable is False
+    assert "not configured" in (check.message or "")
+    assert "not initialized" not in (check.message or "")
+
+
+def test_initialized_plainweave_without_executable_is_operator_error(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    (root / ".plainweave").mkdir(parents=True)
+    (root / ".plainweave" / "plainweave.db").touch()
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    config = codex_home / "config.toml"
+    config.write_text("invalid = [", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", "")
+    before = config.read_bytes()
+    project = check_plainweave_project_binding(root, repair=True)
+    codex = check_plainweave_codex_binding(root, repair=True)
+    assert project.status == codex.status == "error"
+    assert project.repairable is codex.repairable is False
+    assert "no executable" in (project.message or "")
+    assert "[operator]" in render_text([project, codex])
+    assert config.read_bytes() == before
+
+
+def test_unsafe_project_and_malformed_global_are_operator_owned(tmp_path, monkeypatch):
+    root, _executable, config = _plainweave_project(
+        tmp_path, monkeypatch, project_env={"LEGIS_OPERATOR_KEY": "secret"}
+    )
+    project_file = root / ".mcp.json"
+    project_before = project_file.read_bytes()
+    config.write_text("[mcp_servers.legis\n", encoding="utf-8")
+    global_before = config.read_bytes()
+    project = check_plainweave_project_binding(root, repair=True)
+    codex = check_plainweave_codex_binding(root, repair=True)
+    assert project.status == codex.status == "error"
+    assert project.repairable is codex.repairable is False
+    assert project_file.read_bytes() == project_before
+    assert config.read_bytes() == global_before
+
+
+def test_malformed_project_and_unsafe_global_are_operator_owned(tmp_path, monkeypatch):
+    root, executable, config = _plainweave_project(tmp_path, monkeypatch)
+    project_file = root / ".mcp.json"
+    project_file.write_text("{not valid json", encoding="utf-8")
+    plainweave = _make_executable(tmp_path / "path" / "plainweave-mcp")
+    monkeypatch.setenv("PATH", str(plainweave.parent))
+    config.write_text(
+        "[mcp_servers.legis]\n"
+        f"command = {json.dumps(str(executable))}\n"
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        'url = "https://example.invalid/mcp"\n',
+        encoding="utf-8",
+    )
+    project_before = project_file.read_bytes()
+    global_before = config.read_bytes()
+    project = check_plainweave_project_binding(root, repair=True)
+    codex = check_plainweave_codex_binding(root, repair=True)
+    assert project.status == codex.status == "error"
+    assert project.repairable is codex.repairable is False
+    assert project_file.read_bytes() == project_before
+    assert config.read_bytes() == global_before
+
+
+def test_initialized_plainweave_aggregate_and_rendering(tmp_path, monkeypatch):
+    root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
+    checks = collect_checks(root, repair=False)
+    repairable = {check.id for check in checks if check.repairable}
+    assert {"install.plainweave_project_binding", "install.plainweave_codex_binding"} <= repairable
+    text = render_text(checks)
+    assert "install.plainweave_project_binding:" in text
+    assert "install.plainweave_codex_binding:" in text
+    assert "[auto-fixable]" in text
+    payload = json.loads(render_json(checks))
+    assert all("repairable" in check and "fixed" in check for check in payload["checks"])
 
 
 # ---------------------------------------------------------------------------
@@ -890,6 +1105,9 @@ def test_db_override_empty_string_is_error(tmp_path, monkeypatch):
 
 def test_repair_makes_fresh_project_healthy(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    codex_home = tmp_path / "isolated-codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
     # Hermetic: an inherited sibling URL env var (valid or not) would otherwise
     # leak into the repair → exit 0 assertion. Unset both so the check is "not
     # configured" (ok), never a non-repairable error.
@@ -901,6 +1119,7 @@ def test_repair_makes_fresh_project_healthy(tmp_path, monkeypatch):
     assert run_doctor(tmp_path, repair=True, fmt="text") == 0
     # Third run, no repair: stays healthy.
     assert run_doctor(tmp_path, repair=False, fmt="text") == 0
+    assert list(codex_home.iterdir()) == []
 
 
 def test_repair_never_writes_weft_toml(tmp_path, monkeypatch):

@@ -3164,17 +3164,53 @@ def test_doctor_get_returns_the_same_json_payload_the_cli_emits(tmp_path):
     assert payload["next_actions"]
 
 
-def test_doctor_get_is_report_only_and_never_repairs(tmp_path):
+def test_doctor_get_is_report_only_and_never_repairs(tmp_path, monkeypatch):
     # C-8: repairs stay operator/CLI (`legis doctor --fix`); the MCP read must
     # not write anything and must not expose a repair knob.
     from legis.mcp import McpRuntime, call_tool, tool_definitions
 
-    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(tmp_path))
+    root = tmp_path / "project"
+    root.mkdir()
+    state = root / ".plainweave"
+    state.mkdir()
+    (state / "plainweave.db").touch()
+    executable = tmp_path / "tools" / "legis"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    project_config = root / ".mcp.json"
+    project_config.write_text(
+        json.dumps({"mcpServers": {
+            "plainweave": {"type": "stdio", "command": str(executable), "args": ["--root", str(root)]},
+            "legis": {"type": "stdio", "command": str(executable), "args": ["mcp", "--agent-id", "operator"], "env": {}},
+        }}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    codex_config = codex_home / "config.toml"
+    codex_config.write_text(
+        "[mcp_servers.legis]\n"
+        f"command = {json.dumps(str(executable))}\n"
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n",
+        encoding="utf-8",
+    )
+    project_before = project_config.read_bytes()
+    codex_before = codex_config.read_bytes()
+    runtime = McpRuntime(agent_id="agent-1", initialized=True, source_root=str(root))
 
     result = call_tool(runtime, "doctor_get", {})
 
-    assert list(tmp_path.iterdir()) == []  # nothing created or repaired
-    assert not any(c["fixed"] for c in result["structuredContent"]["checks"])
+    checks = {check["id"]: check for check in result["structuredContent"]["checks"]}
+    assert checks["install.plainweave_project_binding"]["repairable"] is True
+    assert checks["install.plainweave_codex_binding"]["repairable"] is True
+    assert checks["install.plainweave_project_binding"]["fixed"] is False
+    assert checks["install.plainweave_codex_binding"]["fixed"] is False
+    assert project_config.read_bytes() == project_before
+    assert codex_config.read_bytes() == codex_before
+    assert not any(check["fixed"] for check in checks.values())
 
     tool = next(t for t in tool_definitions() if t["name"] == "doctor_get")
     assert tool["inputSchema"]["properties"] == {}
