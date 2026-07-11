@@ -126,7 +126,13 @@ def _discovery_io_support_error() -> str | None:
     return None
 
 
-def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
+def _binding_is_current(env: dict[str, str], desired: str | None) -> bool:
+    if desired is None:
+        return PLAINWEAVE_ENV not in env
+    return env.get(PLAINWEAVE_ENV) == desired
+
+
+def _inspect_project_binding(root: Path, desired: str | None) -> _BindingInspection:
     try:
         resolved_root = root.resolve()
     except (OSError, RuntimeError) as exc:
@@ -219,7 +225,7 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
     return _BindingInspection(
         state=BindingState(
             registered=True,
-            current=safe_env.get(PLAINWEAVE_ENV) == desired,
+            current=_binding_is_current(safe_env, desired),
         ),
         root_fd=root_fd,
         snapshot=snapshot,
@@ -233,8 +239,12 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
     )
 
 
-def inspect_project_binding(root: Path, desired: str) -> BindingState:
-    """Inspect the Plainweave command bound to a usable project Legis entry."""
+def inspect_project_binding(root: Path, desired: str | None) -> BindingState:
+    """Inspect a project binding.
+
+    ``None`` selects project-agnostic runtime autodiscovery and is current only
+    when the legacy ``PLAINWEAVE_MCP_CMD`` key is absent.
+    """
     inspection = _inspect_project_binding(root, desired)
     try:
         return inspection.state
@@ -398,8 +408,12 @@ def _anchored_replace_unlocked(
                 pass
 
 
-def repair_project_binding(root: Path, desired: str) -> str | None:
-    """Bind Plainweave in an existing usable project Legis MCP entry."""
+def repair_project_binding(root: Path, desired: str | None) -> str | None:
+    """Repair a project binding.
+
+    ``None`` enables project-agnostic runtime autodiscovery by removing the
+    legacy ``PLAINWEAVE_MCP_CMD`` key.
+    """
     inspection = _inspect_project_binding(root, desired)
     try:
         if inspection.state.current:
@@ -415,7 +429,10 @@ def repair_project_binding(root: Path, desired: str) -> str | None:
             return "project Legis MCP binding could not be repaired"
 
         updated_env = dict(env)
-        updated_env[PLAINWEAVE_ENV] = desired
+        if desired is None:
+            updated_env.pop(PLAINWEAVE_ENV, None)
+        else:
+            updated_env[PLAINWEAVE_ENV] = desired
         entry["env"] = updated_env
         original = snapshot.decode("utf-8")
         newline = _newline_for(original)

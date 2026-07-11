@@ -906,6 +906,54 @@ def test_missing_project_binding_is_registered_but_noncurrent(tmp_path: Path) ->
     )
 
 
+def test_project_autodiscovery_inspection_rejects_legacy_binding(
+    tmp_path: Path,
+) -> None:
+    _write_legis_entry(
+        tmp_path,
+        env={"KEEP_ME": "operator-value", PLAINWEAVE_ENV: "legacy-command"},
+    )
+
+    state = plainweave_binding.inspect_project_binding(tmp_path, None)
+
+    assert state == plainweave_binding.BindingState(True, False, None)
+
+
+def test_project_autodiscovery_repair_removes_only_legacy_binding(
+    tmp_path: Path,
+) -> None:
+    config = _write_legis_entry(
+        tmp_path,
+        env={"KEEP_ME": "operator-value", PLAINWEAVE_ENV: "legacy-command"},
+    )
+    before = json.loads(config.read_text(encoding="utf-8"))
+    expected = json.loads(json.dumps(before))
+    expected["mcpServers"]["legis"]["env"].pop(PLAINWEAVE_ENV)
+
+    error = plainweave_binding.repair_project_binding(tmp_path, None)
+
+    assert error is None
+    assert json.loads(config.read_text(encoding="utf-8")) == expected
+    assert plainweave_binding.inspect_project_binding(
+        tmp_path, None
+    ) == plainweave_binding.BindingState(True, True, None)
+
+
+def test_project_autodiscovery_second_repair_is_byte_identical(
+    tmp_path: Path,
+) -> None:
+    config = _write_legis_entry(
+        tmp_path,
+        env={"KEEP_ME": "operator-value", PLAINWEAVE_ENV: "legacy-command"},
+    )
+
+    assert plainweave_binding.repair_project_binding(tmp_path, None) is None
+    after_first = config.read_bytes()
+    assert plainweave_binding.repair_project_binding(tmp_path, None) is None
+
+    assert config.read_bytes() == after_first
+
+
 def test_repair_changes_only_nested_binding_and_preserves_operator_config(
     tmp_path: Path,
 ) -> None:
