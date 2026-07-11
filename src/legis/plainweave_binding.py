@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from legis import install
+
 
 PLAINWEAVE_ENV = "PLAINWEAVE_MCP_CMD"
 
@@ -22,6 +24,114 @@ class PlainweaveDiscovery:
     installed: bool
     command: str | None = None
     error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BindingState:
+    registered: bool
+    current: bool
+    error: str | None = None
+
+
+@dataclass(slots=True)
+class _BindingInspection:
+    state: BindingState
+    path: Path | None = None
+    data: dict[str, Any] | None = None
+    entry: dict[str, Any] | None = None
+    env: dict[str, str] | None = None
+
+
+def _binding_error(error: str, *, registered: bool = False) -> _BindingInspection:
+    return _BindingInspection(
+        BindingState(registered=registered, current=False, error=error)
+    )
+
+
+def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
+    try:
+        resolved_root = root.resolve()
+    except (OSError, RuntimeError) as exc:
+        return _binding_error(f"could not resolve project root: {exc}")
+
+    config = resolved_root / ".mcp.json"
+    if config.is_symlink():
+        return _binding_error("project .mcp.json is a symlink; refusing to inspect it")
+    if not config.is_file():
+        return _binding_error("project .mcp.json is missing or is not a regular file")
+
+    try:
+        data: Any = json.loads(config.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
+        return _binding_error(f"project .mcp.json is malformed or unreadable: {exc}")
+    if not isinstance(data, dict):
+        return _binding_error("project .mcp.json top level is not an object")
+
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return _binding_error("project .mcp.json mcpServers is not an object")
+    entry = servers.get("legis")
+    if not isinstance(entry, dict):
+        return _binding_error("project Legis MCP registration is missing or malformed")
+
+    raw_env = entry.get("env", {})
+    safe_env = install._safe_mcp_env(raw_env)
+    if safe_env is None or safe_env != raw_env:
+        return _binding_error(
+            "project Legis MCP environment is malformed, unsafe, or contains secrets",
+            registered=True,
+        )
+
+    try:
+        registered = install.mcp_entry_is_current(resolved_root)
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        return _binding_error(f"could not inspect project Legis MCP registration: {exc}")
+    if not registered:
+        return _binding_error(
+            "project Legis MCP registration is missing, stale, or malformed"
+        )
+
+    return _BindingInspection(
+        state=BindingState(
+            registered=True,
+            current=safe_env.get(PLAINWEAVE_ENV) == desired,
+        ),
+        path=config,
+        data=data,
+        entry=entry,
+        env=safe_env,
+    )
+
+
+def inspect_project_binding(root: Path, desired: str) -> BindingState:
+    """Inspect the Plainweave command bound to a usable project Legis entry."""
+    return _inspect_project_binding(root, desired).state
+
+
+def repair_project_binding(root: Path, desired: str) -> str | None:
+    """Bind Plainweave in an existing usable project Legis MCP entry."""
+    inspection = _inspect_project_binding(root, desired)
+    if inspection.state.current:
+        return None
+    if inspection.state.error is not None:
+        return inspection.state.error
+
+    path = inspection.path
+    data = inspection.data
+    entry = inspection.entry
+    env = inspection.env
+    if path is None or data is None or entry is None or env is None:
+        return "project Legis MCP binding could not be repaired"
+
+    updated_env = dict(env)
+    updated_env[PLAINWEAVE_ENV] = desired
+    entry["env"] = updated_env
+    content = json.dumps(data, indent=2) + "\n"
+    try:
+        install._atomic_write_text(path, content)
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        return f"could not repair project Plainweave binding: {exc}"
+    return None
 
 
 def _resolve_executable(command: object) -> str | None:
