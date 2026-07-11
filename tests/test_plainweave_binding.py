@@ -351,6 +351,96 @@ def test_codex_header_scanner_ignores_multiline_string_brackets(
     assert "fake" not in parsed["mcp_servers"]
 
 
+@pytest.mark.parametrize(
+    ("rendered_sibling", "parsed_sibling"),
+    [
+        ('"sib]ling"', "sib]ling"),
+        ('"sib#ling"', "sib#ling"),
+        ('"sib\\"ling"', 'sib"ling'),
+    ],
+    ids=["closing-bracket", "hash", "escaped-quote"],
+)
+def test_codex_env_insertion_stops_at_legal_quoted_sibling_header(
+    tmp_path: Path,
+    monkeypatch,
+    rendered_sibling: str,
+    parsed_sibling: str,
+) -> None:
+    home = _codex_home(tmp_path, monkeypatch)
+    config = home / "config.toml"
+    sibling = (
+        f"[mcp_servers.{rendered_sibling}] # sibling header\n"
+        'command = "sibling-mcp" # sibling command\n'
+        f'{PLAINWEAVE_ENV} = "sibling-owned" # sibling target\n'
+    )
+    config.write_text(
+        "# operator top comment\n"
+        '[mcp_servers."legis"]\n'
+        f"command = {json.dumps(sys.executable)}\n"
+        'args = ["-P", "-m", "legis", "mcp", "--agent-id", "operator"]\n'
+        '[mcp_servers."legis"."env"]\n'
+        'KEEP_ME = "operator" # env comment\n'
+        f"{sibling}"
+    )
+    sibling_bytes = sibling.encode()
+    root = tmp_path / "project"
+    root.mkdir()
+
+    assert plainweave_binding.repair_codex_binding(root, "desired") is None
+
+    after = config.read_bytes()
+    parsed = tomllib.loads(after.decode())
+    assert after.endswith(sibling_bytes)
+    assert parsed["mcp_servers"]["legis"]["env"] == {
+        "KEEP_ME": "operator",
+        PLAINWEAVE_ENV: "desired",
+    }
+    assert parsed["mcp_servers"][parsed_sibling][PLAINWEAVE_ENV] == "sibling-owned"
+
+
+@pytest.mark.parametrize(
+    ("rendered_sibling", "parsed_sibling"),
+    [
+        ('"sib]ling"', "sib]ling"),
+        ('"sib#ling"', "sib#ling"),
+        ('"sib\\"ling"', 'sib"ling'),
+    ],
+    ids=["closing-bracket", "hash", "escaped-quote"],
+)
+def test_codex_env_replacement_stops_at_legal_quoted_sibling_header(
+    tmp_path: Path,
+    monkeypatch,
+    rendered_sibling: str,
+    parsed_sibling: str,
+) -> None:
+    home = _codex_home(tmp_path, monkeypatch)
+    config = home / "config.toml"
+    sibling = (
+        f"[mcp_servers.{rendered_sibling}] # sibling header\n"
+        'command = "sibling-mcp" # sibling command\n'
+        f'{PLAINWEAVE_ENV} = "sibling-owned" # sibling target\n'
+    )
+    config.write_text(
+        '[mcp_servers."legis"]\n'
+        f"command = {json.dumps(sys.executable)}\n"
+        'args = ["-P", "-m", "legis", "mcp", "--agent-id", "operator"]\n'
+        '[mcp_servers."legis"."env"]\n'
+        f'{PLAINWEAVE_ENV} = "stale" # env target\n'
+        f"{sibling}"
+    )
+    sibling_bytes = sibling.encode()
+    root = tmp_path / "project"
+    root.mkdir()
+
+    assert plainweave_binding.repair_codex_binding(root, "desired") is None
+
+    after = config.read_bytes()
+    parsed = tomllib.loads(after.decode())
+    assert after.endswith(sibling_bytes)
+    assert parsed["mcp_servers"]["legis"]["env"][PLAINWEAVE_ENV] == "desired"
+    assert parsed["mcp_servers"][parsed_sibling][PLAINWEAVE_ENV] == "sibling-owned"
+
+
 @pytest.mark.parametrize("shape", ["inline", "dotted"])
 def test_codex_inline_or_dotted_env_is_readable_but_not_repaired(
     tmp_path: Path, monkeypatch, shape: str

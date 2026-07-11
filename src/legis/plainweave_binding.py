@@ -351,9 +351,6 @@ def repair_project_binding(root: Path, desired: str) -> str | None:
 
 
 _CODEX_NOT_CONFIGURED = "global Codex Legis MCP registration is not configured"
-_TOML_HEADER_RE = re.compile(
-    r"(?m)^[ \t]*\[([^\r\n\]]+)\][ \t]*(?:#[^\r\n]*)?(?:\r\n|\n|\r|\Z)"
-)
 _TOML_TARGET_RE = re.compile(
     rf"(?m)^[ \t]*{PLAINWEAVE_ENV}[ \t]*=[ \t]*"
     r"(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'[^'\r\n]*')"
@@ -385,17 +382,58 @@ def _parse_toml_header_path(inner: str) -> tuple[str, ...] | None:
         path.append(key)
 
 
+def _toml_header_inner(line: str) -> str | None:
+    logical_line = line.rstrip("\r\n")
+    index = len(logical_line) - len(logical_line.lstrip(" \t"))
+    if index >= len(logical_line) or logical_line[index] != "[":
+        return None
+
+    inner_start = index + 1
+    in_basic = False
+    in_literal = False
+    escaped = False
+    for index in range(inner_start, len(logical_line)):
+        character = logical_line[index]
+        if in_basic:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_basic = False
+            continue
+        if in_literal:
+            if character == "'":
+                in_literal = False
+            continue
+        if character == '"':
+            in_basic = True
+        elif character == "'":
+            in_literal = True
+        elif character == "]":
+            suffix = logical_line[index + 1 :].lstrip(" \t")
+            if not suffix or suffix.startswith("#"):
+                return logical_line[inner_start:index]
+            return None
+    return None
+
+
 def _toml_table_spans(content: str) -> list[tuple[tuple[str, ...], int, int]]:
     headers: list[tuple[int, tuple[str, ...]]] = []
-    for header in _TOML_HEADER_RE.finditer(content):
-        path = _parse_toml_header_path(header.group(1))
+    offset = 0
+    for line in content.splitlines(keepends=True):
+        inner = _toml_header_inner(line)
+        path = _parse_toml_header_path(inner) if inner is not None else None
         if path is None:
+            offset += len(line)
             continue
         try:
-            tomllib.loads(content[: header.start()])
+            tomllib.loads(content[:offset])
         except tomllib.TOMLDecodeError:
+            offset += len(line)
             continue
-        headers.append((header.start(), path))
+        headers.append((offset, path))
+        offset += len(line)
     return [
         (
             path,
