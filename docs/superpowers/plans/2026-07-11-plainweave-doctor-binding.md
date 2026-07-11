@@ -736,11 +736,18 @@ git commit -m "docs: explain Plainweave doctor binding repair"
 - [ ] **Step 1: Run formatting and lint**
 
 ```bash
-uv run ruff format --check src tests
+uv run python scripts/check_changed_format.py --base 9c372d6
 uv run ruff check src
 ```
 
-Expected: both commands exit 0.
+Expected: every Python file changed by this plan exits the format check cleanly,
+and source lint exits 0. The repository-wide Ruff format baseline is not clean
+and predates this feature; CI does not currently enforce whole-tree formatting.
+Do not turn that unrelated baseline into either a false completion failure or a
+bulk formatting rewrite inside this plan. The helper compares the plan commit
+directly with the current working tree, adds untracked Python files, and filters
+out deleted paths before invoking Ruff, so staged/unstaged review remediation is
+included without pinning a stale count or false-failing on a later deletion.
 
 - [ ] **Step 2: Run type checking**
 
