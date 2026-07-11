@@ -268,11 +268,7 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
         "error",
         message=error
         or post_discovery.error
-        or (
-            post_discovery_check.message
-            if post_discovery_check is not None
-            else None
-        )
+        or (post_discovery_check.message if post_discovery_check is not None else None)
         or post.error
         or "legacy project Plainweave binding remains after repair",
         repairable=post_discovery_valid,

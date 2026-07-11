@@ -453,17 +453,14 @@ def test_mcp_json_stale_command_is_error_then_repaired(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_plainweave_independent_legacy_bindings_are_auto_fixable(
-    tmp_path, monkeypatch
-):
+def test_plainweave_independent_legacy_bindings_are_auto_fixable(tmp_path, monkeypatch):
     root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
     project_path = root / ".mcp.json"
     project_data = json.loads(project_path.read_text(encoding="utf-8"))
     project_data["mcpServers"]["legis"]["env"][PLAINWEAVE_ENV] = "legacy-project"
     project_path.write_text(json.dumps(project_data), encoding="utf-8")
     _config.write_text(
-        _config.read_text(encoding="utf-8")
-        + f'{PLAINWEAVE_ENV} = "legacy-global"\n',
+        _config.read_text(encoding="utf-8") + f'{PLAINWEAVE_ENV} = "legacy-global"\n',
         encoding="utf-8",
     )
     project = check_plainweave_project_binding(root, repair=False)
@@ -691,9 +688,7 @@ def test_plainweave_project_repair_rechecks_discovery_before_success(
     plainweave_executable = _make_executable(
         tmp_path / "plainweave-bin" / "plainweave-mcp"
     )
-    project_data["mcpServers"]["plainweave"]["command"] = str(
-        plainweave_executable
-    )
+    project_data["mcpServers"]["plainweave"]["command"] = str(plainweave_executable)
     project_data["mcpServers"]["legis"]["env"][PLAINWEAVE_ENV] = "legacy"
     project_path.write_text(json.dumps(project_data), encoding="utf-8")
     monkeypatch.setenv("PATH", "")
@@ -1141,10 +1136,7 @@ def test_unsupported_codex_env_shape_is_operator_owned_not_auto_fixable(
     env_line = (
         f'env = {{ KEEP_ME = "operator", {PLAINWEAVE_ENV} = "legacy" }}'
         if shape == "inline"
-        else (
-            'env.KEEP_ME = "operator"\n'
-            f'env.{PLAINWEAVE_ENV} = "legacy"'
-        )
+        else (f'env.KEEP_ME = "operator"\nenv.{PLAINWEAVE_ENV} = "legacy"')
     )
     config.write_text(
         "[mcp_servers.legis]\n"
@@ -1183,8 +1175,7 @@ def test_initialized_plainweave_aggregate_and_rendering(tmp_path, monkeypatch):
     project_data["mcpServers"]["legis"]["env"][PLAINWEAVE_ENV] = "legacy-project"
     project_path.write_text(json.dumps(project_data), encoding="utf-8")
     config.write_text(
-        config.read_text(encoding="utf-8")
-        + f'{PLAINWEAVE_ENV} = "legacy-global"\n',
+        config.read_text(encoding="utf-8") + f'{PLAINWEAVE_ENV} = "legacy-global"\n',
         encoding="utf-8",
     )
     checks = collect_checks(root, repair=False)

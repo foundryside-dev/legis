@@ -183,7 +183,9 @@ class McpRuntime:
     posture_ledger: Any | None = None
     coached_engine: EnforcementEngine | None = None
     warpline: Any | None = None  # advisory sibling; NEVER read by a verdict path
-    plainweave: "PlainweaveClient | None" = None  # advisory sibling; NEVER read by a verdict path
+    plainweave: "PlainweaveClient | None" = (
+        None  # advisory sibling; NEVER read by a verdict path
+    )
 
 
 def build_runtime(agent_id: str) -> McpRuntime:
@@ -200,7 +202,10 @@ def build_runtime(agent_id: str) -> McpRuntime:
     identity = None
     loomweave_url = os.environ.get("LOOMWEAVE_API_URL")
     if loomweave_url:
-        from legis.identity.loomweave_client import HttpLoomweaveIdentity, loomweave_hmac_key_from_env
+        from legis.identity.loomweave_client import (
+            HttpLoomweaveIdentity,
+            loomweave_hmac_key_from_env,
+        )
         from legis.identity.resolver import IdentityResolver
 
         identity = IdentityResolver(
@@ -218,17 +223,27 @@ def build_runtime(agent_id: str) -> McpRuntime:
     warpline_cmd = os.environ.get("WARPLINE_MCP_CMD")
     if warpline_cmd:
         import shlex
-        from legis.warpline_preflight.client import StdioMcpInvoke, WarplineError, WarplineMcpClient
+        from legis.warpline_preflight.client import (
+            StdioMcpInvoke,
+            WarplineError,
+            WarplineMcpClient,
+        )
+
         try:
             argv = shlex.split(warpline_cmd)
             if not argv:
                 raise WarplineError("WARPLINE_MCP_CMD is blank")
             from legis.config import project_root
-            warpline = WarplineMcpClient(invoke=StdioMcpInvoke(command=argv), repo=str(project_root()))
+
+            warpline = WarplineMcpClient(
+                invoke=StdioMcpInvoke(command=argv), repo=str(project_root())
+            )
         except (WarplineError, ValueError) as exc:
             logging.getLogger(__name__).warning(
                 "WARPLINE_MCP_CMD is set but invalid (%s); warpline advisory context "
-                "disabled (governance unaffected).", exc)
+                "disabled (governance unaffected).",
+                exc,
+            )
             warpline = None
 
     import shlex
@@ -288,7 +303,10 @@ def build_runtime(agent_id: str) -> McpRuntime:
         # drives only a config-hygiene warning + the read-side signature
         # requirement). See ProtectedGate (finding JUDGE-3).
         protected_gate = ProtectedGate(
-            store, clock, build_judge_from_env("MCP"), key,
+            store,
+            clock,
+            build_judge_from_env("MCP"),
+            key,
             protected_policies=protected,
         )
         signoff_gate = SignoffGate(store, clock, signer=True, key=key)
@@ -334,7 +352,9 @@ def build_runtime(agent_id: str) -> McpRuntime:
     )
 
 
-def _schema(required: list[str], properties: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _schema(
+    required: list[str], properties: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -437,8 +457,14 @@ def tool_definitions() -> list[dict[str, Any]]:
     # always present there; the per-cell rows in policy_list never carry it.
     explanation_out = _schema(
         [
-            "cell", "judge_inline", "self_clearable", "human_in_loop",
-            "enabled", "available_moves", "required_inputs", "matched_rule",
+            "cell",
+            "judge_inline",
+            "self_clearable",
+            "human_in_loop",
+            "enabled",
+            "available_moves",
+            "required_inputs",
+            "matched_rule",
             "policy_known",
         ],
         {
@@ -485,8 +511,15 @@ def tool_definitions() -> list[dict[str, Any]]:
             ),
             _schema(
                 [
-                    "outcome", "cell", "seq", "judge_model", "judge_rationale",
-                    "blocked_reason_code", "self_clearable", "next_actions", "note",
+                    "outcome",
+                    "cell",
+                    "seq",
+                    "judge_model",
+                    "judge_rationale",
+                    "blocked_reason_code",
+                    "self_clearable",
+                    "next_actions",
+                    "note",
                 ],
                 {
                     "outcome": {"const": "BLOCKED"},
@@ -510,8 +543,14 @@ def tool_definitions() -> list[dict[str, Any]]:
             ),
             _schema(
                 [
-                    "outcome", "cell", "seq", "cleared", "human_required",
-                    "operator_instruction", "poll_tool", "poll_handle",
+                    "outcome",
+                    "cell",
+                    "seq",
+                    "cleared",
+                    "human_required",
+                    "operator_instruction",
+                    "poll_tool",
+                    "poll_handle",
                 ],
                 {
                     "outcome": {"const": "ESCALATED_PENDING"},
@@ -625,8 +664,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "array",
                         "items": _schema(
                             [
-                                "cell", "enabled", "judge_inline",
-                                "self_clearable", "human_in_loop",
+                                "cell",
+                                "enabled",
+                                "judge_inline",
+                                "self_clearable",
+                                "human_in_loop",
                             ],
                             {
                                 "cell": cell_enum,
@@ -799,8 +841,12 @@ def tool_definitions() -> list[dict[str, Any]]:
                         "type": "array",
                         "items": _schema(
                             [
-                                "name", "head_sha", "is_current",
-                                "upstream", "ahead", "behind",
+                                "name",
+                                "head_sha",
+                                "is_current",
+                                "upstream",
+                                "ahead",
+                                "behind",
                             ],
                             {
                                 "name": string,
@@ -824,9 +870,15 @@ def tool_definitions() -> list[dict[str, Any]]:
                 {
                     "commit": _schema(
                         [
-                            "sha", "author_name", "author_email", "message",
-                            "committed_at", "parents", "files_changed",
-                            "insertions", "deletions",
+                            "sha",
+                            "author_name",
+                            "author_email",
+                            "message",
+                            "committed_at",
+                            "parents",
+                            "files_changed",
+                            "insertions",
+                            "deletions",
                         ],
                         {
                             "sha": string,
@@ -865,8 +917,12 @@ def tool_definitions() -> list[dict[str, Any]]:
             ),
             "outputSchema": _schema(
                 [
-                    "status", "worktree_checked", "base", "head",
-                    "committed", "working_tree",
+                    "status",
+                    "worktree_checked",
+                    "base",
+                    "head",
+                    "committed",
+                    "working_tree",
                 ],
                 {
                     "status": {
@@ -957,7 +1013,11 @@ def tool_definitions() -> list[dict[str, Any]]:
                 {
                     "base": string,
                     "head": string,
-                    "requirement_limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "requirement_limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
                     "requirement_offset": {"type": "integer", "minimum": 0},
                 },
             ),
@@ -1067,8 +1127,15 @@ def tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": _schema(["number"], {"number": integer}),
             "outputSchema": _schema(
                 [
-                    "number", "title", "base", "head", "state", "url",
-                    "recorded_by", "provenance", "checks",
+                    "number",
+                    "title",
+                    "base",
+                    "head",
+                    "state",
+                    "url",
+                    "recorded_by",
+                    "provenance",
+                    "checks",
                 ],
                 {
                     "number": integer,
@@ -1353,11 +1420,19 @@ def tool_definitions() -> list[dict[str, Any]]:
                                 "type": "array",
                                 "items": {
                                     "type": "object",
-                                    "required": ["kind", "content_hash", "recorded_at", "seq"],
+                                    "required": [
+                                        "kind",
+                                        "content_hash",
+                                        "recorded_at",
+                                        "seq",
+                                    ],
                                     "properties": {
                                         "kind": {
                                             "type": "string",
-                                            "enum": ["signoff_cleared", "operator_override"],
+                                            "enum": [
+                                                "signoff_cleared",
+                                                "operator_override",
+                                            ],
                                         },
                                         "content_hash": string,
                                         "recorded_at": string,
@@ -1538,7 +1613,9 @@ def _recovery_for(code: str) -> dict[str, Any]:
     }
     return {
         "recoverable": recoverable,
-        "next_action": next_actions.get(code, "Inspect the error message before retrying."),
+        "next_action": next_actions.get(
+            code, "Inspect the error message before retrying."
+        ),
     }
 
 
@@ -2034,7 +2111,9 @@ def _tool_policy_explain(runtime: McpRuntime, args: dict[str, Any]) -> dict[str,
         registry,
         policy=policy,
         entity=_require(args, "entity"),
-        engine=_simple_engine_for_cell(runtime, cell) if cell in ("chill", "coached") else None,
+        engine=_simple_engine_for_cell(runtime, cell)
+        if cell in ("chill", "coached")
+        else None,
         protected_gate=runtime.protected_gate,
         signoff_gate=runtime.signoff_gate,
     )
@@ -2058,7 +2137,9 @@ def _tool_policy_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, An
         # reports enabled:false without LEGIS_HMAC_KEY (no false-green).
         explanation = explain_cell(
             cell,
-            engine=_simple_engine_for_cell(runtime, cell) if cell in ("chill", "coached") else None,
+            engine=_simple_engine_for_cell(runtime, cell)
+            if cell in ("chill", "coached")
+            else None,
             protected_gate=runtime.protected_gate,
             signoff_gate=runtime.signoff_gate,
         )
@@ -2268,7 +2349,9 @@ def _tool_override_submit(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     raise NotEnabledError(f"unsupported policy cell {explanation.cell!r}")
 
 
-def _tool_signoff_status_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_signoff_status_get(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     seq = _require_int(args, "seq")
     if runtime.signoff_gate is None:
         # LEG-2: the message names the operator knob (C-8: operator action).
@@ -2295,7 +2378,9 @@ def _tool_signoff_status_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[
     return _tool_result(payload)
 
 
-def _tool_signoff_bind_issue(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_signoff_bind_issue(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     seq = _require_int(args, "seq")
     issue_id = _require(args, "issue_id")
     # The bind decision (fail-closed trail verification, cleared request,
@@ -2400,9 +2485,7 @@ def _tool_git_branch_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
 
 
 def _tool_git_commit_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
-    return _tool_result(
-        {"commit": asdict(_git(runtime).commit(_require(args, "sha")))}
-    )
+    return _tool_result({"commit": asdict(_git(runtime).commit(_require(args, "sha")))})
 
 
 def _tool_git_rename_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
@@ -2416,7 +2499,9 @@ def _tool_git_rename_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     )
 
 
-def _tool_git_rename_feed_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_git_rename_feed_get(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     from legis.git.rename_feed import build_rename_feed
 
     return _tool_result(
@@ -2429,7 +2514,9 @@ def _tool_git_rename_feed_get(runtime: McpRuntime, args: dict[str, Any]) -> dict
     )
 
 
-def _tool_filigree_closure_gate_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_filigree_closure_gate_get(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     from legis.governance.filigree_gate import evaluate_issue_closure
 
     if runtime.binding_ledger is None:
@@ -2439,11 +2526,15 @@ def _tool_filigree_closure_gate_get(runtime: McpRuntime, args: dict[str, Any]) -
             "LEGIS_HMAC_KEY (out-of-band) and relaunch"
         )
     return _tool_result(
-        evaluate_issue_closure(runtime.binding_ledger, issue_id=_require(args, "issue_id"))
+        evaluate_issue_closure(
+            runtime.binding_ledger, issue_id=_require(args, "issue_id")
+        )
     )
 
 
-def _tool_warpline_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_warpline_preflight_get(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     from legis.service.preflight import read_warpline_preflight
 
     return _tool_result(
@@ -2455,7 +2546,9 @@ def _tool_warpline_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> d
     )
 
 
-def _tool_plainweave_preflight_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_plainweave_preflight_get(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     from legis.service.preflight import read_plainweave_preflight
 
     return _tool_result(
@@ -2463,7 +2556,9 @@ def _tool_plainweave_preflight_get(runtime: McpRuntime, args: dict[str, Any]) ->
             runtime.plainweave,
             base=_require(args, "base"),
             head=args.get("head", "HEAD"),
-            requirement_limit=_optional_int(args, "requirement_limit", minimum=1, maximum=100),
+            requirement_limit=_optional_int(
+                args, "requirement_limit", minimum=1, maximum=100
+            ),
             requirement_offset=_optional_int(args, "requirement_offset", minimum=0),
         )
     )
@@ -2504,7 +2599,9 @@ def _tool_attestation_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
                 "sei": sei,
                 "attestations": [],
                 "unavailable": [
-                    {"reason": "trail not signature-verifiable (no protected gate / verifier)"}
+                    {
+                        "reason": "trail not signature-verifiable (no protected gate / verifier)"
+                    }
                 ],
             }
         )
@@ -2514,7 +2611,10 @@ def _tool_attestation_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
 
 
 def _tool_governance_read(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
-    from legis.service.governance import governance_read_unavailable, read_governance_for_sei
+    from legis.service.governance import (
+        governance_read_unavailable,
+        read_governance_for_sei,
+    )
 
     sei = _require(args, "sei")
     # FAIL-CLOSED pre-gate (same invariant as attestation_get): a verifiable answer
@@ -2530,16 +2630,22 @@ def _tool_governance_read(runtime: McpRuntime, args: dict[str, Any]) -> dict[str
     # verify_integrity (chain/delete-reorder-truncate) AND TrailVerifier.verify
     # (signatures), raising AuditIntegrityError (-> AUDIT_INTEGRITY_FAILURE) on a
     # tampered protected trail (loud, never a result).
-    return _tool_result(read_governance_for_sei(_governance_trail_records(runtime), sei))
+    return _tool_result(
+        read_governance_for_sei(_governance_trail_records(runtime), sei)
+    )
 
 
-def _tool_identity_gap_list(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_identity_gap_list(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     return _tool_result(
         read_identity_gaps(runtime.identity, lambda: _governance_trail_records(runtime))
     )
 
 
-def _tool_lineage_integrity_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_lineage_integrity_get(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     return _tool_result(
         read_lineage_integrity(
             runtime.identity, lambda: _governance_trail_records(runtime)
@@ -2632,7 +2738,9 @@ def _tool_check_report(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, A
     )
 
 
-def _tool_override_rate_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_override_rate_get(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     rate = compute_override_rate(_verified_records(runtime))
     return _tool_result(
         {
@@ -2679,7 +2787,9 @@ def _tool_doctor_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any
     return _tool_result(doctor_payload(collect_checks(root, repair=False)))
 
 
-def _tool_policy_boundary_check(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, Any]:
+def _tool_policy_boundary_check(
+    runtime: McpRuntime, args: dict[str, Any]
+) -> dict[str, Any]:
     from legis.policy.boundary_scan import (
         assert_within_boundary,
         count_source_files,
@@ -2770,7 +2880,9 @@ def _tool_posture_get(runtime: McpRuntime, args: dict[str, Any]) -> dict[str, An
         # posture_get can never disagree with the cell an override would route
         # to. _floored_registry is fail-closed structured on a missing ledger
         # via _registry()'s fail_closed default, matching the reported floor.
-        payload["effective_cell"] = _max_tier(floor, _registry(runtime).cell_for(policy))
+        payload["effective_cell"] = _max_tier(
+            floor, _registry(runtime).cell_for(policy)
+        )
     return _tool_result(payload)
 
 
@@ -2815,7 +2927,9 @@ def call_tool(runtime: McpRuntime, name: str, args: dict[str, Any]) -> dict[str,
         return _service_error(exc)
 
 
-def handle_request(request: dict[str, Any], runtime: McpRuntime) -> dict[str, Any] | None:
+def handle_request(
+    request: dict[str, Any], runtime: McpRuntime
+) -> dict[str, Any] | None:
     request_id = request.get("id")
     method = request.get("method")
     if request_id is None:
@@ -2831,7 +2945,10 @@ def handle_request(request: dict[str, Any], runtime: McpRuntime) -> dict[str, An
             return {
                 "jsonrpc": "2.0",
                 "id": request_id,
-                "error": {"code": -32602, "message": "initialize params must be an object"},
+                "error": {
+                    "code": -32602,
+                    "message": "initialize params must be an object",
+                },
             }
         requested = params.get("protocolVersion")
         if requested in _SUPPORTED_PROTOCOL_VERSIONS:
@@ -2907,7 +3024,9 @@ def _read_bounded_line(stream: TextIO, max_bytes: int) -> tuple[str, bool]:
     return line, False
 
 
-def run_jsonrpc(input_stream: TextIO, output_stream: TextIO, runtime: McpRuntime) -> None:
+def run_jsonrpc(
+    input_stream: TextIO, output_stream: TextIO, runtime: McpRuntime
+) -> None:
     max_bytes = _max_request_bytes()
     while True:
         line, overflow = _read_bounded_line(input_stream, max_bytes)
