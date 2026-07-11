@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import errno
+import copy
 import json
 import os
+import re
 import secrets
 import shlex
 import shutil
 import stat
+import tomllib
 from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,6 +51,12 @@ class _BindingInspection:
     data: dict[str, Any] | None = None
     entry: dict[str, Any] | None = None
     env: dict[str, str] | None = None
+    target_name: str = ".mcp.json"
+    subject: str = "project .mcp.json"
+    repair_subject: str = "project Plainweave binding"
+    text: str | None = None
+    container_path: Path | None = None
+    container_identity: tuple[int, int] | None = None
 
 
 def _binding_error(error: str, *, registered: bool = False) -> _BindingInspection:
@@ -205,13 +214,37 @@ def _write_all(fd: int, content: bytes) -> None:
         remaining = remaining[written:]
 
 
+def _anchored_container_changed(inspection: _BindingInspection) -> str | None:
+    path = inspection.container_path
+    identity = inspection.container_identity
+    if path is None or identity is None:
+        return None
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        current_path = path.resolve()
+        current_fd = os.open(current_path, flags)
+        try:
+            current_stat = os.fstat(current_fd)
+        finally:
+            os.close(current_fd)
+    except (OSError, RuntimeError, NotImplementedError, TypeError) as exc:
+        return f"{inspection.subject} directory changed after inspection: {exc}"
+    if (current_stat.st_dev, current_stat.st_ino) != identity:
+        return f"{inspection.subject} directory changed after inspection"
+    return None
+
+
 def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | None:
     root_fd = inspection.root_fd
     snapshot = inspection.snapshot
     identity = inspection.identity
     mode = inspection.mode
+    target_name = inspection.target_name
+    subject = inspection.subject
+    repair_subject = inspection.repair_subject
     if root_fd is None or snapshot is None or identity is None or mode is None:
-        return "project Legis MCP binding snapshot is incomplete"
+        return f"{repair_subject} snapshot is incomplete"
 
     nofollow_flag = getattr(os, "O_NOFOLLOW", None)
     if nofollow_flag is None:
@@ -223,7 +256,7 @@ def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | N
         temp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow_flag
         temp_flags |= getattr(os, "O_CLOEXEC", 0)
         for _attempt in range(10):
-            candidate = f".mcp.json.{secrets.token_hex(8)}.tmp"
+            candidate = f"{target_name}.{secrets.token_hex(8)}.tmp"
             try:
                 temp_fd = os.open(candidate, temp_flags, 0o600, dir_fd=root_fd)
             except FileExistsError:
@@ -240,9 +273,9 @@ def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | N
 
         current_flags = os.O_RDONLY | nofollow_flag | getattr(os, "O_CLOEXEC", 0)
         try:
-            current_fd = os.open(".mcp.json", current_flags, dir_fd=root_fd)
-        except (OSError, TypeError) as exc:
-            return f"project .mcp.json changed after inspection: {exc}"
+            current_fd = os.open(target_name, current_flags, dir_fd=root_fd)
+        except (OSError, NotImplementedError, TypeError) as exc:
+            return f"{subject} changed after inspection: {exc}"
         try:
             current_stat = os.fstat(current_fd)
             current = _read_fd(current_fd)
@@ -255,26 +288,31 @@ def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | N
             or current_identity != identity
             or current != snapshot
         ):
-            return "project .mcp.json changed after inspection; refusing to overwrite it"
+            return f"{subject} changed after inspection; refusing to overwrite it"
 
-        # This rechecks snapshot bytes and identity immediately before an atomic,
+        container_error = _anchored_container_changed(inspection)
+        if container_error is not None:
+            return container_error
+
+        # This rechecks snapshot bytes, file identity, and (when supplied) the
+        # configured container identity immediately before an atomic,
         # directory-anchored replace. Portable POSIX APIs do not offer a content
         # compare-and-swap: an arbitrary non-cooperating writer can still mutate
-        # the target inside the final syscall window. Linearizability against such
-        # writers is outside this CLI repair contract.
+        # the target or swap the configured path inside the final syscall window.
+        # Linearizability against such writers is outside this CLI repair contract.
         try:
             os.replace(
                 temp_name,
-                ".mcp.json",
+                target_name,
                 src_dir_fd=root_fd,
                 dst_dir_fd=root_fd,
             )
         except TypeError as exc:
-            return f"platform does not support anchored project replacement: {exc}"
+            return f"platform does not support anchored {repair_subject} replacement: {exc}"
         temp_name = None
         return None
     except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
-        return f"could not repair project Plainweave binding: {exc}"
+        return f"could not repair {repair_subject}: {exc}"
     finally:
         if temp_fd is not None:
             try:
@@ -307,6 +345,361 @@ def repair_project_binding(root: Path, desired: str) -> str | None:
         updated_env[PLAINWEAVE_ENV] = desired
         entry["env"] = updated_env
         content = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+        return _anchored_replace(inspection, content)
+    finally:
+        _close_root_fd(inspection)
+
+
+_CODEX_NOT_CONFIGURED = "global Codex Legis MCP registration is not configured"
+_TOML_HEADER_RE = re.compile(
+    r"(?m)^[ \t]*\[([^\r\n\]]+)\][ \t]*(?:#[^\r\n]*)?(?:\r\n|\n|\r|\Z)"
+)
+_TOML_TARGET_RE = re.compile(
+    rf"(?m)^[ \t]*{PLAINWEAVE_ENV}[ \t]*=[ \t]*"
+    r"(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'[^'\r\n]*')"
+    r"[ \t]*(?:#[^\r\n]*)?(?:\r\n|\n|\r|\Z)"
+)
+
+
+def _codex_config_path() -> Path:
+    if "CODEX_HOME" in os.environ:
+        return Path(os.environ["CODEX_HOME"]) / "config.toml"
+    return Path.home() / ".codex" / "config.toml"
+
+
+def _parse_toml_header_path(inner: str) -> tuple[str, ...] | None:
+    try:
+        parsed: Any = tomllib.loads(f"[{inner}]\n")
+    except tomllib.TOMLDecodeError:
+        return None
+    path: list[str] = []
+    current = parsed
+    while True:
+        if not isinstance(current, dict):
+            return None
+        if not current:
+            return tuple(path) if path else None
+        if len(current) != 1:
+            return None
+        key, current = next(iter(current.items()))
+        path.append(key)
+
+
+def _toml_table_spans(content: str) -> list[tuple[tuple[str, ...], int, int]]:
+    headers: list[tuple[int, tuple[str, ...]]] = []
+    for header in _TOML_HEADER_RE.finditer(content):
+        path = _parse_toml_header_path(header.group(1))
+        if path is None:
+            continue
+        try:
+            tomllib.loads(content[: header.start()])
+        except tomllib.TOMLDecodeError:
+            continue
+        headers.append((header.start(), path))
+    return [
+        (
+            path,
+            start,
+            headers[index + 1][0] if index + 1 < len(headers) else len(content),
+        )
+        for index, (start, path) in enumerate(headers)
+    ]
+
+
+def _toml_table_span(content: str, path: tuple[str, ...]) -> tuple[int, int] | None:
+    matches = [
+        (start, end)
+        for found_path, start, end in _toml_table_spans(content)
+        if found_path == path
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
+    try:
+        resolved_root = root.resolve()
+    except (OSError, RuntimeError) as exc:
+        return _binding_error(f"could not resolve project root: {exc}")
+
+    support_error = _anchored_io_support_error()
+    if support_error is not None:
+        return _binding_error(support_error.replace("project", "Codex config"))
+
+    config_path = _codex_config_path()
+    try:
+        config_dir = config_path.parent.resolve()
+    except (OSError, RuntimeError) as exc:
+        if not config_path.parent.exists():
+            return _BindingInspection(BindingState(False, False))
+        return _binding_error(f"could not resolve Codex config directory: {exc}")
+
+    root_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    root_flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        root_fd = os.open(config_dir, root_flags)
+    except FileNotFoundError:
+        return _BindingInspection(BindingState(False, False))
+    except (OSError, NotImplementedError, TypeError) as exc:
+        return _binding_error(f"could not open Codex config directory safely: {exc}")
+    try:
+        root_stat = os.fstat(root_fd)
+    except (OSError, NotImplementedError) as exc:
+        try:
+            os.close(root_fd)
+        except (OSError, NotImplementedError):
+            pass
+        return _binding_error(f"could not inspect Codex config directory safely: {exc}")
+
+    def fail(error: str, *, registered: bool = False) -> _BindingInspection:
+        try:
+            os.close(root_fd)
+        except (OSError, NotImplementedError):
+            pass
+        return _binding_error(error, registered=registered)
+
+    target_flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        target_fd = os.open(config_path.name, target_flags, dir_fd=root_fd)
+    except FileNotFoundError:
+        try:
+            os.close(root_fd)
+        except (OSError, NotImplementedError):
+            pass
+        return _BindingInspection(BindingState(False, False))
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return fail("Codex config.toml is a symlink; refusing to inspect it")
+        return fail(f"Codex config.toml is unreadable or unsafe: {exc}")
+    except (NotImplementedError, TypeError) as exc:
+        return fail(f"platform does not support anchored Codex config access: {exc}")
+
+    try:
+        target_stat = os.fstat(target_fd)
+        if not stat.S_ISREG(target_stat.st_mode):
+            return fail("Codex config.toml is not a regular file")
+        snapshot = _read_fd(target_fd)
+    except (OSError, NotImplementedError) as exc:
+        return fail(f"Codex config.toml is unreadable: {exc}")
+    finally:
+        try:
+            os.close(target_fd)
+        except (OSError, NotImplementedError):
+            pass
+
+    try:
+        text = snapshot.decode("utf-8")
+        data: Any = tomllib.loads(text)
+    except (tomllib.TOMLDecodeError, UnicodeError) as exc:
+        return fail(f"Codex config.toml is malformed or unreadable: {exc}")
+    if not isinstance(data, dict):
+        return fail("Codex config.toml top level is not a table")
+
+    servers = data.get("mcp_servers")
+    if servers is None:
+        _close_root_fd(_BindingInspection(BindingState(False, False), root_fd=root_fd))
+        return _BindingInspection(BindingState(False, False))
+    if not isinstance(servers, dict):
+        return fail("Codex config.toml mcp_servers is not a table")
+    if "legis" not in servers:
+        _close_root_fd(_BindingInspection(BindingState(False, False), root_fd=root_fd))
+        return _BindingInspection(BindingState(False, False))
+
+    entry = servers["legis"]
+    if not isinstance(entry, dict):
+        return fail("global Codex Legis MCP registration is malformed", registered=True)
+    if _toml_table_span(text, ("mcp_servers", "legis")) is None:
+        return fail(
+            "global Codex Legis MCP registration uses an unsupported inline or dotted shape",
+            registered=True,
+        )
+    try:
+        usable = install._mcp_args_are_current(
+            entry.get("args")
+        ) and install._mcp_command_resolves_safely(
+            entry.get("command"), resolved_root, entry.get("args")
+        )
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        return fail(
+            f"could not inspect global Codex Legis MCP invocation: {exc}",
+            registered=True,
+        )
+    if not usable:
+        return fail(
+            "global Codex Legis MCP invocation is missing, stale, or malformed",
+            registered=True,
+        )
+
+    raw_env = entry.get("env", {})
+    if not isinstance(raw_env, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in raw_env.items()
+    ):
+        return fail(
+            "global Codex Legis MCP environment must be a table of strings",
+            registered=True,
+        )
+    env = dict(raw_env)
+    return _BindingInspection(
+        state=BindingState(True, env.get(PLAINWEAVE_ENV) == desired),
+        root_fd=root_fd,
+        snapshot=snapshot,
+        identity=(target_stat.st_dev, target_stat.st_ino),
+        mode=stat.S_IMODE(target_stat.st_mode),
+        data=data,
+        entry=entry,
+        env=env,
+        target_name=config_path.name,
+        subject="Codex config.toml",
+        repair_subject="global Codex Plainweave binding",
+        text=text,
+        container_path=config_path.parent,
+        container_identity=(root_stat.st_dev, root_stat.st_ino),
+    )
+
+
+def inspect_codex_binding(root: Path, desired: str) -> BindingState:
+    """Inspect the Plainweave command bound to the global Codex Legis entry."""
+    inspection = _inspect_codex_binding(root, desired)
+    try:
+        return inspection.state
+    finally:
+        _close_root_fd(inspection)
+
+
+def _newline_for(content: str) -> str:
+    match = re.search(r"\r\n|\n|\r", content)
+    return match.group(0) if match is not None else "\n"
+
+
+def _append_before_table_end(
+    content: str, table_end: int, addition: str, newline: str
+) -> str:
+    prefix = content[:table_end]
+    if prefix and not prefix.endswith(("\r\n", "\n", "\r")):
+        addition = newline + addition
+    return prefix + addition + content[table_end:]
+
+
+def _supported_target_assignment(
+    content: str, span: tuple[int, int]
+) -> re.Match[str] | None:
+    start, end = span
+    matches: list[re.Match[str]] = []
+    for match in _TOML_TARGET_RE.finditer(content, start, end):
+        try:
+            tomllib.loads(content[: match.start()])
+            parsed = tomllib.loads(match.group(0))
+        except tomllib.TOMLDecodeError:
+            continue
+        if parsed == {PLAINWEAVE_ENV: parsed.get(PLAINWEAVE_ENV)} and isinstance(
+            parsed.get(PLAINWEAVE_ENV), str
+        ):
+            matches.append(match)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _codex_documents_match_except_target(
+    before: dict[str, Any], after: dict[str, Any]
+) -> bool:
+    def normalized(document: dict[str, Any]) -> dict[str, Any]:
+        result = copy.deepcopy(document)
+        servers = result.get("mcp_servers")
+        if not isinstance(servers, dict):
+            return result
+        entry = servers.get("legis")
+        if not isinstance(entry, dict):
+            return result
+        env = entry.setdefault("env", {})
+        if isinstance(env, dict):
+            env.pop(PLAINWEAVE_ENV, None)
+        return result
+
+    return normalized(before) == normalized(after)
+
+
+def _updated_codex_text(
+    inspection: _BindingInspection, desired: str
+) -> tuple[str | None, str | None]:
+    text = inspection.text
+    entry = inspection.entry
+    env = inspection.env
+    if text is None or entry is None or env is None:
+        return None, "global Codex Plainweave binding snapshot is incomplete"
+
+    parent_span = _toml_table_span(text, ("mcp_servers", "legis"))
+    if parent_span is None:
+        return None, "global Codex Legis MCP table has an unsupported shape"
+    env_span = _toml_table_span(text, ("mcp_servers", "legis", "env"))
+    if "env" in entry and env_span is None:
+        return (
+            None,
+            "global Codex Legis MCP env uses an unsupported inline or dotted shape",
+        )
+
+    newline = _newline_for(text)
+    rendered = json.dumps(desired)
+    if env_span is None:
+        block = (
+            f"{newline}[mcp_servers.legis.env]{newline}"
+            f"{PLAINWEAVE_ENV} = {rendered}{newline}"
+        )
+        return _append_before_table_end(text, parent_span[1], block, newline), None
+
+    if PLAINWEAVE_ENV not in env:
+        new_assignment = f"{PLAINWEAVE_ENV} = {rendered}{newline}"
+        return _append_before_table_end(
+            text, env_span[1], new_assignment, newline
+        ), None
+
+    existing_assignment = _supported_target_assignment(text, env_span)
+    if existing_assignment is None:
+        return (
+            None,
+            "global Codex Plainweave target assignment has an unsupported shape",
+        )
+    start, end = existing_assignment.span("value")
+    return text[:start] + rendered + text[end:], None
+
+
+def repair_codex_binding(root: Path, desired: str) -> str | None:
+    """Bind Plainweave in an existing usable global Codex Legis MCP entry."""
+    inspection = _inspect_codex_binding(root, desired)
+    try:
+        if inspection.state.current:
+            return None
+        if inspection.state.error is not None:
+            return inspection.state.error
+        if not inspection.state.registered:
+            return _CODEX_NOT_CONFIGURED
+
+        updated_text, error = _updated_codex_text(inspection, desired)
+        if error is not None or updated_text is None:
+            return error or "global Codex Plainweave binding could not be repaired"
+        try:
+            updated_data: Any = tomllib.loads(updated_text)
+        except tomllib.TOMLDecodeError as exc:
+            return f"updated Codex config.toml would be malformed: {exc}"
+        if not isinstance(updated_data, dict):
+            return "updated Codex config.toml would not be a table"
+        updated_servers = updated_data.get("mcp_servers")
+        updated_entry = (
+            updated_servers.get("legis") if isinstance(updated_servers, dict) else None
+        )
+        updated_env = (
+            updated_entry.get("env") if isinstance(updated_entry, dict) else None
+        )
+        if (
+            not isinstance(updated_env, dict)
+            or updated_env.get(PLAINWEAVE_ENV) != desired
+        ):
+            return "updated Codex config.toml did not contain the desired binding"
+        data = inspection.data
+        if data is None or not _codex_documents_match_except_target(data, updated_data):
+            return "Codex binding semantic comparison refused an unrelated mutation"
+        try:
+            content = updated_text.encode("utf-8")
+        except UnicodeError as exc:
+            return f"could not encode updated Codex config.toml: {exc}"
         return _anchored_replace(inspection, content)
     finally:
         _close_root_fd(inspection)
