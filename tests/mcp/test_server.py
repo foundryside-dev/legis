@@ -3892,6 +3892,7 @@ def test_build_runtime_ignores_stale_plainweave_env_for_another_project(
         "PLAINWEAVE_MCP_CMD",
         f"{stale_executable} --root {stale_root}",
     )
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
 
     runtime = build_runtime("agent-x")
 
