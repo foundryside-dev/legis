@@ -124,6 +124,9 @@ def check_mcp_json(root: Path, *, repair: bool) -> DoctorCheck:
     binary (uv-tool vs venv path) must not read as drift.
     """
     cid = "install.mcp_json"
+    blocker = _install.mcp_json_doctor_repair_blocker(root)
+    if blocker is not None:
+        return DoctorCheck(cid, "error", message=blocker, repairable=False)
     if _install.mcp_entry_is_current(root):
         return DoctorCheck(cid, "ok", repairable=True)
     if repair:
@@ -189,6 +192,10 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
         return discovery_check
     desired = discovery.command
     assert desired is not None
+
+    blocker = _install.mcp_json_doctor_repair_blocker(root)
+    if blocker is not None:
+        return DoctorCheck(cid, "error", message=blocker, repairable=False)
 
     state = _plainweave_binding.inspect_project_binding(root, desired)
     if state.current:
@@ -1041,6 +1048,8 @@ def _filigree_binding_urls(root: Path) -> list[str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return []
+    if not isinstance(data, dict):
         return []
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):

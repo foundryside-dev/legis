@@ -1196,6 +1196,55 @@ def _safe_mcp_env(env: Any) -> dict[str, str] | None:
     return safe
 
 
+def mcp_json_doctor_repair_blocker(project_root: Path) -> str | None:
+    """Return why doctor must not rewrite an existing operator-owned MCP file.
+
+    This is intentionally stricter than :func:`register_mcp_json`: an explicit
+    install may scrub rejected environment entries, while doctor ``--fix`` must
+    preserve malformed, unsafe, or secret-bearing operator configuration for
+    hand resolution. Messages describe only the shape/category and never values.
+    """
+    try:
+        path = project_path(project_root, ".mcp.json")
+    except (OSError, UnsafeInstallPathError) as exc:
+        return f"project .mcp.json path is unsafe or unreadable: {exc}"
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return "project .mcp.json is unreadable; refusing automatic repair"
+    if stat.S_ISLNK(path_stat.st_mode):
+        return "project .mcp.json is a symlink; refusing automatic repair"
+    if not stat.S_ISREG(path_stat.st_mode):
+        return "project .mcp.json is not a regular file; refusing automatic repair"
+    try:
+        parsed: Any = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return "project .mcp.json is malformed JSON; fix it by hand"
+    except (OSError, UnicodeDecodeError):
+        return "project .mcp.json is unreadable; fix it by hand"
+    if not isinstance(parsed, dict):
+        return "project .mcp.json top level is not an object; fix it by hand"
+    if "mcpServers" not in parsed:
+        return None
+    servers = parsed["mcpServers"]
+    if not isinstance(servers, dict):
+        return "project .mcp.json mcpServers is not an object; fix it by hand"
+    if "legis" not in servers:
+        return None
+    entry = servers["legis"]
+    if not isinstance(entry, dict):
+        return "project Legis MCP registration is not an object; fix it by hand"
+    raw_env = entry.get("env", {})
+    safe_env = _safe_mcp_env(raw_env)
+    if safe_env is None or not isinstance(raw_env, dict):
+        return "project Legis MCP environment is malformed; fix it by hand"
+    if safe_env != raw_env:
+        return "project Legis MCP environment contains unsafe or secret entries; fix it by hand"
+    return None
+
+
 def _legis_mcp_entry(
     agent_id: str = _DEFAULT_AGENT_ID, *, project_root: Path | None = None
 ) -> dict[str, Any]:

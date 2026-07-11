@@ -4,6 +4,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from legis.cli import main as cli_main
 from legis.doctor import (
     DoctorCheck,
@@ -366,6 +368,95 @@ def test_plainweave_missing_project_registration_is_auto_fixable(tmp_path, monke
     check = check_plainweave_project_binding(root, repair=False)
     assert check.status == "error" and check.repairable is True
     assert "install.mcp_json" in (check.message or "")
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "operator_secret",
+        "unsafe_flag",
+        "env_list",
+        "malformed_json",
+        "symlink",
+        "non_object",
+        "mcp_servers_list",
+        "legis_list",
+    ],
+)
+def test_doctor_refuses_operator_owned_mcp_json_unchanged(
+    tmp_path, monkeypatch, case
+):
+    root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
+    path = root / ".mcp.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    secret = "do-not-render-this-secret"
+    if case == "operator_secret":
+        data["mcpServers"]["legis"]["env"] = {"LEGIS_OPERATOR_KEY": secret}
+        path.write_text(json.dumps(data), encoding="utf-8")
+    elif case == "unsafe_flag":
+        data["mcpServers"]["legis"]["env"] = {"LEGIS_UNSAFE_DEV_AUTH": "1"}
+        path.write_text(json.dumps(data), encoding="utf-8")
+    elif case == "env_list":
+        data["mcpServers"]["legis"]["env"] = ["not", "a", "mapping"]
+        path.write_text(json.dumps(data), encoding="utf-8")
+    elif case == "malformed_json":
+        path.write_text("{not valid json", encoding="utf-8")
+    elif case == "symlink":
+        target = tmp_path / "operator-mcp.json"
+        target.write_text(json.dumps(data), encoding="utf-8")
+        path.unlink()
+        path.symlink_to(target)
+    elif case == "non_object":
+        path.write_text("[]", encoding="utf-8")
+    elif case == "mcp_servers_list":
+        path.write_text(json.dumps({"mcpServers": []}), encoding="utf-8")
+    else:
+        data["mcpServers"]["legis"] = []
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    fallback = _make_executable(tmp_path / "path" / "plainweave-mcp")
+    monkeypatch.setenv("PATH", str(fallback.parent))
+    link_before = path.readlink() if path.is_symlink() else None
+    before = path.read_bytes()
+
+    direct = check_mcp_json(root, repair=True)
+    checks = {check.id: check for check in collect_checks(root, repair=True)}
+
+    assert direct.status == "error" and direct.repairable is False
+    assert direct.fixed is False
+    assert secret not in (direct.message or "")
+    for cid in ("install.mcp_json", "install.plainweave_project_binding"):
+        assert checks[cid].status == "error"
+        assert checks[cid].repairable is False
+        assert checks[cid].fixed is False
+        assert secret not in (checks[cid].message or "")
+    assert path.read_bytes() == before
+    if link_before is not None:
+        assert path.is_symlink() and path.readlink() == link_before
+
+
+def test_doctor_repairs_safe_stale_command_and_preserves_operator_env(
+    tmp_path, monkeypatch
+):
+    root, _executable, _config = _plainweave_project(
+        tmp_path,
+        monkeypatch,
+        project_env={"LEGIS_WARDLINE_CELL": "surface_override"},
+    )
+    path = root / ".mcp.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["mcpServers"]["legis"]["command"] = "/missing/legis"
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    checks = {check.id: check for check in collect_checks(root, repair=True)}
+
+    assert checks["install.mcp_json"].status == "ok"
+    assert checks["install.mcp_json"].fixed is True
+    assert checks["install.plainweave_project_binding"].status == "ok"
+    assert checks["install.plainweave_project_binding"].fixed is True
+    env = json.loads(path.read_text())["mcpServers"]["legis"]["env"]
+    assert env["LEGIS_WARDLINE_CELL"] == "surface_override"
+    assert PLAINWEAVE_ENV in env
 
 
 def test_plainweave_binding_repair_is_ordered_post_verified_and_idempotent(tmp_path, monkeypatch):
