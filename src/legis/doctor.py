@@ -99,6 +99,9 @@ def render_text(checks: list[DoctorCheck]) -> str:
     for c in rendered:
         if c.fixed:
             tag = "[fixed]"
+            if c.status == "error" and not c.repairable:
+                tag += " [operator]"
+                has_operator = True
         elif c.repairable:
             tag = "[auto-fixable]"
             has_auto_fixable = True
@@ -241,8 +244,15 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
         )
 
     error = _plainweave_binding.repair_project_binding(root, None)
+    post_discovery = _plainweave_binding.discover_plainweave(root)
+    post_discovery_check = _plainweave_discovery_error(cid, post_discovery)
+    post_discovery_valid = (
+        post_discovery.applicable
+        and post_discovery.command is not None
+        and post_discovery.error is None
+    )
     post = _plainweave_binding.inspect_project_binding(root, None)
-    if error is None and post.current:
+    if error is None and post_discovery_valid and post.current:
         return DoctorCheck(
             cid,
             "ok",
@@ -257,16 +267,22 @@ def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck
         cid,
         "error",
         message=error
+        or post_discovery.error
+        or (
+            post_discovery_check.message
+            if post_discovery_check is not None
+            else None
+        )
         or post.error
         or "legacy project Plainweave binding remains after repair",
-        repairable=True,
+        repairable=post_discovery_valid,
     )
 
 
 def check_plainweave_codex_binding(root: Path, *, repair: bool) -> DoctorCheck:
     """Check that an existing global Codex Legis entry is project-agnostic."""
     cid = "install.plainweave_codex_binding"
-    state = _plainweave_binding.inspect_codex_binding(root, None)
+    state = _plainweave_binding.inspect_codex_binding(root=None, desired=None)
     if state.error is not None:
         return DoctorCheck(cid, "error", message=state.error, repairable=False)
     if not state.registered:
@@ -288,8 +304,8 @@ def check_plainweave_codex_binding(root: Path, *, repair: bool) -> DoctorCheck:
             repairable=True,
         )
     if not state.current:
-        error = _plainweave_binding.repair_codex_binding(root, None)
-        post = _plainweave_binding.inspect_codex_binding(root, None)
+        error = _plainweave_binding.repair_codex_binding(root=None, desired=None)
+        post = _plainweave_binding.inspect_codex_binding(root=None, desired=None)
         if error is None and post.current and post.project_bound:
             return DoctorCheck(
                 cid,

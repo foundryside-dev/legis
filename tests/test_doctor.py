@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from legis import install
+from legis import install, plainweave_binding
 from legis.cli import main as cli_main
 from legis.doctor import (
     DoctorCheck,
@@ -189,6 +189,26 @@ def test_render_text_tags_fixed():
     assert "install.x: warn — m [fixed]" in out
     # [fixed] is not auto-fixable-pending, so no fix footer from it alone
     assert "Run `legis doctor --fix` to repair auto-fixable items." not in out
+
+
+def test_render_text_tags_partial_cleanup_as_fixed_and_operator_owned():
+    out = render_text(
+        [
+            DoctorCheck(
+                "install.plainweave_codex_binding",
+                "error",
+                message="legacy cleanup completed; remove fixed cwd",
+                fixed=True,
+                repairable=False,
+            )
+        ]
+    )
+
+    assert (
+        "install.plainweave_codex_binding: error — legacy cleanup completed; "
+        "remove fixed cwd [fixed] [operator]"
+    ) in out
+    assert "[operator] items are not auto-fixable by `legis doctor --fix`" in out
 
 
 def test_render_text_surfaces_realistic_fixed_check():
@@ -537,6 +557,33 @@ def test_plainweave_doctor_converges_across_two_projects(
         assert PLAINWEAVE_ENV not in project_env
 
 
+def test_plainweave_global_check_is_independent_of_active_project_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    executable = _make_executable(alpha / "bin" / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.legis]\n"
+        f"command = {json.dumps(str(executable))}\n"
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n",
+        encoding="utf-8",
+    )
+
+    from_alpha = check_plainweave_codex_binding(alpha, repair=False)
+    from_beta = check_plainweave_codex_binding(beta, repair=False)
+
+    assert from_alpha == from_beta
+    assert from_alpha.status == "ok"
+
+
 def test_plainweave_global_fixed_cwd_is_operator_owned_and_unchanged(
     tmp_path: Path,
     monkeypatch,
@@ -602,6 +649,47 @@ def test_plainweave_global_repair_removes_legacy_key_but_preserves_fixed_cwd(
     assert "remove" in (check.message or "").lower()
     assert entry["cwd"] == str(root)
     assert entry["env"] == {"KEEP_ME": "operator"}
+
+
+def test_plainweave_project_repair_rechecks_discovery_before_success(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root, _executable, _config = _plainweave_project(tmp_path, monkeypatch)
+    project_path = root / ".mcp.json"
+    project_data = json.loads(project_path.read_text(encoding="utf-8"))
+    plainweave_executable = _make_executable(
+        tmp_path / "plainweave-bin" / "plainweave-mcp"
+    )
+    project_data["mcpServers"]["plainweave"]["command"] = str(
+        plainweave_executable
+    )
+    project_data["mcpServers"]["legis"]["env"][PLAINWEAVE_ENV] = "legacy"
+    project_path.write_text(json.dumps(project_data), encoding="utf-8")
+    monkeypatch.setenv("PATH", "")
+    original_repair = plainweave_binding.repair_project_binding
+
+    def repair_then_break_discovery(
+        project_root: Path,
+        desired: str | None,
+    ) -> str | None:
+        error = original_repair(project_root, desired)
+        data = json.loads(project_path.read_text(encoding="utf-8"))
+        del data["mcpServers"]["plainweave"]
+        project_path.write_text(json.dumps(data), encoding="utf-8")
+        return error
+
+    monkeypatch.setattr(
+        plainweave_binding,
+        "repair_project_binding",
+        repair_then_break_discovery,
+    )
+
+    check = check_plainweave_project_binding(root, repair=True)
+
+    assert check.status == "error"
+    assert check.fixed is False
+    assert "no executable" in (check.message or "").lower()
 
 
 def test_plainweave_missing_project_registration_is_auto_fixable(tmp_path, monkeypatch):

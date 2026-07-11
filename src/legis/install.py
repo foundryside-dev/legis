@@ -1436,7 +1436,7 @@ def _is_python_executable(command: str, resolved: str) -> bool:
 
 def _mcp_command_resolves_safely(
     command: Any,
-    project_root: Path,
+    project_root: Path | None,
     args: Any | None = None,
 ) -> bool:
     if not isinstance(command, str) or not command:

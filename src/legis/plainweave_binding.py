@@ -564,11 +564,15 @@ def _toml_table_span(content: str, path: tuple[str, ...]) -> tuple[int, int] | N
     return matches[0] if len(matches) == 1 else None
 
 
-def _inspect_codex_binding(root: Path, desired: str | None) -> _BindingInspection:
-    try:
-        resolved_root = root.resolve()
-    except (OSError, RuntimeError) as exc:
-        return _binding_error(f"could not resolve project root: {exc}")
+def _inspect_codex_binding(
+    root: Path | None, desired: str | None
+) -> _BindingInspection:
+    resolved_root: Path | None = None
+    if root is not None:
+        try:
+            resolved_root = root.resolve()
+        except (OSError, RuntimeError) as exc:
+            return _binding_error(f"could not resolve project root: {exc}")
 
     support_error = _anchored_io_support_error()
     if support_error is not None:
@@ -731,12 +735,15 @@ def _inspect_codex_binding(root: Path, desired: str | None) -> _BindingInspectio
     return inspection
 
 
-def inspect_codex_binding(root: Path, desired: str | None) -> BindingState:
+def inspect_codex_binding(root: Path | None, desired: str | None) -> BindingState:
     """Inspect the global Codex Legis Plainweave binding.
 
-    ``None`` selects runtime autodiscovery and is current only when the legacy
-    ``PLAINWEAVE_MCP_CMD`` key is absent. ``project_bound`` reports whether the
-    otherwise valid global Legis entry fixes its working directory with ``cwd``.
+    ``root=None`` validates the global invocation without applying a project-local
+    command boundary, keeping the result independent of the active project.
+    ``desired=None`` selects runtime autodiscovery and is current only when the
+    legacy ``PLAINWEAVE_MCP_CMD`` key is absent. ``project_bound`` reports whether
+    the otherwise valid global Legis entry fixes its working directory with
+    ``cwd``.
     """
     inspection = _inspect_codex_binding(root, desired)
     try:
@@ -854,10 +861,12 @@ def _updated_codex_text(
     return text[:start] + rendered + text[end:], None
 
 
-def repair_codex_binding(root: Path, desired: str | None) -> str | None:
+def repair_codex_binding(root: Path | None, desired: str | None) -> str | None:
     """Repair Plainweave in an existing usable global Codex Legis MCP entry.
 
-    ``None`` enables runtime autodiscovery by removing only the legacy
+    ``root=None`` validates the global invocation independently of any active
+    project before performing the same race-safe repair.
+    ``desired=None`` enables runtime autodiscovery by removing only the legacy
     ``PLAINWEAVE_MCP_CMD`` assignment. A fixed ``cwd`` is preserved; callers can
     identify that operator-owned project binding through ``project_bound``.
     """
