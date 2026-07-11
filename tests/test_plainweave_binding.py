@@ -2275,9 +2275,10 @@ def test_initialized_project_rejects_invalid_config_before_path_fallback(
     result = discover_plainweave(root)
 
     assert result.applicable is True
-    assert result.installed is False
+    assert result.installed is True
     assert result.command is None
     assert result.error is not None and expected in result.error.lower()
+    assert "trusted path fallback disabled" in result.error.lower()
 
 
 def test_hostile_nul_project_root_fails_closed_without_echoing_value(

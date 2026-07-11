@@ -1438,6 +1438,8 @@ def _mcp_command_resolves_safely(
     command: Any,
     project_root: Path | None,
     args: Any | None = None,
+    *,
+    path_env: str | None = None,
 ) -> bool:
     if not isinstance(command, str) or not command:
         return False
@@ -1452,14 +1454,17 @@ def _mcp_command_resolves_safely(
         # caller's inherited cwd. Empty and relative PATH entries are
         # cwd-sensitive even when shutil.which currently falls through to a
         # later absolute entry.
+        effective_path = (
+            path_env if path_env is not None else os.environ.get("PATH", "")
+        )
         if any(
             not entry or not Path(entry).is_absolute()
-            for entry in os.environ.get("PATH", "").split(os.pathsep)
+            for entry in effective_path.split(os.pathsep)
         ):
             return False
     if _path_head_is_project_local(command, project_root):
         return False
-    resolved = shutil.which(command)
+    resolved = shutil.which(command, path=path_env)
     if resolved is not None:
         if project_root is None and not Path(resolved).is_absolute():
             return False

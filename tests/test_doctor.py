@@ -654,6 +654,127 @@ def test_plainweave_global_bare_command_rejects_cwd_sensitive_path_components(
     assert from_alpha.repairable is False
 
 
+def test_plainweave_global_bare_command_rejects_configured_cwd_sensitive_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    safe_bin = tmp_path / "safe-bin"
+    alpha.mkdir()
+    beta.mkdir()
+    _make_executable(alpha / "legis")
+    _make_executable(safe_bin / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", str(safe_bin))
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.legis]\n"
+        'command = "legis"\n'
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n"
+        f'PATH = ".{os.pathsep}{safe_bin}"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(alpha)
+    from_alpha = check_plainweave_codex_binding(alpha, repair=False)
+    monkeypatch.chdir(beta)
+    from_beta = check_plainweave_codex_binding(beta, repair=False)
+
+    assert from_alpha == from_beta
+    assert from_alpha.status == "error"
+    assert from_alpha.repairable is False
+
+
+def test_plainweave_global_unsafe_configured_path_is_unchanged_under_fix(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    safe_bin = tmp_path / "safe-bin"
+    _make_executable(safe_bin / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", str(safe_bin))
+    config = codex_home / "config.toml"
+    secret = "operator-secret"
+    config.write_text(
+        "[mcp_servers.legis]\n"
+        'command = "legis"\n'
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n"
+        f'PATH = ".{os.pathsep}{safe_bin}"\n'
+        f'LEGIS_OPERATOR_KEY = "{secret}"\n'
+        f'{PLAINWEAVE_ENV} = "legacy"\n',
+        encoding="utf-8",
+    )
+    before = config.read_bytes()
+
+    check = check_plainweave_codex_binding(root, repair=True)
+
+    assert check.status == "error"
+    assert check.repairable is False
+    assert check.fixed is False
+    assert "invocation" in (check.message or "").lower()
+    assert secret not in (check.message or "")
+    assert config.read_bytes() == before
+
+
+def test_plainweave_global_bare_command_resolves_from_configured_safe_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    safe_bin = tmp_path / "safe-bin"
+    _make_executable(safe_bin / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.legis]\n"
+        'command = "legis"\n'
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n"
+        f'PATH = "{safe_bin}"\n',
+        encoding="utf-8",
+    )
+
+    check = check_plainweave_codex_binding(root, repair=False)
+
+    assert check.status == "ok"
+
+
+def test_plainweave_global_absolute_command_ignores_configured_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    executable = _make_executable(tmp_path / "tools" / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", "")
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.legis]\n"
+        f"command = {json.dumps(str(executable))}\n"
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n"
+        'PATH = "."\n',
+        encoding="utf-8",
+    )
+
+    check = check_plainweave_codex_binding(root, repair=False)
+
+    assert check.status == "ok"
+
+
 def test_plainweave_global_fixed_cwd_is_operator_owned_and_unchanged(
     tmp_path: Path,
     monkeypatch,

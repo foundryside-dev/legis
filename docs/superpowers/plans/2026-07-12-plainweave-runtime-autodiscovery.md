@@ -307,7 +307,9 @@ git commit -m "fix(doctor): remove legacy project Plainweave binding"
 
 - [ ] **Step 1: Add failing global autodiscovery tests**
 
-First make `_codex_config` accept `cwd: str | None = None` and emit a `cwd` line only when supplied. Then add:
+Global inspection and repair are project-independent: every call below passes
+no active project root. First make `_codex_config` accept `cwd: str | None =
+None` and emit a `cwd` line only when supplied. Then add:
 
 ```python
 def test_codex_autodiscovery_removes_only_legacy_binding(
@@ -325,9 +327,9 @@ def test_codex_autodiscovery_removes_only_legacy_binding(
     root = tmp_path / "project"
     root.mkdir()
 
-    state = plainweave_binding.inspect_codex_binding(root, None)
+    state = plainweave_binding.inspect_codex_binding(None, None)
     assert state.current is False
-    assert plainweave_binding.repair_codex_binding(root, None) is None
+    assert plainweave_binding.repair_codex_binding(root=None, desired=None) is None
 
     text = config.read_text()
     parsed = tomllib.loads(text)
@@ -335,7 +337,7 @@ def test_codex_autodiscovery_removes_only_legacy_binding(
     assert parsed["mcp_servers"]["legis"]["env"]["KEEP_ME"] == "operator"
     assert "# operator top comment" in text
     assert config.stat().st_mode & 0o777 == 0o640
-    assert plainweave_binding.inspect_codex_binding(root, None).current is True
+    assert plainweave_binding.inspect_codex_binding(None, None).current is True
 
 
 def test_codex_autodiscovery_reports_fixed_cwd(tmp_path: Path, monkeypatch) -> None:
@@ -343,7 +345,7 @@ def test_codex_autodiscovery_reports_fixed_cwd(tmp_path: Path, monkeypatch) -> N
     root = tmp_path / "project"
     root.mkdir()
 
-    state = plainweave_binding.inspect_codex_binding(root, None)
+    state = plainweave_binding.inspect_codex_binding(None, None)
 
     assert state.registered is True
     assert state.current is True
@@ -362,7 +364,7 @@ def test_codex_autodiscovery_repair_with_fixed_cwd_removes_only_legacy_key(
     root = tmp_path / "project"
     root.mkdir()
 
-    assert plainweave_binding.repair_codex_binding(root, None) is None
+    assert plainweave_binding.repair_codex_binding(root=None, desired=None) is None
 
     entry = tomllib.loads(config.read_text())["mcp_servers"]["legis"]
     assert entry["cwd"] == "/operator/project"

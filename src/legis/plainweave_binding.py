@@ -688,11 +688,24 @@ def _inspect_codex_binding(
             "global Codex Legis MCP cwd is malformed; expected a non-empty string",
             registered=True,
         )
+    raw_env = entry.get("env", {})
+    if not isinstance(raw_env, dict) or not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in raw_env.items()
+    ):
+        return fail(
+            "global Codex Legis MCP environment must be a table of strings",
+            registered=True,
+        )
+    env = dict(raw_env)
     try:
         usable = install._mcp_args_are_current(
             entry.get("args")
         ) and install._mcp_command_resolves_safely(
-            entry.get("command"), resolved_root, entry.get("args")
+            entry.get("command"),
+            resolved_root,
+            entry.get("args"),
+            path_env=env.get("PATH"),
         )
     except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
         return fail(
@@ -705,16 +718,6 @@ def _inspect_codex_binding(
             registered=True,
         )
 
-    raw_env = entry.get("env", {})
-    if not isinstance(raw_env, dict) or not all(
-        isinstance(key, str) and isinstance(value, str)
-        for key, value in raw_env.items()
-    ):
-        return fail(
-            "global Codex Legis MCP environment must be a table of strings",
-            registered=True,
-        )
-    env = dict(raw_env)
     inspection = _BindingInspection(
         state=BindingState(
             registered=True,
@@ -1174,6 +1177,15 @@ def _discover_plainweave(root: Path) -> PlainweaveDiscovery:
         return PlainweaveDiscovery(applicable=False, installed=fallback is not None)
 
     if project_issue is not None:
+        if fallback is not None:
+            return PlainweaveDiscovery(
+                applicable=True,
+                installed=True,
+                error=(
+                    f"{project_issue}; trusted PATH fallback disabled by invalid "
+                    "local configuration"
+                ),
+            )
         return PlainweaveDiscovery(
             applicable=True,
             installed=False,

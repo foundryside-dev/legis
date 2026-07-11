@@ -4098,6 +4098,7 @@ def test_build_runtime_warns_when_project_plainweave_config_is_invalid_even_with
 
     assert runtime.plainweave is None
     assert expected in caplog.text.lower()
+    assert "trusted path fallback disabled" in caplog.text.lower()
     assert "governance unaffected" in caplog.text.lower()
 
 
