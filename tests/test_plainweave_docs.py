@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 _PLAINWEAVE_DOCS = (
+    Path("CHANGELOG.md"),
     Path("README.md"),
     Path("docs/guide/configuration.md"),
     Path("docs/guide/cli-reference.md"),

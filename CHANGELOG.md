@@ -14,10 +14,14 @@ _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 laun
 - **`legis doctor` checks and safely repairs Plainweave MCP launch bindings.**
   Independent project and existing-global-Codex checks detect missing or stale
   `PLAINWEAVE_MCP_CMD` targets for applicable projects. Each binding-specific
-  repair changes only the nested target value, preserves surrounding safe
-  configuration, post-verifies, and tells operators to reconnect. Earlier in
-  the same `--fix` run, `install.mcp_json` may create or rebuild a missing or
-  stale project Legis registration before binding it. Operators inspect
+  repair semantically changes only the nested target value, post-verifies, and
+  tells operators to reconnect. Project `.mcp.json` repair reserializes the
+  whole document with two-space indentation while preserving unrelated JSON
+  values, the detected newline sequence, final-newline presence, and file mode
+  rather than arbitrary whitespace; global Codex TOML repair is text-surgical.
+  Earlier in the same `--fix` run, `install.mcp_json` may create or rebuild a
+  missing or stale project Legis registration before binding it. Operators
+  inspect
   `[fixed]` on both `install.mcp_json` and
   `install.plainweave_project_binding` when that happens. Unsafe or unsupported
   config remains unchanged and operator-owned. Installed-but-uninitialized
@@ -861,7 +865,9 @@ WP-M1 service-layer extraction, consolidated behind a stable version.
   `HTTPException`, so both HTTP and the forthcoming MCP adapter drive one code
   path. Behavior-preserving; FastAPI handlers are now thin adapters.
 
-[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/foundryside-dev/legis/compare/v1.2.0...v1.4.0
+[1.2.0]: https://github.com/foundryside-dev/legis/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/foundryside-dev/legis/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/foundryside-dev/legis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc4...v1.0.0

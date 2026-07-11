@@ -6,7 +6,13 @@ Legis is the fourth Weft product: the git/CI and governance side of the suite's 
 
 ## Status
 
-Legis is at **`1.1.1`** — the gold release line with post-launch posture, install, and release-gate hardening. The standalone git/CI surfaces, the graded 2x2 enforcement engine, the agent-programmable policy grammar, SEI-keyed attestations, and the Wardline/Filigree suite combinations are built and tested. The git-rename provider to Loomweave is contract-locked, operative pending Loomweave's committed-range driving.
+Legis is at **`1.4.0`** — the current gold release with post-launch posture,
+install, release-gate, policy-boundary, dependency, and package-layering
+hardening. The standalone git/CI surfaces, the graded 2x2 enforcement engine,
+the agent-programmable policy grammar, SEI-keyed attestations, and the
+Wardline/Filigree suite combinations are built and tested. The git-rename
+provider to Loomweave is contract-locked, operative pending Loomweave's
+committed-range driving.
 
 The transport-agnostic service layer (WP-M1) and the agent-facing MCP surface on top of it have landed (`legis mcp`). The MCP surface now declares output schemas across its tools, exposes read-side governance/diagnostic tools (`doctor_get`, `override_list`, `policy_boundary_check`, lineage-honesty reads, `check_report`, `signoff_bind_issue`), and keeps the API/MCP/CLI paths routed through the same service layer instead of duplicating governance decisions.
 
@@ -40,11 +46,12 @@ compatibility. On a host without the required primitives, Plainweave discovery
 and binding checks fail closed and automatic MCP configuration repair is
 unavailable.
 
-Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.1.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication runs live Loomweave conformance when live oracle configuration is provisioned. Missing configuration skips conformance without blocking publish; a provisioned oracle failure blocks the release. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
+Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.4.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication runs live Loomweave conformance when live oracle configuration is provisioned. Missing configuration skips conformance without blocking publish; a provisioned oracle failure blocks the release. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
 
-### Last week in practical terms
+### Recent hardening in practical terms
 
-The last week moved Legis from "feature-complete release candidate" to "operationally hardened gold":
+Recent releases moved Legis from "feature-complete release candidate" to
+"operationally hardened gold":
 
 - **Release and conformance.** PyPI publishing keeps a conditional live Loomweave SEI gate. When `LOOMWEAVE_URL`, `LOOMWEAVE_LIVE_ORACLE_LOCATOR`, and `LEGIS_LOOMWEAVE_HMAC_KEY` are all provisioned, the live oracle runs and any failure blocks publication. If any one is absent, the release job records a notice and passes without running the oracle, preserving the owner-approved skip-not-fail policy.
 - **Doctor and install hardening.** Doctor validates `.mcp.json` as an executable Legis stdio server, rejects repo-local SessionStart hooks, handles missing roots without crashing, and keeps audit-chain checks report-only instead of initializing truncated stores. Instruction refresh compares the whole owned block to the packaged block, not just the marker token.
