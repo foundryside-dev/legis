@@ -1447,6 +1447,16 @@ def _mcp_command_resolves_safely(
         and not Path(command).is_absolute()
     ):
         return False
+    if project_root is None and "/" not in command and "\\" not in command:
+        # Global registrations must resolve identically regardless of the
+        # caller's inherited cwd. Empty and relative PATH entries are
+        # cwd-sensitive even when shutil.which currently falls through to a
+        # later absolute entry.
+        if any(
+            not entry or not Path(entry).is_absolute()
+            for entry in os.environ.get("PATH", "").split(os.pathsep)
+        ):
+            return False
     if _path_head_is_project_local(command, project_root):
         return False
     resolved = shutil.which(command)

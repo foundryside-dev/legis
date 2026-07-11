@@ -755,8 +755,14 @@ def test_symlinked_codex_config_is_rejected_without_touching_target(
     assert external.read_bytes() == before
 
 
-def test_codex_snapshot_change_is_not_overwritten(tmp_path: Path, monkeypatch) -> None:
-    config = _codex_config(tmp_path, monkeypatch)
+@pytest.mark.parametrize("desired", ["desired", None], ids=["set", "remove-only"])
+def test_codex_snapshot_change_is_not_overwritten(
+    tmp_path: Path, monkeypatch, desired: str | None
+) -> None:
+    env = '[mcp_servers.legis.env]\nKEEP_ME = "operator"\n'
+    if desired is None:
+        env += f'{PLAINWEAVE_ENV} = "legacy"\n'
+    config = _codex_config(tmp_path, monkeypatch, env=env)
     root = tmp_path / "project"
     root.mkdir()
     original_predicate = plainweave_binding.install._mcp_command_resolves_safely
@@ -775,10 +781,12 @@ def test_codex_snapshot_change_is_not_overwritten(tmp_path: Path, monkeypatch) -
         change_after_validation,
     )
 
-    error = plainweave_binding.repair_codex_binding(root, "desired")
+    error = plainweave_binding.repair_codex_binding(root, desired)
 
     assert error and "changed" in error.lower()
     assert changed is not None and config.read_bytes() == changed
+    if desired is None:
+        assert PLAINWEAVE_ENV in config.read_text(encoding="utf-8")
 
 
 def test_codex_repair_stays_anchored_when_config_directory_is_swapped(
@@ -817,10 +825,14 @@ def test_codex_repair_stays_anchored_when_config_directory_is_swapped(
     assert (moved / "config.toml").read_bytes() == original
 
 
+@pytest.mark.parametrize("desired", ["desired", None], ids=["set", "remove-only"])
 def test_codex_replace_failure_is_safe_and_cleans_temp(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch, desired: str | None
 ) -> None:
-    config = _codex_config(tmp_path, monkeypatch)
+    env = '[mcp_servers.legis.env]\nKEEP_ME = "operator"\n'
+    if desired is None:
+        env += f'{PLAINWEAVE_ENV} = "legacy"\n'
+    config = _codex_config(tmp_path, monkeypatch, env=env)
     before = config.read_bytes()
     root = tmp_path / "project"
     root.mkdir()
@@ -829,11 +841,78 @@ def test_codex_replace_failure_is_safe_and_cleans_temp(
         raise OSError("simulated Codex replace failure")
 
     monkeypatch.setattr(plainweave_binding.os, "replace", fail_replace)
-    error = plainweave_binding.repair_codex_binding(root, "desired")
+    error = plainweave_binding.repair_codex_binding(root, desired)
 
     assert error and "simulated Codex replace failure" in error
     assert config.read_bytes() == before
     assert list(config.parent.glob("config.toml.*.tmp")) == []
+    if desired is None:
+        assert PLAINWEAVE_ENV in config.read_text(encoding="utf-8")
+
+
+def test_codex_remove_only_repair_waits_for_writer_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _codex_config(
+        tmp_path,
+        monkeypatch,
+        env=(
+            '[mcp_servers.legis.env]\nKEEP_ME = "operator"\n'
+            f'{PLAINWEAVE_ENV} = "legacy"\n'
+        ),
+    )
+    result: list[str | None] = []
+    attempting_lock = threading.Event()
+    completed = threading.Event()
+    real_lock = plainweave_binding.install._config_writer_lock
+
+    @contextmanager
+    def observed_lock(path: Path, *, dir_fd: int | None = None):
+        if threading.current_thread().name == "codex-remove-only-repair":
+            attempting_lock.set()
+        with real_lock(path, dir_fd=dir_fd):
+            yield
+
+    def repair() -> None:
+        result.append(plainweave_binding.repair_codex_binding(None, None))
+        completed.set()
+
+    with real_lock(config):
+        monkeypatch.setattr(
+            plainweave_binding.install,
+            "_config_writer_lock",
+            observed_lock,
+        )
+        worker = threading.Thread(target=repair, name="codex-remove-only-repair")
+        worker.start()
+        assert attempting_lock.wait(timeout=2)
+        assert not completed.wait(timeout=0.1)
+        assert PLAINWEAVE_ENV in config.read_text(encoding="utf-8")
+
+    worker.join(timeout=2)
+    assert completed.is_set()
+    assert result == [None]
+    assert PLAINWEAVE_ENV not in config.read_text(encoding="utf-8")
+
+
+def test_codex_remove_only_preserves_secret_shaped_global_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    secret = "operator-owned-secret"
+    config = _codex_config(
+        tmp_path,
+        monkeypatch,
+        env=(
+            "[mcp_servers.legis.env]\n"
+            f'LEGIS_OPERATOR_KEY = "{secret}"\n'
+            f'{PLAINWEAVE_ENV} = "legacy"\n'
+        ),
+    )
+
+    assert plainweave_binding.repair_codex_binding(None, None) is None
+
+    entry = tomllib.loads(config.read_text(encoding="utf-8"))["mcp_servers"]["legis"]
+    assert entry["env"] == {"LEGIS_OPERATOR_KEY": secret}
 
 
 def test_codex_platform_not_implemented_is_fail_closed(
@@ -2158,6 +2237,45 @@ def test_malformed_mcp_json_is_invalid_for_initialized_project(
     assert result.error is not None
     assert "malformed" in result.error.lower()
     assert "no executable" in result.error.lower()
+
+
+@pytest.mark.parametrize("config_kind", ["malformed", "invalid-entry"])
+def test_initialized_project_rejects_invalid_config_before_path_fallback(
+    tmp_path: Path,
+    monkeypatch,
+    config_kind: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    if config_kind == "malformed":
+        (root / ".mcp.json").write_text("{not json", encoding="utf-8")
+        expected = "malformed"
+    else:
+        (root / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "plainweave": {
+                            "type": "http",
+                            "command": "plainweave-mcp",
+                            "args": ["--root", str(root)],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        expected = "invalid"
+    fallback = _make_executable(tmp_path / "fallback-bin" / "plainweave-mcp")
+    monkeypatch.setenv("PATH", str(fallback.parent))
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and expected in result.error.lower()
 
 
 def test_hostile_nul_project_root_fails_closed_without_echoing_value(

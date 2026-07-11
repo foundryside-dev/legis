@@ -63,6 +63,8 @@ def _plainweave_project(
     root = tmp_path / "project"
     root.mkdir()
     executable = _make_executable(tmp_path / "tools" / "legis")
+    plainweave_executable = _make_executable(tmp_path / "tools" / "plainweave-mcp")
+    monkeypatch.setenv("PATH", str(executable.parent))
     if initialized:
         state = root / ".plainweave"
         state.mkdir()
@@ -73,7 +75,7 @@ def _plainweave_project(
                 "mcpServers": {
                     "plainweave": {
                         "type": "stdio",
-                        "command": str(executable),
+                        "command": str(plainweave_executable),
                         "args": ["--root", str(root)],
                     },
                     "legis": {
@@ -475,9 +477,15 @@ def test_plainweave_independent_legacy_bindings_are_auto_fixable(tmp_path, monke
     assert "legacy" in (codex.message or "").lower()
 
 
+@pytest.mark.parametrize(
+    "order",
+    [("alpha", "beta", "alpha"), ("beta", "alpha", "beta")],
+    ids=["alpha-first", "beta-first"],
+)
 def test_plainweave_doctor_converges_across_two_projects(
     tmp_path: Path,
     monkeypatch,
+    order: tuple[str, str, str],
 ) -> None:
     legis_executable = _make_executable(tmp_path / "tools" / "legis")
     codex_home = tmp_path / "codex-home"
@@ -527,21 +535,21 @@ def test_plainweave_doctor_converges_across_two_projects(
         encoding="utf-8",
     )
 
-    alpha_repaired = {
-        check.id: check for check in collect_checks(roots["alpha"], repair=True)
+    first_repaired = {
+        check.id: check for check in collect_checks(roots[order[0]], repair=True)
     }
-    beta_repaired = {
-        check.id: check for check in collect_checks(roots["beta"], repair=True)
+    second_repaired = {
+        check.id: check for check in collect_checks(roots[order[1]], repair=True)
     }
-    alpha_current = {
-        check.id: check for check in collect_checks(roots["alpha"], repair=False)
+    first_current = {
+        check.id: check for check in collect_checks(roots[order[2]], repair=False)
     }
 
     binding_ids = (
         "install.plainweave_project_binding",
         "install.plainweave_codex_binding",
     )
-    for checks in (alpha_repaired, beta_repaired, alpha_current):
+    for checks in (first_repaired, second_repaired, first_current):
         assert all(checks[check_id].status == "ok" for check_id in binding_ids)
 
     global_text = config.read_text(encoding="utf-8")
@@ -611,6 +619,41 @@ def test_plainweave_global_check_rejects_relative_command_from_every_cwd(
     assert from_alpha.repairable is False
 
 
+@pytest.mark.parametrize("unsafe_path", ["", "bin"], ids=["empty", "relative"])
+def test_plainweave_global_bare_command_rejects_cwd_sensitive_path_components(
+    tmp_path: Path,
+    monkeypatch,
+    unsafe_path: str,
+) -> None:
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    safe_bin = tmp_path / "safe-bin"
+    alpha.mkdir()
+    beta.mkdir()
+    _make_executable(alpha / ("bin" if unsafe_path else ".") / "legis")
+    _make_executable(safe_bin / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("PATH", os.pathsep.join([unsafe_path, str(safe_bin)]))
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.legis]\n"
+        'command = "legis"\n'
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(alpha)
+    from_alpha = check_plainweave_codex_binding(alpha, repair=False)
+    monkeypatch.chdir(beta)
+    from_beta = check_plainweave_codex_binding(beta, repair=False)
+
+    assert from_alpha == from_beta
+    assert from_alpha.status == "error"
+    assert from_alpha.repairable is False
+
+
 def test_plainweave_global_fixed_cwd_is_operator_owned_and_unchanged(
     tmp_path: Path,
     monkeypatch,
@@ -639,6 +682,38 @@ def test_plainweave_global_fixed_cwd_is_operator_owned_and_unchanged(
     assert check.fixed is False
     assert "fixed cwd" in (check.message or "").lower()
     assert "runtime autodiscovery" in (check.message or "").lower()
+    assert config.read_bytes() == before
+
+
+def test_plainweave_global_malformed_cwd_is_operator_owned_and_unchanged(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    executable = _make_executable(tmp_path / "tools" / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    config = codex_home / "config.toml"
+    config.write_text(
+        "[mcp_servers.legis]\n"
+        f"command = {json.dumps(str(executable))}\n"
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "cwd = 123\n"
+        "[mcp_servers.legis.env]\n"
+        f'{PLAINWEAVE_ENV} = "legacy"\n',
+        encoding="utf-8",
+    )
+    before = config.read_bytes()
+
+    check = check_plainweave_codex_binding(root, repair=True)
+
+    assert check.status == "error"
+    assert check.repairable is False
+    assert check.fixed is False
+    assert "cwd" in (check.message or "").lower()
+    assert "malformed" in (check.message or "").lower()
     assert config.read_bytes() == before
 
 

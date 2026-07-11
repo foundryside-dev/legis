@@ -401,6 +401,35 @@ def test_build_runtime_initialize_does_not_create_local_state(tmp_path, monkeypa
     assert not (tmp_path / ".weft" / "legis" / "legis-pulls.db").exists()
 
 
+def test_initialized_plainweave_runtime_startup_creates_no_project_state_or_manifest(
+    tmp_path, monkeypatch
+):
+    from legis.mcp import build_runtime
+
+    root = tmp_path / "project"
+    _initialized_plainweave_project(root)
+    before = {
+        path.relative_to(root): (path.read_bytes() if path.is_file() else None)
+        for path in root.rglob("*")
+    }
+    monkeypatch.chdir(root)
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+    runtime = build_runtime("agent-1")
+
+    responses = _run(
+        _messages({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}),
+        runtime,
+    )
+
+    assert responses[0]["result"]["serverInfo"]["name"] == "legis"
+    after = {
+        path.relative_to(root): (path.read_bytes() if path.is_file() else None)
+        for path in root.rglob("*")
+    }
+    assert after == before
+    assert not (root / ".weft").exists()
+
+
 def test_policy_explain_returns_service_explanation_payload(tmp_path):
     runtime, _store = _runtime(tmp_path)
     runtime.cell_registry = PolicyCellRegistry(
@@ -3378,6 +3407,10 @@ def test_doctor_get_is_report_only_and_never_repairs(tmp_path, monkeypatch):
     executable.parent.mkdir()
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
+    plainweave_executable = tmp_path / "tools" / "plainweave-mcp"
+    plainweave_executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    plainweave_executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(executable.parent))
     project_config = root / ".mcp.json"
     project_config.write_text(
         json.dumps(
@@ -3385,7 +3418,7 @@ def test_doctor_get_is_report_only_and_never_repairs(tmp_path, monkeypatch):
                 "mcpServers": {
                     "plainweave": {
                         "type": "stdio",
-                        "command": str(executable),
+                        "command": str(plainweave_executable),
                         "args": ["--root", str(root)],
                     },
                     "legis": {
@@ -3878,6 +3911,102 @@ def test_build_runtime_discovers_plainweave_from_active_project(monkeypatch, tmp
     ]
 
 
+def test_build_runtime_discovers_project_entry_without_plainweave_database(
+    monkeypatch, tmp_path
+):
+    from legis.mcp import build_runtime
+
+    root = tmp_path / "project"
+    root.mkdir()
+    executable = root.parent / "bin" / "plainweave-mcp"
+    executable.parent.mkdir()
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    (root / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plainweave": {
+                        "type": "stdio",
+                        "command": str(executable),
+                        "args": ["--root", str(root)],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = {path.relative_to(root) for path in root.rglob("*")}
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+
+    runtime = build_runtime("agent-x")
+
+    assert runtime.plainweave is not None
+    assert runtime.plainweave._invoke._command == [
+        str(executable.resolve()),
+        "--root",
+        str(root),
+    ]
+    assert {path.relative_to(root) for path in root.rglob("*")} == before
+
+
+def test_build_runtime_discovers_initialized_project_from_trusted_path(
+    monkeypatch, tmp_path
+):
+    from legis.mcp import build_runtime
+
+    root = tmp_path / "project"
+    state = root / ".plainweave"
+    state.mkdir(parents=True)
+    (state / "plainweave.db").touch()
+    fallback = tmp_path / "bin" / "plainweave-mcp"
+    fallback.parent.mkdir()
+    fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fallback.chmod(0o755)
+    before = {
+        path.relative_to(root): (path.read_bytes() if path.is_file() else None)
+        for path in root.rglob("*")
+    }
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PATH", str(fallback.parent))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+
+    runtime = build_runtime("agent-x")
+
+    assert runtime.plainweave is not None
+    assert runtime.plainweave._invoke._command == [
+        str(fallback.resolve()),
+        "--root",
+        str(root),
+    ]
+    after = {
+        path.relative_to(root): (path.read_bytes() if path.is_file() else None)
+        for path in root.rglob("*")
+    }
+    assert after == before
+
+
+def test_build_runtime_without_plainweave_signal_is_silent_and_unwired(
+    monkeypatch, tmp_path, caplog
+):
+    from legis.mcp import build_runtime
+
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PATH", "")
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="legis.mcp"):
+        runtime = build_runtime("agent-x")
+
+    assert runtime.plainweave is None
+    assert "plainweave" not in caplog.text.lower()
+    assert list(root.iterdir()) == []
+
+
 def test_build_runtime_ignores_stale_plainweave_env_for_another_project(
     monkeypatch, tmp_path
 ):
@@ -3925,6 +4054,51 @@ def test_build_runtime_warns_and_degrades_when_plainweave_discovery_fails(
     assert runtime.plainweave is None
     assert "runtime autodiscovery failed" in warning
     assert "governance unaffected" in warning
+
+
+@pytest.mark.parametrize("config_kind", ["malformed", "invalid-entry"])
+def test_build_runtime_warns_when_project_plainweave_config_is_invalid_even_with_fallback(
+    monkeypatch, tmp_path, caplog, config_kind
+):
+    from legis.mcp import build_runtime
+
+    root = tmp_path / "project"
+    state = root / ".plainweave"
+    state.mkdir(parents=True)
+    (state / "plainweave.db").touch()
+    fallback = tmp_path / "fallback-bin" / "plainweave-mcp"
+    fallback.parent.mkdir()
+    fallback.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    fallback.chmod(0o755)
+    if config_kind == "malformed":
+        (root / ".mcp.json").write_text("{not json", encoding="utf-8")
+        expected = "malformed"
+    else:
+        (root / ".mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "plainweave": {
+                            "type": "http",
+                            "command": str(fallback),
+                            "args": ["--root", str(root)],
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        expected = "invalid"
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("PATH", str(fallback.parent))
+    monkeypatch.delenv("LEGIS_HMAC_KEY", raising=False)
+
+    with caplog.at_level(logging.WARNING, logger="legis.mcp"):
+        runtime = build_runtime("agent-x")
+
+    assert runtime.plainweave is None
+    assert expected in caplog.text.lower()
+    assert "governance unaffected" in caplog.text.lower()
 
 
 def test_plainweave_preflight_get_unavailable_when_unwired(tmp_path):

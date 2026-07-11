@@ -574,7 +574,7 @@ Remove `discover_plainweave(root)` from `check_plainweave_codex_binding`; inspec
 
 1. operator error from malformed/unsafe state;
 2. absent registration → healthy not-applicable;
-3. legacy key present → auto-fixable, remove with `repair_codex_binding(root, None)`, and post-verify;
+3. legacy key present → auto-fixable, remove with `repair_codex_binding(root=None, desired=None)`, and post-verify; both global inspection and repair receive no active project root;
 4. fixed `cwd` after migration → operator error with “global Codex Legis registration has a fixed cwd; remove it so runtime project autodiscovery inherits the active project”; and
 5. otherwise healthy.
 

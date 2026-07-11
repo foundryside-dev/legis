@@ -681,6 +681,13 @@ def _inspect_codex_binding(
             f"transport fields: {', '.join(conflicting_transport_fields)}",
             registered=True,
         )
+    if "cwd" in entry and (
+        not isinstance(entry["cwd"], str) or not entry["cwd"].strip()
+    ):
+        return fail(
+            "global Codex Legis MCP cwd is malformed; expected a non-empty string",
+            registered=True,
+        )
     try:
         usable = install._mcp_args_are_current(
             entry.get("args")
@@ -1165,6 +1172,13 @@ def _discover_plainweave(root: Path) -> PlainweaveDiscovery:
 
     if not initialized:
         return PlainweaveDiscovery(applicable=False, installed=fallback is not None)
+
+    if project_issue is not None:
+        return PlainweaveDiscovery(
+            applicable=True,
+            installed=False,
+            error=f"Plainweave project has no executable available; {project_issue}",
+        )
 
     if fallback is not None:
         return PlainweaveDiscovery(
