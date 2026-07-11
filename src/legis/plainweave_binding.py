@@ -782,6 +782,42 @@ def _resolve_executable(command: object) -> str | None:
         return None
 
 
+def _resolve_plainweave_executable(command: object, root: Path) -> str | None:
+    if not isinstance(command, str) or not command:
+        return None
+    if install._path_head_is_project_local(command, root):
+        return None
+    candidates: list[str] = []
+    first = _resolve_executable(command)
+    if first is not None:
+        candidates.append(first)
+    if "/" not in command and "\\" not in command:
+        for entry in os.environ.get("PATH", "").split(os.pathsep):
+            try:
+                candidate = shutil.which(command, path=entry)
+            except (OSError, UnicodeError):
+                continue
+            if candidate is not None and candidate not in candidates:
+                candidates.append(candidate)
+
+    for resolved in candidates:
+        if install._path_head_is_project_local(resolved, root):
+            continue
+        try:
+            resolved_path = Path(resolved).resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        if install._path_head_is_project_local(str(resolved_path), root):
+            continue
+        if resolved_path.name.lower() not in {
+            "plainweave-mcp",
+            "plainweave-mcp.exe",
+        }:
+            continue
+        return str(resolved_path)
+    return None
+
+
 def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     config = root / ".mcp.json"
     if not config.exists():
@@ -808,7 +844,7 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     if entry.get("type", "stdio") != "stdio":
         return None, _INVALID_ENTRY
 
-    executable = _resolve_executable(entry.get("command"))
+    executable = _resolve_plainweave_executable(entry.get("command"), root)
     args = entry.get("args")
     if executable is None or not isinstance(args, list):
         return None, _INVALID_ENTRY
@@ -869,7 +905,7 @@ def discover_plainweave(root: Path) -> PlainweaveDiscovery:
     )
 
     project_argv, project_issue = _project_plainweave_argv(resolved_root)
-    fallback = _resolve_executable("plainweave-mcp")
+    fallback = _resolve_plainweave_executable("plainweave-mcp", resolved_root)
 
     if project_argv is not None:
         return PlainweaveDiscovery(

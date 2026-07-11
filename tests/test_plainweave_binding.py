@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import sys
 import tomllib
@@ -1355,7 +1356,7 @@ def test_root_pinned_project_entry_wins_over_path_fallback(
 ) -> None:
     root = tmp_path / "project"
     root.mkdir()
-    project_command = _make_executable(tmp_path / "project-bin" / "plainweave")
+    project_command = _make_executable(tmp_path / "project-bin" / "plainweave-mcp")
     fallback = _make_executable(tmp_path / "fallback-bin" / "plainweave-mcp")
     args = ["serve", "--root", str(root), "--quiet"]
     _write_entry(root, str(project_command), args)
@@ -1380,7 +1381,7 @@ def test_project_entry_canonicalizes_validated_root_argument(
 ) -> None:
     root = tmp_path / "project"
     root.mkdir()
-    command = _make_executable(tmp_path / "project-bin" / "plainweave")
+    command = _make_executable(tmp_path / "project-bin" / "plainweave-mcp")
     alias = tmp_path / "project-alias"
     alias.symlink_to(root, target_is_directory=True)
     supplied_root = "." if root_form.endswith("relative") else str(alias)
@@ -1414,6 +1415,31 @@ def test_path_fallback_adds_explicit_resolved_root(tmp_path: Path, monkeypatch) 
     assert result.installed is True
     assert shlex.split(result.command or "") == [
         str(fallback),
+        "--root",
+        str(root.resolve()),
+    ]
+    assert result.error is None
+
+
+def test_path_fallback_skips_project_local_shadow(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    local = _make_executable(root / "bin" / "plainweave-mcp")
+    external = _make_executable(tmp_path / "external-bin" / "plainweave-mcp")
+    monkeypatch.setenv(
+        "PATH", os.pathsep.join([str(local.parent), str(external.parent)])
+    )
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is True
+    assert shlex.split(result.command or "") == [
+        str(external.resolve()),
         "--root",
         str(root.resolve()),
     ]
@@ -1493,7 +1519,7 @@ def test_non_string_project_args_are_invalid(tmp_path: Path, monkeypatch) -> Non
     root = tmp_path / "project"
     root.mkdir()
     _initialize(root)
-    command = _make_executable(tmp_path / "bin" / "plainweave")
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
     _write_entry(root, str(command), ["--root", str(root), 7])
     monkeypatch.setenv("PATH", "")
 
@@ -1511,7 +1537,7 @@ def test_project_entry_without_root_is_invalid(tmp_path: Path, monkeypatch) -> N
     root = tmp_path / "project"
     root.mkdir()
     _initialize(root)
-    command = _make_executable(tmp_path / "bin" / "plainweave")
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
     _write_entry(root, str(command), ["serve"])
     monkeypatch.setenv("PATH", "")
 
@@ -1533,7 +1559,7 @@ def test_project_entry_with_mismatched_root_is_invalid(
     _initialize(root)
     other_root = tmp_path / "other"
     other_root.mkdir()
-    command = _make_executable(tmp_path / "bin" / "plainweave")
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
     _write_entry(root, str(command), ["--root", str(other_root)])
     monkeypatch.setenv("PATH", "")
 
@@ -1555,7 +1581,7 @@ def test_project_entry_rejects_later_equals_root_override(
     _initialize(root)
     other_root = tmp_path / "other"
     other_root.mkdir()
-    command = _make_executable(tmp_path / "bin" / "plainweave")
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
     _write_entry(
         root,
         str(command),
@@ -1580,7 +1606,7 @@ def test_project_entry_rejects_later_abbreviated_root_override(
     _initialize(root)
     other_root = tmp_path / "other"
     other_root.mkdir()
-    command = _make_executable(tmp_path / "bin" / "plainweave")
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
     _write_entry(
         root,
         str(command),
@@ -1616,12 +1642,38 @@ def test_project_entry_with_dead_command_is_invalid(
     assert "no executable" in result.error.lower()
 
 
+@pytest.mark.parametrize("unsafe_command", ["wrong-name", "project-local"])
+def test_project_entry_rejects_untrusted_plainweave_executable(
+    tmp_path: Path,
+    monkeypatch,
+    unsafe_command: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    if unsafe_command == "wrong-name":
+        command = _make_executable(tmp_path / "outside-bin" / "not-plainweave")
+    else:
+        command = _make_executable(root / "bin" / "plainweave-mcp")
+    _write_entry(root, str(command), ["--root", str(root)])
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None
+    assert "invalid" in result.error.lower()
+    assert "no executable" in result.error.lower()
+
+
 def test_command_path_with_spaces_round_trips_exactly(
     tmp_path: Path, monkeypatch
 ) -> None:
     root = tmp_path / "project with spaces"
     root.mkdir()
-    command = _make_executable(tmp_path / "bin with spaces" / "plainweave mcp")
+    command = _make_executable(tmp_path / "bin with spaces" / "plainweave-mcp")
     args = ["--root", str(root), "--label", "project label"]
     _write_entry(root, str(command), args)
     monkeypatch.setenv("PATH", "")
@@ -1642,7 +1694,7 @@ def test_symlinked_project_config_cannot_establish_applicability(
     root.mkdir()
     outside = tmp_path / "outside"
     outside.mkdir()
-    command = _make_executable(tmp_path / "bin" / "plainweave")
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
     external_config = outside / ".mcp.json"
     external_config.write_text(
         json.dumps(
