@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -57,7 +58,13 @@ def main() -> int:
     root = Path.cwd()
     paths = changed_python_files(root, args.base)
     if args.print_only:
-        print("\n".join(paths))
+        # Paths may carry surrogate-escaped bytes from non-UTF-8 filenames
+        # (git output is decoded with errors="surrogateescape"); a plain
+        # print() to a strict UTF-8 stdout would raise UnicodeEncodeError, so
+        # write the bytes directly with the matching error handler.
+        sys.stdout.buffer.write(
+            ("\n".join(paths) + "\n").encode("utf-8", "surrogateescape")
+        )
         return 0
     if not paths:
         return 0
