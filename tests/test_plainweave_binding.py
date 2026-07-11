@@ -122,13 +122,13 @@ def test_current_project_binding_does_not_write(tmp_path: Path, monkeypatch) -> 
     desired = "plainweave-mcp --root /already-current"
     _write_legis_entry(tmp_path, env={PLAINWEAVE_ENV: desired})
 
-    def unexpected_write(_path: Path, _content: str) -> None:
+    def unexpected_replace(*_args, **_kwargs) -> None:
         pytest.fail("current binding must not be rewritten")
 
     monkeypatch.setattr(
-        plainweave_binding.install,
-        "_atomic_write_text",
-        unexpected_write,
+        plainweave_binding,
+        "_anchored_replace",
+        unexpected_replace,
     )
 
     assert plainweave_binding.repair_project_binding(tmp_path, desired) is None
@@ -309,7 +309,7 @@ def test_repair_refuses_to_overwrite_changed_validated_snapshot(
     monkeypatch,
 ) -> None:
     config = _write_legis_entry(tmp_path, env={"KEEP_ME": "original"})
-    original_gate = plainweave_binding.install.mcp_entry_is_current
+    original_gate = plainweave_binding.install._parsed_mcp_entry_is_current
     newer: bytes | None = None
 
     def change_after_validation(root: Path, *args, **kwargs) -> bool:
@@ -324,7 +324,7 @@ def test_repair_refuses_to_overwrite_changed_validated_snapshot(
 
     monkeypatch.setattr(
         plainweave_binding.install,
-        "mcp_entry_is_current",
+        "_parsed_mcp_entry_is_current",
         change_after_validation,
     )
 
@@ -348,7 +348,7 @@ def test_repair_stays_anchored_when_project_path_is_swapped_for_symlink(
     external.mkdir()
     external_config = _write_legis_entry(external, env={"OWNER": "external"})
     external_bytes = external_config.read_bytes()
-    original_gate = plainweave_binding.install.mcp_entry_is_current
+    original_gate = plainweave_binding.install._parsed_mcp_entry_is_current
 
     def swap_root_after_validation(root: Path, *args, **kwargs) -> bool:
         current = original_gate(root, *args, **kwargs)
@@ -358,7 +358,7 @@ def test_repair_stays_anchored_when_project_path_is_swapped_for_symlink(
 
     monkeypatch.setattr(
         plainweave_binding.install,
-        "mcp_entry_is_current",
+        "_parsed_mcp_entry_is_current",
         swap_root_after_validation,
     )
 
@@ -411,6 +411,86 @@ def test_stale_registration_takes_precedence_over_unsafe_environment(
     assert state.error and "registration" in state.error.lower()
     assert error and "registration" in error.lower()
     assert config.read_bytes() == before
+
+
+def test_missing_dir_fd_support_fails_closed_before_inspection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_legis_entry(tmp_path)
+    supported = set(plainweave_binding.os.supports_dir_fd)
+    supported.discard(plainweave_binding.os.open)
+    monkeypatch.setattr(plainweave_binding.os, "supports_dir_fd", supported)
+
+    state = plainweave_binding.inspect_project_binding(tmp_path, "desired")
+
+    assert state.registered is False
+    assert state.current is False
+    assert state.error and "platform" in state.error.lower()
+
+
+def test_unsupported_anchored_target_open_returns_error(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _write_legis_entry(tmp_path)
+    real_open = plainweave_binding.os.open
+
+    def unsupported_open(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None:
+            raise NotImplementedError("anchored open unavailable")
+        return real_open(path, flags, mode)
+
+    supported = set(plainweave_binding.os.supports_dir_fd)
+    supported.add(unsupported_open)
+    monkeypatch.setattr(plainweave_binding.os, "open", unsupported_open)
+    monkeypatch.setattr(plainweave_binding.os, "supports_dir_fd", supported)
+
+    state = plainweave_binding.inspect_project_binding(tmp_path, "desired")
+
+    assert state.registered is False
+    assert state.current is False
+    assert state.error and "anchored open unavailable" in state.error
+
+
+def test_cleanup_not_implemented_does_not_mask_replace_failure(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _write_legis_entry(tmp_path)
+    before = config.read_bytes()
+
+    def fail_replace(*_args, **_kwargs) -> None:
+        raise OSError("original replace failure")
+
+    def unsupported_unlink(*_args, **_kwargs) -> None:
+        raise NotImplementedError("anchored cleanup unavailable")
+
+    supported = set(plainweave_binding.os.supports_dir_fd)
+    supported.add(unsupported_unlink)
+    monkeypatch.setattr(plainweave_binding.os, "replace", fail_replace)
+    monkeypatch.setattr(plainweave_binding.os, "unlink", unsupported_unlink)
+    monkeypatch.setattr(plainweave_binding.os, "supports_dir_fd", supported)
+
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert error and "original replace failure" in error
+    assert config.read_bytes() == before
+
+
+def test_public_mcp_predicate_has_no_environment_safety_bypass(
+    tmp_path: Path,
+) -> None:
+    config = _write_legis_entry(tmp_path, env={"LEGIS_HMAC_KEY": "secret"})
+    data = json.loads(config.read_text(encoding="utf-8"))
+
+    assert plainweave_binding.install.mcp_entry_is_current(tmp_path) is False
+    with pytest.raises(TypeError):
+        plainweave_binding.install.mcp_entry_is_current(
+            tmp_path,
+            _data=data,
+            _check_env=False,
+        )
 
 
 def test_plainweave_environment_variable_name_is_stable() -> None:

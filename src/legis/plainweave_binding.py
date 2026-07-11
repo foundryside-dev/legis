@@ -9,6 +9,7 @@ import secrets
 import shlex
 import shutil
 import stat
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,7 +60,7 @@ def _close_root_fd(inspection: _BindingInspection) -> None:
     if inspection.root_fd is not None:
         try:
             os.close(inspection.root_fd)
-        except OSError:
+        except (OSError, NotImplementedError):
             pass
         inspection.root_fd = None
 
@@ -71,30 +72,47 @@ def _read_fd(fd: int) -> bytes:
     return b"".join(chunks)
 
 
+def _anchored_io_support_error() -> str | None:
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    supported: Collection[object] = getattr(os, "supports_dir_fd", frozenset())
+    replace_supported = os.replace in supported or os.rename in supported
+    if (
+        directory_flag is None
+        or nofollow_flag is None
+        or not hasattr(os, "fchmod")
+        or os.open not in supported
+        or os.unlink not in supported
+        or not replace_supported
+    ):
+        return "platform does not support race-safe anchored project I/O"
+    return None
+
+
 def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
     try:
         resolved_root = root.resolve()
     except (OSError, RuntimeError) as exc:
         return _binding_error(f"could not resolve project root: {exc}")
 
-    directory_flag = getattr(os, "O_DIRECTORY", None)
-    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
-    if directory_flag is None or nofollow_flag is None or not hasattr(os, "fchmod"):
-        return _binding_error(
-            "platform does not support race-safe project binding inspection"
-        )
+    support_error = _anchored_io_support_error()
+    if support_error is not None:
+        return _binding_error(support_error)
+
+    directory_flag = os.O_DIRECTORY
+    nofollow_flag = os.O_NOFOLLOW
 
     root_flags = os.O_RDONLY | directory_flag | nofollow_flag
     root_flags |= getattr(os, "O_CLOEXEC", 0)
     try:
         root_fd = os.open(resolved_root, root_flags)
-    except (OSError, TypeError) as exc:
+    except (OSError, NotImplementedError, TypeError) as exc:
         return _binding_error(f"could not open resolved project root safely: {exc}")
 
     def fail(error: str, *, registered: bool = False) -> _BindingInspection:
         try:
             os.close(root_fd)
-        except OSError:
+        except (OSError, NotImplementedError):
             pass
         return _binding_error(error, registered=registered)
 
@@ -105,7 +123,7 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
         if exc.errno == errno.ELOOP:
             return fail("project .mcp.json is a symlink; refusing to inspect it")
         return fail(f"project .mcp.json is missing, unreadable, or unsafe: {exc}")
-    except TypeError as exc:
+    except (NotImplementedError, TypeError) as exc:
         return fail(f"platform does not support anchored project file access: {exc}")
 
     try:
@@ -113,10 +131,13 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
         if not stat.S_ISREG(target_stat.st_mode):
             return fail("project .mcp.json is not a regular file")
         snapshot = _read_fd(target_fd)
-    except OSError as exc:
+    except (OSError, NotImplementedError) as exc:
         return fail(f"project .mcp.json is unreadable: {exc}")
     finally:
-        os.close(target_fd)
+        try:
+            os.close(target_fd)
+        except (OSError, NotImplementedError):
+            pass
 
     try:
         data: Any = json.loads(snapshot.decode("utf-8"))
@@ -133,10 +154,10 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
         return fail("project Legis MCP registration is missing or malformed")
 
     try:
-        registered = install.mcp_entry_is_current(
+        registered = install._parsed_mcp_entry_is_current(
             resolved_root,
-            _data=data,
-            _check_env=False,
+            data,
+            check_env=False,
         )
     except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
         return fail(f"could not inspect project Legis MCP registration: {exc}")
@@ -236,6 +257,11 @@ def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | N
         ):
             return "project .mcp.json changed after inspection; refusing to overwrite it"
 
+        # This rechecks snapshot bytes and identity immediately before an atomic,
+        # directory-anchored replace. Portable POSIX APIs do not offer a content
+        # compare-and-swap: an arbitrary non-cooperating writer can still mutate
+        # the target inside the final syscall window. Linearizability against such
+        # writers is outside this CLI repair contract.
         try:
             os.replace(
                 temp_name,
@@ -253,12 +279,12 @@ def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | N
         if temp_fd is not None:
             try:
                 os.close(temp_fd)
-            except OSError:
+            except (OSError, NotImplementedError):
                 pass
         if temp_name is not None:
             try:
                 os.unlink(temp_name, dir_fd=root_fd)
-            except (OSError, TypeError):
+            except (OSError, NotImplementedError, TypeError):
                 pass
 
 
