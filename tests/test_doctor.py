@@ -584,6 +584,36 @@ def test_plainweave_global_check_is_independent_of_active_project_root(
     assert from_alpha.status == "ok"
 
 
+def test_plainweave_global_check_rejects_relative_command_from_every_cwd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    alpha = tmp_path / "alpha"
+    beta = tmp_path / "beta"
+    alpha.mkdir()
+    beta.mkdir()
+    _make_executable(alpha / "bin" / "legis")
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    (codex_home / "config.toml").write_text(
+        "[mcp_servers.legis]\n"
+        'command = "bin/legis"\n'
+        'args = ["mcp", "--agent-id", "operator"]\n'
+        "[mcp_servers.legis.env]\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(alpha)
+    from_alpha = check_plainweave_codex_binding(alpha, repair=False)
+    monkeypatch.chdir(beta)
+    from_beta = check_plainweave_codex_binding(beta, repair=False)
+
+    assert from_alpha == from_beta
+    assert from_alpha.status == "error"
+    assert from_alpha.repairable is False
+
+
 def test_plainweave_global_fixed_cwd_is_operator_owned_and_unchanged(
     tmp_path: Path,
     monkeypatch,

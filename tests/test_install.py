@@ -1581,6 +1581,22 @@ def test_find_legis_command_scans_past_project_local_path_hit(tmp_path, monkeypa
     assert install._find_legis_command(project_root) == [str(stable)]
 
 
+def test_global_mcp_command_rejects_relative_path_resolution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    relative_bin = Path("relative-bin")
+    executable = _touch_exe(tmp_path / relative_bin / "legis")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(relative_bin))
+    args = ["mcp", "--agent-id", "operator"]
+
+    assert install._mcp_command_resolves_safely("legis", None, args) is False
+
+    monkeypatch.setenv("PATH", str(executable.parent.resolve()))
+    assert install._mcp_command_resolves_safely("legis", None, args) is True
+
+
 def test_register_mcp_json_preserves_customized_env(tmp_path, monkeypatch):
     from legis.install import register_mcp_json
 

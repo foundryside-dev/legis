@@ -1441,10 +1441,18 @@ def _mcp_command_resolves_safely(
 ) -> bool:
     if not isinstance(command, str) or not command:
         return False
+    if (
+        project_root is None
+        and ("/" in command or "\\" in command)
+        and not Path(command).is_absolute()
+    ):
+        return False
     if _path_head_is_project_local(command, project_root):
         return False
     resolved = shutil.which(command)
     if resolved is not None:
+        if project_root is None and not Path(resolved).is_absolute():
+            return False
         if _path_head_is_project_local(resolved, project_root):
             return False
         resolved_path = resolved
