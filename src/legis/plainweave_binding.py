@@ -817,6 +817,8 @@ def _updated_codex_text(
 
     newline = _newline_for(text)
     if desired is None:
+        if PLAINWEAVE_ENV not in env:
+            return text, None
         if env_span is None:
             return None, "global Codex Legis MCP env table is missing"
         existing_assignment = _supported_target_assignment(text, env_span)

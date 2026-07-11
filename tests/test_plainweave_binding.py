@@ -226,6 +226,23 @@ def test_codex_autodiscovery_repair_removes_legacy_binding_surgically(
     assert config.read_bytes() == first
 
 
+def test_codex_autodiscovery_updated_text_is_unchanged_when_key_is_absent(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _codex_config(tmp_path, monkeypatch)
+    root = tmp_path / "project"
+    root.mkdir()
+    inspection = plainweave_binding._inspect_codex_binding(root, None)
+
+    try:
+        updated_text, error = plainweave_binding._updated_codex_text(inspection, None)
+
+        assert error is None
+        assert updated_text == inspection.text == config.read_text()
+    finally:
+        plainweave_binding._close_root_fd(inspection)
+
+
 def test_codex_autodiscovery_reports_fixed_cwd_as_project_bound(
     tmp_path: Path, monkeypatch
 ) -> None:
