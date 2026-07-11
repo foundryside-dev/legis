@@ -1460,14 +1460,15 @@ def test_inject_append_keeps_marker_off_users_last_line(tmp_path):
 def test_ensure_gitignore_present_among_other_rules_not_duplicated(tmp_path):
     # All of legis's rules already present alongside unrelated rules → nothing to
     # add. The posture-ratchet operator-secret paths are now part of the rule set
-    # (root-anchored), and the stable writer lock is local-only, so a complete
-    # .gitignore lists all four.
+    # (root-anchored), and the stable writer lock and repair temp files are
+    # local-only, so a complete .gitignore lists all of legis's rules.
     (tmp_path / ".gitignore").write_text(
         "*.db\n"
         ".weft/legis/\n"
         "/.weft/legis/operator_session.json\n"
         "/.weft/legis/operator.age\n"
         "/.mcp.json.legis.lock\n"
+        "/.mcp.json*.tmp\n"
     )
     ok, msg = ensure_gitignore(tmp_path)
     assert ok

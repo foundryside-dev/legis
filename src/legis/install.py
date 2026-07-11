@@ -1012,6 +1012,7 @@ _LEGIS_IGNORE_RULES = (
     "/.weft/legis/operator_session.json",
     "/.weft/legis/operator.age",
     "/.mcp.json.legis.lock",
+    "/.mcp.json*.tmp",
 )
 _LEGIS_IGNORE_BLOCK = (
     "\n# Legis — machine-written runtime state (regenerated/local; never commit)\n"
@@ -1019,6 +1020,7 @@ _LEGIS_IGNORE_BLOCK = (
     "/.weft/legis/operator_session.json\n"
     "/.weft/legis/operator.age\n"
     "/.mcp.json.legis.lock\n"
+    "/.mcp.json*.tmp\n"
 )
 
 
