@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import os
+import secrets
 import shlex
 import shutil
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,7 +40,10 @@ class BindingState:
 @dataclass(slots=True)
 class _BindingInspection:
     state: BindingState
-    path: Path | None = None
+    root_fd: int | None = None
+    snapshot: bytes | None = None
+    identity: tuple[int, int] | None = None
+    mode: int | None = None
     data: dict[str, Any] | None = None
     entry: dict[str, Any] | None = None
     env: dict[str, str] | None = None
@@ -48,47 +55,100 @@ def _binding_error(error: str, *, registered: bool = False) -> _BindingInspectio
     )
 
 
+def _close_root_fd(inspection: _BindingInspection) -> None:
+    if inspection.root_fd is not None:
+        try:
+            os.close(inspection.root_fd)
+        except OSError:
+            pass
+        inspection.root_fd = None
+
+
+def _read_fd(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    while chunk := os.read(fd, 64 * 1024):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
     try:
         resolved_root = root.resolve()
     except (OSError, RuntimeError) as exc:
         return _binding_error(f"could not resolve project root: {exc}")
 
-    config = resolved_root / ".mcp.json"
-    if config.is_symlink():
-        return _binding_error("project .mcp.json is a symlink; refusing to inspect it")
-    if not config.is_file():
-        return _binding_error("project .mcp.json is missing or is not a regular file")
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    if directory_flag is None or nofollow_flag is None or not hasattr(os, "fchmod"):
+        return _binding_error(
+            "platform does not support race-safe project binding inspection"
+        )
+
+    root_flags = os.O_RDONLY | directory_flag | nofollow_flag
+    root_flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        root_fd = os.open(resolved_root, root_flags)
+    except (OSError, TypeError) as exc:
+        return _binding_error(f"could not open resolved project root safely: {exc}")
+
+    def fail(error: str, *, registered: bool = False) -> _BindingInspection:
+        try:
+            os.close(root_fd)
+        except OSError:
+            pass
+        return _binding_error(error, registered=registered)
+
+    target_flags = os.O_RDONLY | nofollow_flag | getattr(os, "O_CLOEXEC", 0)
+    try:
+        target_fd = os.open(".mcp.json", target_flags, dir_fd=root_fd)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return fail("project .mcp.json is a symlink; refusing to inspect it")
+        return fail(f"project .mcp.json is missing, unreadable, or unsafe: {exc}")
+    except TypeError as exc:
+        return fail(f"platform does not support anchored project file access: {exc}")
 
     try:
-        data: Any = json.loads(config.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeError) as exc:
-        return _binding_error(f"project .mcp.json is malformed or unreadable: {exc}")
+        target_stat = os.fstat(target_fd)
+        if not stat.S_ISREG(target_stat.st_mode):
+            return fail("project .mcp.json is not a regular file")
+        snapshot = _read_fd(target_fd)
+    except OSError as exc:
+        return fail(f"project .mcp.json is unreadable: {exc}")
+    finally:
+        os.close(target_fd)
+
+    try:
+        data: Any = json.loads(snapshot.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeError) as exc:
+        return fail(f"project .mcp.json is malformed or unreadable: {exc}")
     if not isinstance(data, dict):
-        return _binding_error("project .mcp.json top level is not an object")
+        return fail("project .mcp.json top level is not an object")
 
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
-        return _binding_error("project .mcp.json mcpServers is not an object")
+        return fail("project .mcp.json mcpServers is not an object")
     entry = servers.get("legis")
     if not isinstance(entry, dict):
-        return _binding_error("project Legis MCP registration is missing or malformed")
+        return fail("project Legis MCP registration is missing or malformed")
+
+    try:
+        registered = install.mcp_entry_is_current(
+            resolved_root,
+            _data=data,
+            _check_env=False,
+        )
+    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
+        return fail(f"could not inspect project Legis MCP registration: {exc}")
+    if not registered:
+        return fail("project Legis MCP registration is missing, stale, or malformed")
 
     raw_env = entry.get("env", {})
     safe_env = install._safe_mcp_env(raw_env)
     if safe_env is None or safe_env != raw_env:
-        return _binding_error(
+        return fail(
             "project Legis MCP environment is malformed, unsafe, or contains secrets",
             registered=True,
-        )
-
-    try:
-        registered = install.mcp_entry_is_current(resolved_root)
-    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
-        return _binding_error(f"could not inspect project Legis MCP registration: {exc}")
-    if not registered:
-        return _binding_error(
-            "project Legis MCP registration is missing, stale, or malformed"
         )
 
     return _BindingInspection(
@@ -96,7 +156,10 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
             registered=True,
             current=safe_env.get(PLAINWEAVE_ENV) == desired,
         ),
-        path=config,
+        root_fd=root_fd,
+        snapshot=snapshot,
+        identity=(target_stat.st_dev, target_stat.st_ino),
+        mode=stat.S_IMODE(target_stat.st_mode),
         data=data,
         entry=entry,
         env=safe_env,
@@ -105,33 +168,122 @@ def _inspect_project_binding(root: Path, desired: str) -> _BindingInspection:
 
 def inspect_project_binding(root: Path, desired: str) -> BindingState:
     """Inspect the Plainweave command bound to a usable project Legis entry."""
-    return _inspect_project_binding(root, desired).state
+    inspection = _inspect_project_binding(root, desired)
+    try:
+        return inspection.state
+    finally:
+        _close_root_fd(inspection)
+
+
+def _write_all(fd: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        written = os.write(fd, remaining)
+        if written <= 0:
+            raise OSError("short write while preparing project binding replacement")
+        remaining = remaining[written:]
+
+
+def _anchored_replace(inspection: _BindingInspection, content: bytes) -> str | None:
+    root_fd = inspection.root_fd
+    snapshot = inspection.snapshot
+    identity = inspection.identity
+    mode = inspection.mode
+    if root_fd is None or snapshot is None or identity is None or mode is None:
+        return "project Legis MCP binding snapshot is incomplete"
+
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    if nofollow_flag is None:
+        return "platform does not support race-safe project binding replacement"
+
+    temp_name: str | None = None
+    temp_fd: int | None = None
+    try:
+        temp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | nofollow_flag
+        temp_flags |= getattr(os, "O_CLOEXEC", 0)
+        for _attempt in range(10):
+            candidate = f".mcp.json.{secrets.token_hex(8)}.tmp"
+            try:
+                temp_fd = os.open(candidate, temp_flags, 0o600, dir_fd=root_fd)
+            except FileExistsError:
+                continue
+            temp_name = candidate
+            break
+        if temp_fd is None or temp_name is None:
+            return "could not allocate a temporary project binding file"
+
+        _write_all(temp_fd, content)
+        os.fchmod(temp_fd, mode)
+        os.close(temp_fd)
+        temp_fd = None
+
+        current_flags = os.O_RDONLY | nofollow_flag | getattr(os, "O_CLOEXEC", 0)
+        try:
+            current_fd = os.open(".mcp.json", current_flags, dir_fd=root_fd)
+        except (OSError, TypeError) as exc:
+            return f"project .mcp.json changed after inspection: {exc}"
+        try:
+            current_stat = os.fstat(current_fd)
+            current = _read_fd(current_fd)
+        finally:
+            os.close(current_fd)
+
+        current_identity = (current_stat.st_dev, current_stat.st_ino)
+        if (
+            not stat.S_ISREG(current_stat.st_mode)
+            or current_identity != identity
+            or current != snapshot
+        ):
+            return "project .mcp.json changed after inspection; refusing to overwrite it"
+
+        try:
+            os.replace(
+                temp_name,
+                ".mcp.json",
+                src_dir_fd=root_fd,
+                dst_dir_fd=root_fd,
+            )
+        except TypeError as exc:
+            return f"platform does not support anchored project replacement: {exc}"
+        temp_name = None
+        return None
+    except (OSError, RuntimeError, TypeError, UnicodeError, ValueError) as exc:
+        return f"could not repair project Plainweave binding: {exc}"
+    finally:
+        if temp_fd is not None:
+            try:
+                os.close(temp_fd)
+            except OSError:
+                pass
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=root_fd)
+            except (OSError, TypeError):
+                pass
 
 
 def repair_project_binding(root: Path, desired: str) -> str | None:
     """Bind Plainweave in an existing usable project Legis MCP entry."""
     inspection = _inspect_project_binding(root, desired)
-    if inspection.state.current:
-        return None
-    if inspection.state.error is not None:
-        return inspection.state.error
-
-    path = inspection.path
-    data = inspection.data
-    entry = inspection.entry
-    env = inspection.env
-    if path is None or data is None or entry is None or env is None:
-        return "project Legis MCP binding could not be repaired"
-
-    updated_env = dict(env)
-    updated_env[PLAINWEAVE_ENV] = desired
-    entry["env"] = updated_env
-    content = json.dumps(data, indent=2) + "\n"
     try:
-        install._atomic_write_text(path, content)
-    except (OSError, RuntimeError, UnicodeError, ValueError) as exc:
-        return f"could not repair project Plainweave binding: {exc}"
-    return None
+        if inspection.state.current:
+            return None
+        if inspection.state.error is not None:
+            return inspection.state.error
+
+        data = inspection.data
+        entry = inspection.entry
+        env = inspection.env
+        if data is None or entry is None or env is None:
+            return "project Legis MCP binding could not be repaired"
+
+        updated_env = dict(env)
+        updated_env[PLAINWEAVE_ENV] = desired
+        entry["env"] = updated_env
+        content = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+        return _anchored_replace(inspection, content)
+    finally:
+        _close_root_fd(inspection)
 
 
 def _resolve_executable(command: object) -> str | None:

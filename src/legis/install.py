@@ -890,23 +890,38 @@ def gitignore_rules_present(project_root: Path) -> bool:
     return all(rule in present for rule in _LEGIS_IGNORE_RULES)
 
 
-def mcp_entry_is_current(project_root: Path) -> bool:
+_MCP_DATA_UNSET = object()
+
+
+def mcp_entry_is_current(
+    project_root: Path,
+    *,
+    _data: Any = _MCP_DATA_UNSET,
+    _check_env: bool = True,
+) -> bool:
     """True iff .mcp.json has a usable legis stdio server entry: a dict whose
     args invoke `mcp` and whose command resolves to an existing executable.
     Deliberately NOT byte-equality with the canonical entry — a valid but
     differently-resolved legis binary (uv-tool vs venv path) must not read as
     drift. Only a missing entry, malformed args, or a dead command path is stale.
+
+    ``_data`` and ``_check_env`` are internal hooks for callers that already hold
+    a race-safe file snapshot and need registration usability classified before
+    reporting a malformed environment. Normal callers must use the defaults.
     """
-    try:
-        path = project_path(project_root, ".mcp.json")
-    except UnsafeInstallPathError:
-        return False
-    if not path.is_file():
-        return False
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
+    if _data is _MCP_DATA_UNSET:
+        try:
+            path = project_path(project_root, ".mcp.json")
+        except UnsafeInstallPathError:
+            return False
+        if not path.is_file():
+            return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+    else:
+        data = _data
     if not isinstance(data, dict):
         return False
     servers = data.get("mcpServers")
@@ -919,6 +934,8 @@ def mcp_entry_is_current(project_root: Path) -> bool:
         return False
     if not _mcp_command_resolves_safely(entry.get("command"), project_root, entry.get("args")):
         return False
+    if not _check_env:
+        return True
     env = _safe_mcp_env(entry.get("env"))
     return env is not None and env == entry.get("env", {})
 

@@ -282,25 +282,134 @@ def test_missing_or_stale_legis_entry_is_unregistered_and_unchanged(
     assert config.read_bytes() == before
 
 
-def test_atomic_writer_error_is_returned_without_partial_write(
+def test_anchored_replace_error_is_returned_without_partial_write(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
     config = _write_legis_entry(tmp_path, env={"KEEP_ME": "yes"})
     before = config.read_bytes()
 
-    def fail_write(_path: Path, _content: str) -> None:
+    def fail_replace(*_args, **_kwargs) -> None:
         raise OSError("simulated atomic replacement failure")
 
     monkeypatch.setattr(
-        plainweave_binding.install,
-        "_atomic_write_text",
-        fail_write,
+        plainweave_binding.install.os,
+        "replace",
+        fail_replace,
     )
 
     error = plainweave_binding.repair_project_binding(tmp_path, "desired")
 
     assert error and "simulated atomic replacement failure" in error
+    assert config.read_bytes() == before
+
+
+def test_repair_refuses_to_overwrite_changed_validated_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _write_legis_entry(tmp_path, env={"KEEP_ME": "original"})
+    original_gate = plainweave_binding.install.mcp_entry_is_current
+    newer: bytes | None = None
+
+    def change_after_validation(root: Path, *args, **kwargs) -> bool:
+        nonlocal newer
+        current = original_gate(root, *args, **kwargs)
+        data = json.loads(config.read_text(encoding="utf-8"))
+        data["mcpServers"]["legis"]["timeout"] = 99_000
+        data["mcpServers"]["legis"]["env"]["OPERATOR_ADDED"] = "newer"
+        config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+        newer = config.read_bytes()
+        return current
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "mcp_entry_is_current",
+        change_after_validation,
+    )
+
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert error and "changed" in error.lower()
+    assert newer is not None
+    assert config.read_bytes() == newer
+
+
+def test_repair_stays_anchored_when_project_path_is_swapped_for_symlink(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    original_config = _write_legis_entry(project, env={"OWNER": "original"})
+    original_bytes = original_config.read_bytes()
+    moved = tmp_path / "moved-original"
+    external = tmp_path / "external"
+    external.mkdir()
+    external_config = _write_legis_entry(external, env={"OWNER": "external"})
+    external_bytes = external_config.read_bytes()
+    original_gate = plainweave_binding.install.mcp_entry_is_current
+
+    def swap_root_after_validation(root: Path, *args, **kwargs) -> bool:
+        current = original_gate(root, *args, **kwargs)
+        project.rename(moved)
+        project.symlink_to(external, target_is_directory=True)
+        return current
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "mcp_entry_is_current",
+        swap_root_after_validation,
+    )
+
+    error = plainweave_binding.repair_project_binding(project, "desired")
+
+    assert external_config.read_bytes() == external_bytes
+    moved_config = moved / ".mcp.json"
+    if error is None:
+        moved_entry = json.loads(moved_config.read_text(encoding="utf-8"))[
+            "mcpServers"
+        ]["legis"]
+        assert moved_entry["env"] == {"OWNER": "original", PLAINWEAVE_ENV: "desired"}
+    else:
+        assert moved_config.read_bytes() == original_bytes
+
+
+def test_failure_after_temp_creation_cleans_temp_and_preserves_destination(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _write_legis_entry(tmp_path, env={"KEEP_ME": "yes"})
+    before = config.read_bytes()
+
+    def fail_replace(*_args, **_kwargs) -> None:
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(plainweave_binding.install.os, "replace", fail_replace)
+
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert error and "simulated replace failure" in error
+    assert config.read_bytes() == before
+    assert list(tmp_path.glob(".mcp.json*.tmp")) == []
+
+
+def test_stale_registration_takes_precedence_over_unsafe_environment(
+    tmp_path: Path,
+) -> None:
+    config = _write_legis_entry(tmp_path, env={"LEGIS_HMAC_KEY": "secret"})
+    data = json.loads(config.read_text(encoding="utf-8"))
+    data["mcpServers"]["legis"]["command"] = "/missing/legis"
+    config.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    before = config.read_bytes()
+
+    state = plainweave_binding.inspect_project_binding(tmp_path, "desired")
+    error = plainweave_binding.repair_project_binding(tmp_path, "desired")
+
+    assert state.registered is False
+    assert state.current is False
+    assert state.error and "registration" in state.error.lower()
+    assert error and "registration" in error.lower()
     assert config.read_bytes() == before
 
 
