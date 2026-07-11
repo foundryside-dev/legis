@@ -20,6 +20,15 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# A prefix may be staged before its source lands only by explicit exception.
+# Once that target exists, zero measured statements fail even if the stale
+# exception was not removed yet.
+UNMEASURED_PREFIX_ALLOWLIST: frozenset[str] = frozenset()
 
 # path-prefix (relative to repo root, as coverage records it) -> floor percent.
 # A prefix ending in ".py" matches a single module; otherwise it matches a
@@ -39,9 +48,34 @@ FLOORS: dict[str, float] = {
 }
 
 
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")
+
+
 def _load(path: str) -> dict:
     with open(path, encoding="utf-8") as fh:
-        return json.load(fh)
+        return json.load(fh, parse_constant=_reject_json_constant)
+
+
+def _validated_files(data: object) -> dict[str, dict]:
+    if not isinstance(data, dict):
+        raise ValueError("top level is not an object")
+    files = data.get("files")
+    if not isinstance(files, dict):
+        raise ValueError("files is not an object")
+    for path, info in files.items():
+        if not isinstance(path, str) or not isinstance(info, dict):
+            raise ValueError("files entries must map path strings to objects")
+        summary = info.get("summary")
+        if not isinstance(summary, dict):
+            raise ValueError(f"{path}: summary is not an object")
+        covered = summary.get("covered_lines")
+        statements = summary.get("num_statements")
+        if type(covered) is not int or type(statements) is not int:
+            raise ValueError(f"{path}: coverage counters must be integers")
+        if covered < 0 or statements < 0 or covered > statements:
+            raise ValueError(f"{path}: coverage counters are inconsistent")
+    return files
 
 
 def _aggregate(files: dict, prefix: str) -> tuple[int, int]:
@@ -71,20 +105,33 @@ def main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         return 1
+    except (json.JSONDecodeError, OSError, ValueError) as exc:
+        print(f"invalid coverage report: {exc}", file=sys.stderr)
+        return 1
 
-    files = data.get("files", {})
+    try:
+        files = _validated_files(data)
+    except ValueError as exc:
+        print(f"invalid coverage report: {exc}", file=sys.stderr)
+        return 1
     failures: list[str] = []
     print(f"Per-package coverage floors ({report_path}):")
     for prefix, floor in sorted(FLOORS.items()):
         covered, statements = _aggregate(files, prefix)
         if statements == 0:
-            # A floor may be registered before its package's first module lands
-            # (e.g. the posture floor is committed in Phase 0, ahead of the
-            # Phase 1 ``records.py``). An unmeasured prefix is reported, not a
-            # failure — the floor becomes fail-closed the moment statements
-            # exist. This is intentionally gated on having ZERO statements; any
-            # measured package below floor still FAILs below.
-            print(f"  [skip] {prefix:28} not yet measured (prefix matched no files)")
+            target_exists = (REPO_ROOT / prefix).exists()
+            if prefix in UNMEASURED_PREFIX_ALLOWLIST and not target_exists:
+                print(
+                    f"  [skip] {prefix:28} not yet measured "
+                    "(explicit future-prefix allowlist)"
+                )
+                continue
+            if target_exists:
+                detail = "matched no measured files"
+            else:
+                detail = "target is absent and not explicitly allowlisted"
+            print(f"  [FAIL] {prefix:28} {detail}")
+            failures.append(f"  {prefix}: {detail}")
             continue
         pct = 100.0 * covered / statements
         status = "ok" if pct >= floor else "FAIL"
