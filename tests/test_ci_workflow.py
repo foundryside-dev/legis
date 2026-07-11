@@ -45,7 +45,10 @@ def test_release_publish_requires_live_loomweave_conformance():
     assert "if" not in live_job  # gated per-step, never the whole job
     env = live_job["env"]
     assert env["LOOMWEAVE_URL"] == "${{ vars.LOOMWEAVE_URL }}"
-    assert env["LOOMWEAVE_LIVE_ORACLE_LOCATOR"] == "${{ vars.LOOMWEAVE_LIVE_ORACLE_LOCATOR }}"
+    assert (
+        env["LOOMWEAVE_LIVE_ORACLE_LOCATOR"]
+        == "${{ vars.LOOMWEAVE_LIVE_ORACLE_LOCATOR }}"
+    )
     # The secret is never exposed to the whole job — only to the steps below.
     assert "LEGIS_LOOMWEAVE_HMAC_KEY" not in env
 
@@ -57,6 +60,17 @@ def test_release_publish_requires_live_loomweave_conformance():
     assert "not blocking publish" in commands
     assert "Missing required release conformance environment" not in commands
 
+    detector_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Detect live oracle configuration"
+    )
+    detector_command = str(steps[detector_index].get("run", ""))
+    assert (
+        "for name in LOOMWEAVE_URL LOOMWEAVE_LIVE_ORACLE_LOCATOR "
+        "LEGIS_LOOMWEAVE_HMAC_KEY; do"
+    ) in detector_command
+
     # When configured, the live oracle still runs for real, gated on detection.
     assert "tests/conformance/test_live_loomweave_oracle.py" in commands
     gate_if = "steps.oracle_config.outputs.configured == 'true'"
@@ -67,6 +81,7 @@ def test_release_publish_requires_live_loomweave_conformance():
     ]
     assert oracle_steps
     assert all(step.get("if") == gate_if for step in oracle_steps)
+    assert all(step.get("if") == gate_if for step in steps[detector_index + 1 :])
     oracle_step = oracle_steps[0]
     assert oracle_step["env"] == {
         "LEGIS_LOOMWEAVE_HMAC_KEY": "${{ secrets.LEGIS_LOOMWEAVE_HMAC_KEY }}"
@@ -83,6 +98,19 @@ def test_release_publish_requires_live_loomweave_conformance():
         "Detect live oracle configuration",
         "Run live Loomweave oracle",
     }
+
+
+def test_readme_describes_live_loomweave_release_gate_as_conditional():
+    readme = Path("README.md").read_text(encoding="utf-8").lower()
+
+    assert "when live oracle configuration is provisioned" in readme
+    assert "if any one is absent" in readme
+    assert "passes without running the oracle" in readme
+    assert "any failure blocks publication" in readme
+    assert "release publication is gated on live loomweave conformance" not in readme
+    assert "pypi publishing is gated on live loomweave sei conformance" not in readme
+    assert "always requires a live oracle" not in readme
+    assert "publication always requires" not in readme
 
 
 def test_release_workflow_repeats_publication_quality_gates():
