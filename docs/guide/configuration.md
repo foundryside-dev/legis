@@ -190,6 +190,11 @@ doctor only diagnoses and repairs Legis launch wiring.
 When Plainweave applies, Legis needs the resolved project command in the Legis
 MCP registration's `PLAINWEAVE_MCP_CMD` value:
 
+Plainweave discovery treats `.mcp.json` as untrusted input. It reads at most
+1 MiB and accepts no more than 100 nested JSON objects/arrays. Invalid input is
+never used; when no independently resolved safe fallback applies, doctor
+reports a generic configuration error without echoing hostile values.
+
 | Check ID | Target | Scope |
 |---|---|---|
 | `install.plainweave_project_binding` | `.mcp.json` → `mcpServers.legis.env.PLAINWEAVE_MCP_CMD` | Checks the current project's Legis registration. If that registration is missing or stale, `install.mcp_json` owns its repair. |

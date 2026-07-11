@@ -24,6 +24,8 @@ PLAINWEAVE_ENV = "PLAINWEAVE_MCP_CMD"
 
 _MALFORMED_CONFIG = "project .mcp.json is malformed or unreadable"
 _INVALID_ENTRY = "project .mcp.json Plainweave entry is invalid"
+_MAX_PLAINWEAVE_CONFIG_BYTES = 1024 * 1024
+_MAX_PLAINWEAVE_JSON_DEPTH = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -826,7 +828,7 @@ def _resolve_executable(command: object) -> str | None:
         return None
     try:
         return shutil.which(command)
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         return None
 
 
@@ -843,7 +845,7 @@ def _resolve_plainweave_executable(command: object, root: Path) -> str | None:
         for entry in os.environ.get("PATH", "").split(os.pathsep):
             try:
                 candidate = shutil.which(command, path=entry)
-            except (OSError, UnicodeError):
+            except (OSError, UnicodeError, ValueError):
                 continue
             if candidate is not None and candidate not in candidates:
                 candidates.append(candidate)
@@ -853,7 +855,7 @@ def _resolve_plainweave_executable(command: object, root: Path) -> str | None:
             continue
         try:
             resolved_path = Path(resolved).resolve(strict=True)
-        except (OSError, RuntimeError):
+        except (OSError, RuntimeError, ValueError):
             continue
         if install._path_head_is_project_local(str(resolved_path), root):
             continue
@@ -866,16 +868,75 @@ def _resolve_plainweave_executable(command: object, root: Path) -> str | None:
     return None
 
 
-def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
-    config = root / ".mcp.json"
-    if not config.exists():
-        return None, None
-    if config.is_symlink() or not config.is_file():
-        return None, _MALFORMED_CONFIG
+def _json_nesting_is_bounded(text: str) -> bool:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > _MAX_PLAINWEAVE_JSON_DEPTH:
+                return False
+        elif character in "]}":
+            depth -= 1
+    return True
 
+
+def _bounded_plainweave_json(config: Path, *, root_fd: int) -> Any:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(config.name, flags, dir_fd=root_fd)
     try:
-        data: Any = install._strict_json_loads(config.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
+        config_stat = os.fstat(fd)
+        if not stat.S_ISREG(config_stat.st_mode):
+            raise ValueError("Plainweave project config is not a regular file")
+        remaining = _MAX_PLAINWEAVE_CONFIG_BYTES + 1
+        chunks: list[bytes] = []
+        while remaining:
+            chunk = os.read(fd, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+    finally:
+        os.close(fd)
+    if len(raw) > _MAX_PLAINWEAVE_CONFIG_BYTES:
+        raise ValueError("Plainweave project config exceeds the size limit")
+    text = raw.decode("utf-8")
+    if not _json_nesting_is_bounded(text):
+        raise ValueError("Plainweave project config exceeds the nesting limit")
+    return install._strict_json_loads(text)
+
+
+def _project_plainweave_argv(
+    root: Path,
+    *,
+    root_fd: int,
+) -> tuple[list[str] | None, str | None]:
+    config = root / ".mcp.json"
+    try:
+        data: Any = _bounded_plainweave_json(config, root_fd=root_fd)
+    except FileNotFoundError:
+        return None, None
+    except (
+        json.JSONDecodeError,
+        OSError,
+        UnicodeError,
+        ValueError,
+        RecursionError,
+        MemoryError,
+    ):
         return None, _MALFORMED_CONFIG
 
     if not isinstance(data, dict):
@@ -892,17 +953,22 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     if entry.get("type", "stdio") != "stdio":
         return None, _INVALID_ENTRY
 
-    executable = _resolve_plainweave_executable(entry.get("command"), root)
+    raw_command = entry.get("command")
+    if isinstance(raw_command, str) and "\0" in raw_command:
+        return None, _INVALID_ENTRY
+    executable = _resolve_plainweave_executable(raw_command, root)
     args = entry.get("args")
     if executable is None or not isinstance(args, list):
         return None, _INVALID_ENTRY
-    if not all(isinstance(arg, str) for arg in args):
+    if not all(isinstance(arg, str) and "\0" not in arg for arg in args):
         return None, _INVALID_ENTRY
 
     root_options: list[tuple[int, str, bool]] = []
     index = 0
     while index < len(args):
         arg = args[index]
+        if arg == "--":
+            break
         option = arg.partition("=")[0]
         if arg == "--root":
             if index + 1 >= len(args):
@@ -929,7 +995,7 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     try:
         if root_value.resolve() != root:
             return None, _INVALID_ENTRY
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None, _INVALID_ENTRY
 
     canonical_args = list(args)
@@ -940,20 +1006,65 @@ def _project_plainweave_argv(root: Path) -> tuple[list[str] | None, str | None]:
     return [executable, *canonical_args], None
 
 
-def discover_plainweave(root: Path) -> PlainweaveDiscovery:
-    """Return a usable Plainweave command only for an initialized project."""
-    resolved_root = root.resolve()
-    state_directory = resolved_root / ".plainweave"
-    database = state_directory / "plainweave.db"
-    initialized = (
-        state_directory.is_dir()
-        and not state_directory.is_symlink()
-        and database.is_file()
-        and not database.is_symlink()
-    )
+def _plainweave_state_is_initialized(root_fd: int) -> bool:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    directory_flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        state_fd = os.open(".plainweave", directory_flags, dir_fd=root_fd)
+    except (FileNotFoundError, NotADirectoryError, OSError, ValueError):
+        return False
+    try:
+        if not stat.S_ISDIR(os.fstat(state_fd).st_mode):
+            return False
+        database_flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        database_flags |= getattr(os, "O_CLOEXEC", 0)
+        try:
+            database_fd = os.open("plainweave.db", database_flags, dir_fd=state_fd)
+        except (FileNotFoundError, NotADirectoryError, OSError, ValueError):
+            return False
+        try:
+            return stat.S_ISREG(os.fstat(database_fd).st_mode)
+        finally:
+            os.close(database_fd)
+    finally:
+        os.close(state_fd)
 
-    project_argv, project_issue = _project_plainweave_argv(resolved_root)
-    fallback = _resolve_plainweave_executable("plainweave-mcp", resolved_root)
+
+def _discover_plainweave(root: Path) -> PlainweaveDiscovery:
+    """Return a usable Plainweave command only for an initialized project."""
+    try:
+        resolved_root = root.resolve()
+        root_fd = _open_directory_path_nofollow(resolved_root)
+    except (OSError, RuntimeError, ValueError, RecursionError, MemoryError):
+        return PlainweaveDiscovery(
+            applicable=True,
+            installed=False,
+            error="Plainweave project root is invalid or unreadable",
+        )
+
+    try:
+        initialized = _plainweave_state_is_initialized(root_fd)
+        project_argv, project_issue = _project_plainweave_argv(
+            resolved_root,
+            root_fd=root_fd,
+        )
+    except (MemoryError, RecursionError):
+        return PlainweaveDiscovery(
+            applicable=True,
+            installed=False,
+            error="Plainweave project discovery exhausted safe resources",
+        )
+    finally:
+        os.close(root_fd)
+
+    try:
+        fallback = _resolve_plainweave_executable("plainweave-mcp", resolved_root)
+    except (MemoryError, RecursionError):
+        return PlainweaveDiscovery(
+            applicable=True,
+            installed=False,
+            error="Plainweave project discovery exhausted safe resources",
+        )
 
     if project_argv is not None:
         return PlainweaveDiscovery(
@@ -976,3 +1087,21 @@ def discover_plainweave(root: Path) -> PlainweaveDiscovery:
     if project_issue is not None:
         error += f"; {project_issue}"
     return PlainweaveDiscovery(applicable=True, installed=False, error=error)
+
+
+def discover_plainweave(root: Path) -> PlainweaveDiscovery:
+    """Fail-closed public boundary for untrusted project discovery input."""
+    try:
+        return _discover_plainweave(root)
+    except (MemoryError, RecursionError):
+        return PlainweaveDiscovery(
+            applicable=True,
+            installed=False,
+            error="Plainweave project discovery exhausted safe resources",
+        )
+    except (OSError, RuntimeError, UnicodeError, ValueError):
+        return PlainweaveDiscovery(
+            applicable=True,
+            installed=False,
+            error="Plainweave project root is invalid or unreadable",
+        )

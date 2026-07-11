@@ -1675,6 +1675,357 @@ def test_malformed_mcp_json_is_invalid_for_initialized_project(
     assert "no executable" in result.error.lower()
 
 
+def test_hostile_nul_project_root_fails_closed_without_echoing_value(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(Path("hostile\0project"))
+
+    assert result == plainweave_binding.PlainweaveDiscovery(
+        applicable=True,
+        installed=False,
+        error="Plainweave project root is invalid or unreadable",
+    )
+
+
+@pytest.mark.parametrize("hostile_source", ["command", "path", "root-argument"])
+def test_embedded_nul_discovery_inputs_fail_closed(
+    tmp_path: Path,
+    monkeypatch,
+    hostile_source: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    configured_command = str(command)
+    configured_root = str(root)
+    path = ""
+    if hostile_source == "command":
+        configured_command = "plainweave-mcp\0hostile"
+    elif hostile_source == "path":
+        configured_command = "missing-plainweave"
+        path = "hostile\0path"
+    else:
+        configured_root = "hostile\0root"
+    _write_entry(
+        root,
+        configured_command,
+        ["--root", configured_root],
+    )
+    if hostile_source == "path":
+        monkeypatch.setattr(plainweave_binding.os, "environ", {"PATH": path})
+    else:
+        monkeypatch.setenv("PATH", path)
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "invalid" in result.error.lower()
+
+
+def test_embedded_nul_in_non_root_argument_is_invalid(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    _write_entry(
+        root,
+        str(command),
+        ["--root", str(root), "--label", "hostile\0value"],
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "invalid" in result.error.lower()
+
+
+def test_root_after_end_of_options_marker_is_not_effective(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    _write_entry(root, str(command), ["--", "--root", str(root)])
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "invalid" in result.error.lower()
+
+
+@pytest.mark.parametrize("failure", [MemoryError(), RecursionError()])
+def test_root_resolution_resource_failure_is_generic(
+    monkeypatch,
+    failure: BaseException,
+) -> None:
+    def fail_resolve(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+
+    result = discover_plainweave(Path("project"))
+
+    assert result == plainweave_binding.PlainweaveDiscovery(
+        applicable=True,
+        installed=False,
+        error="Plainweave project root is invalid or unreadable",
+    )
+
+
+@pytest.mark.parametrize("failure", [MemoryError(), RecursionError()])
+def test_executable_resolution_resource_failure_is_generic(
+    tmp_path: Path,
+    monkeypatch,
+    failure: BaseException,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+
+    def fail_which(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(plainweave_binding.shutil, "which", fail_which)
+
+    result = discover_plainweave(root)
+
+    assert result == plainweave_binding.PlainweaveDiscovery(
+        applicable=True,
+        installed=False,
+        error="Plainweave project discovery exhausted safe resources",
+    )
+
+
+def test_project_config_swap_is_opened_anchored_nofollow_nonblocking(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    config = root / ".mcp.json"
+    _write_entry(root, str(command), ["--root", str(root)])
+    external = tmp_path / "external.json"
+    external.write_bytes(config.read_bytes())
+    moved = root / "original.mcp.json"
+    real_open = plainweave_binding.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == ".mcp.json" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            assert flags & os.O_NOFOLLOW
+            assert flags & os.O_NONBLOCK
+            config.rename(moved)
+            config.symlink_to(external)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(plainweave_binding.os, "open", swap_before_open)
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert swapped
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "malformed" in result.error.lower()
+
+
+def test_state_directory_swap_cannot_recruit_fallback(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    state = root / ".plainweave"
+    moved = root / "original-state"
+    external = tmp_path / "external-state"
+    external.mkdir()
+    (external / "plainweave.db").touch()
+    fallback = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    real_open = plainweave_binding.os.open
+    swapped = False
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if path == ".plainweave" and kwargs.get("dir_fd") is not None and not swapped:
+            swapped = True
+            state.rename(moved)
+            state.symlink_to(external, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(plainweave_binding.os, "open", swap_before_open)
+    monkeypatch.setenv("PATH", str(fallback.parent))
+
+    result = discover_plainweave(root)
+
+    assert swapped
+    assert result.applicable is False
+    assert result.installed is True
+    assert result.command is None
+
+
+def test_excessively_nested_project_json_is_reported_as_malformed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    nested = "[" * 2_000 + "0" + "]" * 2_000
+    (root / ".mcp.json").write_text(
+        '{"mcpServers":{"plainweave":{"metadata":' + nested + "}}}",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "malformed" in result.error.lower()
+
+
+@pytest.mark.parametrize("parser_error", [RecursionError(), MemoryError()])
+def test_project_json_parser_resource_failure_is_reported_as_malformed(
+    tmp_path: Path,
+    monkeypatch,
+    parser_error: BaseException,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    (root / ".mcp.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("PATH", "")
+
+    def fail_parse(_text: str):
+        raise parser_error
+
+    monkeypatch.setattr(
+        plainweave_binding.install,
+        "_strict_json_loads",
+        fail_parse,
+    )
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "malformed" in result.error.lower()
+
+
+def test_json_nesting_limit_ignores_brackets_inside_strings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    document = {
+        "mcpServers": {
+            "plainweave": {
+                "type": "stdio",
+                "command": str(command),
+                "args": ["--root", str(root)],
+                "metadata": 'escaped quote: \\"' + "[" * 500,
+            }
+        }
+    }
+    (root / ".mcp.json").write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.installed is True
+    assert result.command is not None
+
+
+def test_json_nesting_limit_pins_exact_boundary() -> None:
+    assert plainweave_binding._json_nesting_is_bounded("[" * 100 + "]" * 100)
+    assert not plainweave_binding._json_nesting_is_bounded("[" * 101 + "]" * 101)
+
+
+@pytest.mark.parametrize("extra_byte", [False, True], ids=["exact-limit", "over-limit"])
+def test_project_json_size_limit_pins_exact_boundary(
+    tmp_path: Path,
+    extra_byte: bool,
+) -> None:
+    payload = b"{}" + b" " * (
+        plainweave_binding._MAX_PLAINWEAVE_CONFIG_BYTES - 2 + int(extra_byte)
+    )
+    (tmp_path / ".mcp.json").write_bytes(payload)
+    root_fd = plainweave_binding._open_directory_path_nofollow(tmp_path)
+    try:
+        if extra_byte:
+            with pytest.raises(ValueError, match="size limit"):
+                plainweave_binding._bounded_plainweave_json(
+                    tmp_path / ".mcp.json",
+                    root_fd=root_fd,
+                )
+        else:
+            assert (
+                plainweave_binding._bounded_plainweave_json(
+                    tmp_path / ".mcp.json",
+                    root_fd=root_fd,
+                )
+                == {}
+            )
+    finally:
+        os.close(root_fd)
+
+
+def test_oversized_project_json_is_reported_as_malformed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    _initialize(root)
+    command = _make_executable(tmp_path / "bin" / "plainweave-mcp")
+    (root / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "plainweave": {
+                        "type": "stdio",
+                        "command": str(command),
+                        "args": ["--root", str(root)],
+                        "padding": "x" * (2 * 1024 * 1024),
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("PATH", "")
+
+    result = discover_plainweave(root)
+
+    assert result.applicable is True
+    assert result.installed is False
+    assert result.command is None
+    assert result.error is not None and "malformed" in result.error.lower()
+
+
 @pytest.mark.parametrize("ambiguous_json", ["duplicate", "nonstandard-constant"])
 def test_ambiguous_project_json_cannot_establish_plainweave_discovery(
     tmp_path: Path,
