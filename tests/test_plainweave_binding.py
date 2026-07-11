@@ -232,6 +232,125 @@ def test_absent_codex_config_or_legis_table_is_never_created(
     assert (config.read_bytes() if config.exists() else None) == before
 
 
+def test_empty_codex_home_uses_home_config_not_cwd_config(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    cwd_config = cwd / "config.toml"
+    cwd_config.write_text('[mcp_servers.unrelated]\ncommand = "leave-me-alone"\n')
+    cwd_before = cwd_config.read_bytes()
+
+    home = tmp_path / "home"
+    codex_home = home / ".codex"
+    codex_home.mkdir(parents=True)
+    home_config = codex_home / "config.toml"
+    home_config.write_text(
+        f"[mcp_servers.legis]\ncommand = {json.dumps(sys.executable)}\n"
+        'args = ["-P", "-m", "legis", "mcp", "--agent-id", "operator"]\n'
+        '[mcp_servers.legis.env]\nKEEP_ME = "operator"\n'
+    )
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", "")
+    root = tmp_path / "project"
+    root.mkdir()
+
+    assert plainweave_binding.inspect_codex_binding(root, "desired") == (
+        plainweave_binding.BindingState(True, False, None)
+    )
+    assert plainweave_binding.repair_codex_binding(root, "desired") is None
+
+    assert cwd_config.read_bytes() == cwd_before
+    parsed = tomllib.loads(home_config.read_text())
+    assert parsed["mcp_servers"]["legis"]["env"] == {
+        "KEEP_ME": "operator",
+        PLAINWEAVE_ENV: "desired",
+    }
+
+
+@pytest.mark.parametrize(
+    "conflict",
+    [
+        'url = "https://example.invalid/mcp"',
+        'auth = "oauth"',
+        'auth_mode = "oauth"',
+        'bearer_token_env_var = "TOKEN"',
+        'http_headers = { Authorization = "Bearer token" }',
+        'env_http_headers = { Authorization = "TOKEN" }',
+        'oauth_client_id = "client"',
+        'oauth_resource = "https://example.invalid/"',
+        'scopes = ["tools.read"]',
+    ],
+    ids=[
+        "url",
+        "auth",
+        "auth-mode",
+        "bearer-token",
+        "headers",
+        "env-headers",
+        "oauth-client",
+        "oauth-resource",
+        "scopes",
+    ],
+)
+def test_codex_stdio_legis_rejects_http_transport_fields(
+    tmp_path: Path, monkeypatch, conflict: str
+) -> None:
+    config = _codex_config(tmp_path, monkeypatch)
+    config.write_text(
+        config.read_text().replace(
+            "[mcp_servers.legis.env]",
+            f"{conflict}\n[mcp_servers.legis.env]",
+        )
+    )
+    before = config.read_bytes()
+    root = tmp_path / "project"
+    root.mkdir()
+
+    state = plainweave_binding.inspect_codex_binding(root, "desired")
+    error = plainweave_binding.repair_codex_binding(root, "desired")
+
+    assert state.registered is True
+    assert state.current is False
+    assert state.error and "transport" in state.error.lower()
+    assert error and "transport" in error.lower()
+    assert config.read_bytes() == before
+
+
+def test_codex_stdio_legis_allows_stdio_specific_and_shared_fields(
+    tmp_path: Path, monkeypatch
+) -> None:
+    config = _codex_config(tmp_path, monkeypatch)
+    config.write_text(
+        config.read_text().replace(
+            "startup_timeout_sec = 17",
+            (
+                "startup_timeout_sec = 17\n"
+                "tool_timeout_sec = 60\n"
+                "enabled = true\n"
+                "required = true\n"
+                'env_vars = ["PATH"]\n'
+                'enabled_tools = ["policy_check"]\n'
+                'disabled_tools = ["unsafe_tool"]'
+            ),
+        )
+    )
+    root = tmp_path / "project"
+    root.mkdir()
+
+    assert plainweave_binding.inspect_codex_binding(root, "desired") == (
+        plainweave_binding.BindingState(True, False, None)
+    )
+    assert plainweave_binding.repair_codex_binding(root, "desired") is None
+
+    parsed = tomllib.loads(config.read_text())
+    entry = parsed["mcp_servers"]["legis"]
+    assert entry["env_vars"] == ["PATH"]
+    assert entry["enabled_tools"] == ["policy_check"]
+    assert entry["disabled_tools"] == ["unsafe_tool"]
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -615,6 +734,109 @@ def test_codex_semantic_guard_refuses_unrelated_mutation(
 
     assert error and "semantic" in error.lower()
     assert config.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("before_env", "after_env"),
+    [
+        ({"KEEP": "same"}, {"KEEP": "same", PLAINWEAVE_ENV: "added"}),
+        (
+            {"KEEP": "same", PLAINWEAVE_ENV: "stale"},
+            {"KEEP": "same", PLAINWEAVE_ENV: "replacement"},
+        ),
+    ],
+    ids=["add", "replace"],
+)
+def test_codex_semantic_guard_accepts_only_target_change(
+    before_env: dict[str, object], after_env: dict[str, object]
+) -> None:
+    before = {
+        "mcp_servers": {
+            "legis": {"command": "legis", "args": ["mcp"], "env": before_env},
+            "sibling": {"command": "sibling"},
+        }
+    }
+    after = {
+        "mcp_servers": {
+            "legis": {"command": "legis", "args": ["mcp"], "env": after_env},
+            "sibling": {"command": "sibling"},
+        }
+    }
+
+    assert plainweave_binding._codex_documents_match_except_target(before, after)
+
+
+@pytest.mark.parametrize(
+    "after",
+    [
+        {
+            "mcp_servers": {
+                "legis": {
+                    "command": "legis",
+                    "args": ["mcp"],
+                    "env": {"KEEP": "same", "NESTED": {"owner": "same"}},
+                },
+                "sibling": {"command": "changed"},
+            }
+        },
+        {
+            "mcp_servers": {
+                "legis": {
+                    "command": "other",
+                    "args": ["mcp"],
+                    "env": {"KEEP": "same", "NESTED": {"owner": "same"}},
+                },
+                "sibling": {"command": "sibling"},
+            }
+        },
+        {
+            "mcp_servers": {
+                "legis": {
+                    "command": "legis",
+                    "args": ["other"],
+                    "env": {"KEEP": "same", "NESTED": {"owner": "same"}},
+                },
+                "sibling": {"command": "sibling"},
+            }
+        },
+        {
+            "mcp_servers": {
+                "legis": {
+                    "command": "legis",
+                    "args": ["mcp"],
+                    "env": {"KEEP": "changed", "NESTED": {"owner": "same"}},
+                },
+                "sibling": {"command": "sibling"},
+            }
+        },
+        {
+            "mcp_servers": {
+                "legis": {
+                    "command": "legis",
+                    "args": ["mcp"],
+                    "env": {"KEEP": "same", "NESTED": {"owner": "changed"}},
+                },
+                "sibling": {"command": "sibling"},
+            }
+        },
+    ],
+    ids=["sibling", "command", "args", "other-env", "nested-env"],
+)
+def test_codex_semantic_guard_rejects_unrelated_change(
+    after: dict[str, object],
+) -> None:
+    before = {
+        "mcp_servers": {
+            "legis": {
+                "command": "legis",
+                "args": ["mcp"],
+                "env": {"KEEP": "same", "NESTED": {"owner": "same"}},
+            },
+            "sibling": {"command": "sibling"},
+        }
+    }
+
+    assert not plainweave_binding._codex_documents_match_except_target(before, after)
 
 
 def test_missing_project_binding_is_registered_but_noncurrent(tmp_path: Path) -> None:

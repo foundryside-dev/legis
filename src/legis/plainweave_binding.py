@@ -351,6 +351,19 @@ def repair_project_binding(root: Path, desired: str) -> str | None:
 
 
 _CODEX_NOT_CONFIGURED = "global Codex Legis MCP registration is not configured"
+_CODEX_HTTP_TRANSPORT_FIELDS = frozenset(
+    {
+        "auth",
+        "auth_mode",
+        "bearer_token_env_var",
+        "env_http_headers",
+        "http_headers",
+        "oauth_client_id",
+        "oauth_resource",
+        "scopes",
+        "url",
+    }
+)
 _TOML_TARGET_RE = re.compile(
     rf"(?m)^[ \t]*{PLAINWEAVE_ENV}[ \t]*=[ \t]*"
     r"(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|'[^'\r\n]*')"
@@ -359,8 +372,9 @@ _TOML_TARGET_RE = re.compile(
 
 
 def _codex_config_path() -> Path:
-    if "CODEX_HOME" in os.environ:
-        return Path(os.environ["CODEX_HOME"]) / "config.toml"
+    codex_home = os.environ.get("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home) / "config.toml"
     return Path.home() / ".codex" / "config.toml"
 
 
@@ -548,6 +562,15 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
     if _toml_table_span(text, ("mcp_servers", "legis")) is None:
         return fail(
             "global Codex Legis MCP registration uses an unsupported inline or dotted shape",
+            registered=True,
+        )
+    conflicting_transport_fields = sorted(
+        _CODEX_HTTP_TRANSPORT_FIELDS.intersection(entry)
+    )
+    if "command" in entry and conflicting_transport_fields:
+        return fail(
+            "global Codex Legis MCP registration mixes stdio command and HTTP "
+            f"transport fields: {', '.join(conflicting_transport_fields)}",
             registered=True,
         )
     try:
