@@ -162,7 +162,11 @@ The local entry must resolve to an executable and contain exactly one `--root`
 that resolves to the active project root. It establishes applicability and
 supplies the executable without requiring the database signal. The `PATH`
 executable is only a fallback when the direct database file establishes an
-initialized project; it does not initialize or wire a project by itself.
+initialized project and local config has no Plainweave configuration issue; it
+does not initialize or wire a project by itself. For an initialized project, a
+present malformed `.mcp.json` or invalid local Plainweave entry fails closed and
+disables the trusted `PATH` fallback. The database-plus-`PATH` fallback is
+considered only when local config presents no Plainweave configuration issue.
 
 This integration has a POSIX-only safety boundary. Runtime discovery, binding
 inspection/removal, and the shared configuration-writer lock require
@@ -172,8 +176,8 @@ doctor reports a non-repairable platform error and leaves configuration
 unchanged; `legis install --mcp` cannot safely update `.mcp.json`. Windows is
 not currently supported.
 
-An initialized project without a valid local Plainweave entry needs the trusted
-fallback on `PATH`. Check it before running doctor:
+An initialized project with no local Plainweave entry and no local configuration
+issue needs the trusted fallback on `PATH`. Check it before running doctor:
 
 ```bash
 command -v plainweave-mcp
@@ -194,7 +198,7 @@ only as a migration name that doctor can find and remove.
 
 Plainweave discovery treats `.mcp.json` as untrusted input. It reads at most
 1 MiB and accepts no more than 100 nested JSON objects/arrays. Invalid input is
-never used; when no independently resolved safe fallback applies, doctor
+never used. For an initialized project it blocks fallback discovery, and doctor
 reports a generic configuration error without echoing hostile values.
 
 Legis install and doctor readers apply the same 1 MiB accepted-size limit to

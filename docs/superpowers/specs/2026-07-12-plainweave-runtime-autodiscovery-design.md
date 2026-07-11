@@ -47,8 +47,12 @@ Plainweave signals form two alternative discovery paths. Discovery accepts
 either a valid root-pinned local Plainweave MCP entry by itself, or
 `.plainweave/plainweave.db` plus a trusted non-project-local `plainweave-mcp` on
 `PATH`. The local entry establishes applicability and selects the executable in
-one signal. Without that entry, the direct database file establishes
-initialized state and permits the trusted `PATH` fallback.
+one signal. When there is no local Plainweave entry and no local configuration
+issue, the direct database file establishes initialized state and permits the
+trusted `PATH` fallback. For an initialized project, a present malformed
+`.mcp.json` or invalid local Plainweave entry fails closed and disables the
+trusted `PATH` fallback. The database-plus-`PATH` fallback is considered only
+when local config presents no Plainweave configuration issue.
 
 The existing `discover_plainweave(root)` boundary already resolves those
 signals into a canonical root-pinned command while enforcing bounded,
@@ -104,8 +108,8 @@ before returning `[fixed]`.
 
 An uninitialized project remains not applicable. An initialized project with
 no trusted Plainweave executable remains an operator error. Malformed or unsafe
-project MCP configuration remains fail-closed and is never rewritten by this
-check.
+project MCP configuration remains fail-closed, outranks any executable found on
+`PATH`, and is never rewritten by this check.
 
 ### Global Codex doctor check
 

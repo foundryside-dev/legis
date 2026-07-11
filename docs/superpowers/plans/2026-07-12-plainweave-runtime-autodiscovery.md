@@ -677,6 +677,8 @@ Expected: failures because published guidance still describes environment-bound 
 Make these statements consistent across all operator guides:
 
 - Legis discovers initialized Plainweave from the active project at MCP startup.
+- For an initialized project, a present malformed `.mcp.json` or invalid local Plainweave entry fails closed and disables the trusted `PATH` fallback. The
+  database-plus-`PATH` fallback is considered only when local config presents no Plainweave configuration issue.
 - Global Codex configuration contains only the Legis tool pointer and no Plainweave project identity.
 - `PLAINWEAVE_MCP_CMD` is a retired 1.5.0 key; `doctor --fix` removes it from safe project/global registrations.
 - `install.plainweave_project_binding` verifies local discovery plus a project-agnostic Legis entry.

@@ -42,6 +42,15 @@ _SECRET_HANDLING_DOCS = (
     ),
 )
 
+_FAIL_CLOSED_DISCOVERY_DOCS = (
+    Path("README.md"),
+    Path("docs/guide/configuration.md"),
+    Path(
+        "docs/superpowers/specs/2026-07-12-plainweave-runtime-autodiscovery-design.md"
+    ),
+    Path("docs/superpowers/plans/2026-07-12-plainweave-runtime-autodiscovery.md"),
+)
+
 _PLAINWEAVE_PDR = Path(
     "docs/product/decisions/0008-consume-plainweave-preflight-advisory-sibling.md"
 )
@@ -149,6 +158,18 @@ def test_current_docs_distinguish_both_plainweave_discovery_paths() -> None:
         assert local_entry_path.search(text), path
         assert initialized_fallback_path.search(text), path
         assert all(contract not in text for contract in incorrect_and_contracts), path
+
+
+def test_current_docs_pin_fail_closed_local_config_precedence() -> None:
+    precedence = (
+        "for an initialized project, a present malformed .mcp.json or invalid local "
+        "plainweave entry fails closed and disables the trusted path fallback. the "
+        "database-plus-path fallback is considered only when local config presents "
+        "no plainweave configuration issue."
+    )
+
+    for path in _FAIL_CLOSED_DISCOVERY_DOCS:
+        assert precedence in _normalize(path.read_text(encoding="utf-8")), path
 
 
 def test_current_docs_distinguish_project_and_global_secret_handling() -> None:
