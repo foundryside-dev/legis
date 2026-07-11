@@ -90,6 +90,7 @@ def _codex_config(
     monkeypatch,
     *,
     env: str = '[mcp_servers.legis.env]\nKEEP_ME = "operator" # KEEP_ME\n',
+    cwd: str | None = None,
     quoted: bool = False,
     newline: str = "\n",
 ) -> Path:
@@ -97,12 +98,13 @@ def _codex_config(
     parent = '[mcp_servers."legis"]' if quoted else "[mcp_servers.legis]"
     if quoted:
         env = env.replace("[mcp_servers.legis.env]", '[mcp_servers."legis"."env"]')
+    cwd_assignment = f"cwd = {json.dumps(cwd)}\n" if cwd is not None else ""
     content = (
         "# operator top comment\n"
         f"{parent}\n"
         f"command = {json.dumps(sys.executable)}\n"
         'args = ["-P", "-m", "legis", "mcp", "--agent-id", "operator"]\n'
-        'cwd = "/operator/workspace"\n'
+        f"{cwd_assignment}"
         "startup_timeout_sec = 17\n"
         f"{env}"
         "\n[mcp_servers.sibling]\n"
@@ -163,6 +165,7 @@ def test_codex_repair_is_surgical_mode_preserving_and_idempotent(
             '[mcp_servers.legis.env]\nKEEP_ME = "operator" # KEEP_ME\n'
             f'{PLAINWEAVE_ENV} = "stale" # target comment\n'
         ),
+        cwd="/operator/workspace",
     )
     config.chmod(0o640)
     root = tmp_path / "project"
@@ -191,6 +194,77 @@ def test_codex_repair_is_surgical_mode_preserving_and_idempotent(
         "command": "sibling-mcp",
         "args": ["serve"],
     }
+
+
+def test_codex_autodiscovery_repair_removes_legacy_binding_surgically(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target_line = f'{PLAINWEAVE_ENV} = "stale" # remove this whole line\n'
+    config = _codex_config(
+        tmp_path,
+        monkeypatch,
+        env=(f'[mcp_servers.legis.env]\nKEEP_ME = "operator" # KEEP_ME\n{target_line}'),
+    )
+    config.chmod(0o640)
+    before = config.read_bytes()
+    root = tmp_path / "project"
+    root.mkdir()
+
+    assert plainweave_binding.inspect_codex_binding(root, None) == (
+        plainweave_binding.BindingState(True, False, None)
+    )
+    assert plainweave_binding.repair_codex_binding(root, None) is None
+
+    first = config.read_bytes()
+    assert first == before.replace(target_line.encode(), b"")
+    assert config.stat().st_mode & 0o777 == 0o640
+    assert plainweave_binding.inspect_codex_binding(root, None) == (
+        plainweave_binding.BindingState(True, True, None)
+    )
+
+    assert plainweave_binding.repair_codex_binding(root, None) is None
+    assert config.read_bytes() == first
+
+
+def test_codex_autodiscovery_reports_fixed_cwd_as_project_bound(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _codex_config(tmp_path, monkeypatch, cwd="/operator/workspace")
+    root = tmp_path / "project"
+    root.mkdir()
+
+    assert plainweave_binding.inspect_codex_binding(root, None) == (
+        plainweave_binding.BindingState(
+            registered=True,
+            current=True,
+            error=None,
+            project_bound=True,
+        )
+    )
+
+
+def test_codex_autodiscovery_remove_only_preserves_fixed_cwd_exactly(
+    tmp_path: Path, monkeypatch
+) -> None:
+    target_line = f'{PLAINWEAVE_ENV} = "stale" # remove only this line\n'
+    config = _codex_config(
+        tmp_path,
+        monkeypatch,
+        env=(f'[mcp_servers.legis.env]\nKEEP_ME = "operator" # KEEP_ME\n{target_line}'),
+        cwd="/operator/workspace with spaces",
+    )
+    before = config.read_bytes()
+    root = tmp_path / "project"
+    root.mkdir()
+
+    assert plainweave_binding.inspect_codex_binding(root, None).project_bound is True
+    assert plainweave_binding.repair_codex_binding(root, None) is None
+
+    after = config.read_bytes()
+    assert after == before.replace(target_line.encode(), b"")
+    assert tomllib.loads(after.decode())["mcp_servers"]["legis"]["cwd"] == (
+        "/operator/workspace with spaces"
+    )
 
 
 def test_current_codex_binding_does_not_write(tmp_path: Path, monkeypatch) -> None:

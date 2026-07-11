@@ -42,6 +42,7 @@ class BindingState:
     registered: bool
     current: bool
     error: str | None = None
+    project_bound: bool = False
 
 
 @dataclass(slots=True)
@@ -563,7 +564,7 @@ def _toml_table_span(content: str, path: tuple[str, ...]) -> tuple[int, int] | N
     return matches[0] if len(matches) == 1 else None
 
 
-def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
+def _inspect_codex_binding(root: Path, desired: str | None) -> _BindingInspection:
     try:
         resolved_root = root.resolve()
     except (OSError, RuntimeError) as exc:
@@ -704,7 +705,11 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
         )
     env = dict(raw_env)
     inspection = _BindingInspection(
-        state=BindingState(True, env.get(PLAINWEAVE_ENV) == desired),
+        state=BindingState(
+            registered=True,
+            current=_binding_is_current(env, desired),
+            project_bound="cwd" in entry,
+        ),
         root_fd=root_fd,
         snapshot=snapshot,
         identity=(target_stat.st_dev, target_stat.st_ino),
@@ -726,8 +731,13 @@ def _inspect_codex_binding(root: Path, desired: str) -> _BindingInspection:
     return inspection
 
 
-def inspect_codex_binding(root: Path, desired: str) -> BindingState:
-    """Inspect the Plainweave command bound to the global Codex Legis entry."""
+def inspect_codex_binding(root: Path, desired: str | None) -> BindingState:
+    """Inspect the global Codex Legis Plainweave binding.
+
+    ``None`` selects runtime autodiscovery and is current only when the legacy
+    ``PLAINWEAVE_MCP_CMD`` key is absent. ``project_bound`` reports whether the
+    otherwise valid global Legis entry fixes its working directory with ``cwd``.
+    """
     inspection = _inspect_codex_binding(root, desired)
     try:
         return inspection.state
@@ -787,7 +797,7 @@ def _codex_documents_match_except_target(
 
 
 def _updated_codex_text(
-    inspection: _BindingInspection, desired: str
+    inspection: _BindingInspection, desired: str | None
 ) -> tuple[str | None, str | None]:
     text = inspection.text
     entry = inspection.entry
@@ -806,6 +816,18 @@ def _updated_codex_text(
         )
 
     newline = _newline_for(text)
+    if desired is None:
+        if env_span is None:
+            return None, "global Codex Legis MCP env table is missing"
+        existing_assignment = _supported_target_assignment(text, env_span)
+        if existing_assignment is None:
+            return (
+                None,
+                "global Codex Plainweave target assignment has an unsupported shape",
+            )
+        start, end = existing_assignment.span()
+        return text[:start] + text[end:], None
+
     rendered = json.dumps(desired)
     if env_span is None:
         block = (
@@ -830,8 +852,13 @@ def _updated_codex_text(
     return text[:start] + rendered + text[end:], None
 
 
-def repair_codex_binding(root: Path, desired: str) -> str | None:
-    """Bind Plainweave in an existing usable global Codex Legis MCP entry."""
+def repair_codex_binding(root: Path, desired: str | None) -> str | None:
+    """Repair Plainweave in an existing usable global Codex Legis MCP entry.
+
+    ``None`` enables runtime autodiscovery by removing only the legacy
+    ``PLAINWEAVE_MCP_CMD`` assignment. A fixed ``cwd`` is preserved; callers can
+    identify that operator-owned project binding through ``project_bound``.
+    """
     inspection = _inspect_codex_binding(root, desired)
     try:
         if inspection.state.current:
@@ -857,10 +884,12 @@ def repair_codex_binding(root: Path, desired: str) -> str | None:
         updated_env = (
             updated_entry.get("env") if isinstance(updated_entry, dict) else None
         )
-        if (
-            not isinstance(updated_env, dict)
-            or updated_env.get(PLAINWEAVE_ENV) != desired
-        ):
+        binding_verified = isinstance(updated_env, dict) and (
+            PLAINWEAVE_ENV not in updated_env
+            if desired is None
+            else updated_env.get(PLAINWEAVE_ENV) == desired
+        )
+        if not binding_verified:
             return "updated Codex config.toml did not contain the desired binding"
         data = inspection.data
         if data is None or not _codex_documents_match_except_target(data, updated_data):
