@@ -651,6 +651,107 @@ def test_register_mcp_json_uses_shared_writer_lock(tmp_path, monkeypatch) -> Non
     assert locked_paths == [tmp_path / ".mcp.json"]
 
 
+def test_doctor_safe_register_rejects_project_root_swap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / ".mcp.json"
+    config.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    original = config.read_bytes()
+    moved = tmp_path / "moved-project"
+    external = tmp_path / "external"
+    external.mkdir()
+    real_lock = install._config_writer_lock
+    swapped = False
+
+    @contextmanager
+    def swap_before_lock(path: Path, *, dir_fd: int | None = None):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            project.rename(moved)
+            project.symlink_to(external, target_is_directory=True)
+        with real_lock(path, dir_fd=dir_fd):
+            yield
+
+    monkeypatch.setattr(install, "_config_writer_lock", swap_before_lock)
+
+    ok, message = install.register_mcp_json(project, doctor_safe=True)
+
+    assert ok is False
+    assert "changed" in message.lower()
+    assert not (external / ".mcp.json").exists()
+    assert (moved / ".mcp.json").read_bytes() == original
+
+
+def test_doctor_safe_register_rechecks_project_root_immediately_before_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    moved = tmp_path / "moved-project"
+    external = tmp_path / "external"
+    external.mkdir()
+    real_read = install._read_anchored_mcp_json
+    reads = 0
+
+    def swap_after_final_snapshot_read(directory_fd: int):
+        nonlocal reads
+        snapshot = real_read(directory_fd)
+        reads += 1
+        if reads == 2:
+            project.rename(moved)
+            project.symlink_to(external, target_is_directory=True)
+        return snapshot
+
+    monkeypatch.setattr(
+        install,
+        "_read_anchored_mcp_json",
+        swap_after_final_snapshot_read,
+    )
+
+    ok, message = install.register_mcp_json(project, doctor_safe=True)
+
+    assert reads == 2
+    assert ok is False
+    assert "changed" in message.lower()
+    assert not (external / ".mcp.json").exists()
+    assert not (moved / ".mcp.json").exists()
+
+
+def test_doctor_safe_register_closes_project_fd_when_initial_fstat_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    opened: list[int] = []
+    real_open_directory = install._open_directory_path_nofollow
+    real_fstat = install.os.fstat
+
+    def capture_open(path: Path) -> int:
+        fd = real_open_directory(path)
+        opened.append(fd)
+        return fd
+
+    def fail_initial_fstat(fd: int):
+        if opened and fd == opened[0]:
+            raise PermissionError("simulated initial inspection failure")
+        return real_fstat(fd)
+
+    monkeypatch.setattr(install, "_open_directory_path_nofollow", capture_open)
+    monkeypatch.setattr(install.os, "fstat", fail_initial_fstat)
+
+    ok, message = install.register_mcp_json(tmp_path, doctor_safe=True)
+
+    assert ok is False
+    assert "safely" in message.lower()
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        real_fstat(opened[0])
+
+
 def test_register_mcp_json_rejects_symlinked_writer_lock(tmp_path: Path) -> None:
     external = tmp_path / "external.lock"
     external.touch()

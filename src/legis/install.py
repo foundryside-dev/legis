@@ -22,6 +22,7 @@ import logging
 import math
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -172,6 +173,28 @@ def reject_symlink(path: Path) -> None:
     if path.is_symlink():
         msg = f"Refusing to write through symlinked installer target: {path}"
         raise UnsafeInstallPathError(msg)
+
+
+def _open_directory_path_nofollow(path: Path) -> int:
+    """Open an absolute directory path without following any component links."""
+    if not path.is_absolute():
+        raise ValueError("directory path is not absolute")
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    if directory_flag is None or nofollow_flag is None:
+        raise OSError("platform does not support no-follow directory access")
+    flags = os.O_RDONLY | directory_flag | nofollow_flag
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    current_fd = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+    return current_fd
 
 
 # ---------------------------------------------------------------------------
@@ -1422,6 +1445,97 @@ def _legis_mcp_entry(
     }
 
 
+def _directory_fd_still_names_path(
+    directory_fd: int,
+    path: Path,
+    identity: tuple[int, int],
+) -> bool:
+    """Return whether *path* still names the directory held by *directory_fd*."""
+    try:
+        current_fd = _open_directory_path_nofollow(path)
+        try:
+            current_stat = os.fstat(current_fd)
+        finally:
+            os.close(current_fd)
+        held_stat = os.fstat(directory_fd)
+    except (OSError, NotImplementedError, TypeError, ValueError):
+        return False
+    return (held_stat.st_dev, held_stat.st_ino) == identity and (
+        current_stat.st_dev,
+        current_stat.st_ino,
+    ) == identity
+
+
+def _read_anchored_mcp_json(
+    directory_fd: int,
+) -> tuple[bytes, os.stat_result] | None:
+    flags = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+    try:
+        fd = os.open(".mcp.json", flags, dir_fd=directory_fd)
+    except FileNotFoundError:
+        return None
+    try:
+        target_stat = os.fstat(fd)
+        if not stat.S_ISREG(target_stat.st_mode):
+            raise OSError("project .mcp.json is not a regular file")
+        chunks: list[bytes] = []
+        while chunk := os.read(fd, 64 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks), target_stat
+    finally:
+        os.close(fd)
+
+
+def _atomic_write_anchored_mcp_json(
+    directory_fd: int,
+    content: str,
+    *,
+    mode: int | None,
+) -> None:
+    """Replace .mcp.json relative to a held project directory descriptor."""
+    if not content.strip():
+        raise ValueError("refusing to write empty content to project .mcp.json")
+    temp_name: str | None = None
+    temp_fd: int | None = None
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        for _attempt in range(10):
+            candidate = f".mcp.json.{secrets.token_hex(8)}.tmp"
+            try:
+                temp_fd = os.open(candidate, flags, 0o600, dir_fd=directory_fd)
+            except FileExistsError:
+                continue
+            temp_name = candidate
+            break
+        if temp_fd is None or temp_name is None:
+            raise OSError("could not allocate a temporary project .mcp.json file")
+        payload = memoryview(content.encode("utf-8"))
+        while payload:
+            written = os.write(temp_fd, payload)
+            if written <= 0:
+                raise OSError("short write while preparing project .mcp.json")
+            payload = payload[written:]
+        os.fchmod(temp_fd, mode if mode is not None else 0o600)
+        os.close(temp_fd)
+        temp_fd = None
+        os.replace(
+            temp_name,
+            ".mcp.json",
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        temp_name = None
+    finally:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+
 def register_mcp_json(
     project_root: Path,
     agent_id: str | None = None,
@@ -1429,6 +1543,46 @@ def register_mcp_json(
     doctor_safe: bool = False,
 ) -> tuple[bool, str]:
     """Register Legis while serializing all cooperating .mcp.json writers."""
+    if doctor_safe:
+        root_fd: int | None = None
+        try:
+            resolved_root = project_root.resolve(strict=True)
+            root_fd = _open_directory_path_nofollow(resolved_root)
+            root_stat = os.fstat(root_fd)
+        except (
+            OSError,
+            RuntimeError,
+            NotImplementedError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            if root_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(root_fd)
+            return False, f"could not open project directory safely: {exc}"
+        assert root_fd is not None
+        root_identity = (root_stat.st_dev, root_stat.st_ino)
+        path = resolved_root / ".mcp.json"
+        try:
+            with _config_writer_lock(path, dir_fd=root_fd):
+                if not _directory_fd_still_names_path(
+                    root_fd,
+                    resolved_root,
+                    root_identity,
+                ):
+                    return False, "project directory changed during automatic repair"
+                return _register_mcp_json_unlocked(
+                    resolved_root,
+                    agent_id,
+                    doctor_safe=True,
+                    root_fd=root_fd,
+                    root_identity=root_identity,
+                )
+        except _ConfigWriterLockError as exc:
+            return False, f"could not lock project .mcp.json for update: {exc}"
+        finally:
+            os.close(root_fd)
+
     try:
         path = project_path(project_root, ".mcp.json")
     except (OSError, UnsafeInstallPathError) as exc:
@@ -1449,6 +1603,8 @@ def _register_mcp_json_unlocked(
     agent_id: str | None = None,
     *,
     doctor_safe: bool = False,
+    root_fd: int | None = None,
+    root_identity: tuple[int, int] | None = None,
 ) -> tuple[bool, str]:
     """Register (or refresh) the legis server in <root>/.mcp.json.
 
@@ -1465,20 +1621,35 @@ def _register_mcp_json_unlocked(
     even then the operator-owned ``env`` dict is carried over, never wiped
     (legis-788a85fac1).
     """
+    if doctor_safe and (root_fd is None or root_identity is None):
+        return False, "project .mcp.json automatic repair snapshot is incomplete"
     try:
-        path = project_path(project_root, ".mcp.json")
+        path = (
+            project_path(project_root, ".mcp.json")
+            if root_fd is None
+            else project_root / ".mcp.json"
+        )
     except UnsafeInstallPathError as exc:
         return False, str(exc)
 
     data: dict[str, Any] = {}
     snapshot: bytes | None = None
     snapshot_identity: tuple[int, int] | None = None
-    if path.exists():
+    anchored_snapshot: tuple[bytes, os.stat_result] | None = None
+    if root_fd is not None:
         try:
-            path_stat = path.lstat()
+            anchored_snapshot = _read_anchored_mcp_json(root_fd)
+        except OSError:
+            return False, ".mcp.json present but unreadable; fix or remove it by hand"
+    if anchored_snapshot is not None or (root_fd is None and path.exists()):
+        try:
+            if anchored_snapshot is None:
+                path_stat = path.lstat()
+                snapshot = path.read_bytes()
+            else:
+                snapshot, path_stat = anchored_snapshot
             if doctor_safe and not stat.S_ISREG(path_stat.st_mode):
                 return False, "project .mcp.json is unsafe; refusing automatic repair"
-            snapshot = path.read_bytes()
             snapshot_identity = (path_stat.st_dev, path_stat.st_ino)
             parsed = _strict_json_loads(snapshot.decode("utf-8"))
         except (json.JSONDecodeError, OSError, ValueError):
@@ -1496,21 +1667,27 @@ def _register_mcp_json_unlocked(
 
     def write_current_snapshot(message: str) -> tuple[bool, str]:
         if doctor_safe:
+            assert root_fd is not None
+            assert root_identity is not None
+            anchored_root_fd = root_fd
+            anchored_root_identity = root_identity
             try:
-                current_stat = path.lstat()
-                current_bytes = path.read_bytes()
-            except FileNotFoundError:
-                if snapshot is not None:
-                    return (
-                        False,
-                        "project .mcp.json changed during automatic repair; rerun doctor",
-                    )
+                current_snapshot = _read_anchored_mcp_json(anchored_root_fd)
             except OSError:
                 return (
                     False,
                     "project .mcp.json changed during automatic repair; rerun doctor",
                 )
+            if current_snapshot is None:
+                if snapshot is not None:
+                    return (
+                        False,
+                        "project .mcp.json changed during automatic repair; rerun doctor",
+                    )
+                current_stat = None
+                current_bytes = None
             else:
+                current_bytes, current_stat = current_snapshot
                 current_identity = (current_stat.st_dev, current_stat.st_ino)
                 if (
                     snapshot is None
@@ -1522,7 +1699,26 @@ def _register_mcp_json_unlocked(
                         False,
                         "project .mcp.json changed during automatic repair; rerun doctor",
                     )
-        _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+            if not _directory_fd_still_names_path(
+                anchored_root_fd,
+                project_root,
+                anchored_root_identity,
+            ):
+                return False, "project directory changed during automatic repair"
+            try:
+                _atomic_write_anchored_mcp_json(
+                    anchored_root_fd,
+                    json.dumps(data, indent=2, sort_keys=True) + "\n",
+                    mode=(
+                        stat.S_IMODE(current_stat.st_mode)
+                        if current_stat is not None
+                        else None
+                    ),
+                )
+            except (OSError, NotImplementedError, TypeError, ValueError) as exc:
+                return False, f"could not update project .mcp.json safely: {exc}"
+        else:
+            _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
         return True, message
 
     servers = data.get("mcpServers")

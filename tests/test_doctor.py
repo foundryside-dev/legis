@@ -607,18 +607,17 @@ def test_doctor_mcp_repair_contains_snapshot_recheck_read_failure(
         },
     )
     before = path.read_bytes()
-    original_read_bytes = Path.read_bytes
+    original_read = install._read_anchored_mcp_json
     reads = 0
 
-    def fail_recheck(target: Path) -> bytes:
+    def fail_recheck(directory_fd: int):
         nonlocal reads
-        if target == path:
-            reads += 1
-            if reads == 2:
-                raise PermissionError("simulated recheck denial")
-        return original_read_bytes(target)
+        reads += 1
+        if reads == 2:
+            raise PermissionError("simulated recheck denial")
+        return original_read(directory_fd)
 
-    monkeypatch.setattr(Path, "read_bytes", fail_recheck)
+    monkeypatch.setattr(install, "_read_anchored_mcp_json", fail_recheck)
 
     check = check_mcp_json(tmp_path, repair=True)
 
