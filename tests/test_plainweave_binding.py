@@ -895,6 +895,63 @@ def test_repair_changes_only_nested_binding_and_preserves_operator_config(
     assert json.loads(config.read_text(encoding="utf-8")) == expected
 
 
+@pytest.mark.parametrize(
+    ("newline", "final_newline"),
+    [
+        ("\r\n", True),
+        ("\r\n", False),
+        ("\n", True),
+        ("\n", False),
+        ("\r", True),
+        ("\r", False),
+    ],
+)
+def test_project_repair_preserves_newline_style_and_final_newline_state(
+    tmp_path: Path,
+    newline: str,
+    final_newline: bool,
+) -> None:
+    document = {
+        "mcpServers": {
+            "legis": {
+                "type": "stdio",
+                "command": sys.executable,
+                "args": [
+                    "-P",
+                    "-m",
+                    "legis",
+                    "mcp",
+                    "--agent-id",
+                    "operator-agent",
+                ],
+                "env": {"KEEP_ME": "operator-value"},
+                "timeout": 17_000,
+            },
+            "sibling": {"command": "sibling-mcp", "args": ["serve"]},
+        }
+    }
+    rendered = json.dumps(document, indent=4).replace("\n", newline)
+    if final_newline:
+        rendered += newline
+    config = tmp_path / ".mcp.json"
+    config.write_bytes(rendered.encode())
+    desired = "plainweave-mcp --root /newline-style"
+
+    assert plainweave_binding.repair_project_binding(tmp_path, desired) is None
+
+    repaired = config.read_bytes().decode()
+    without_expected_newlines = repaired.replace(newline, "")
+    assert "\n" not in without_expected_newlines
+    assert "\r" not in without_expected_newlines
+    assert repaired.endswith(newline) is final_newline
+    parsed = json.loads(repaired)
+    assert parsed["mcpServers"]["legis"]["env"] == {
+        "KEEP_ME": "operator-value",
+        PLAINWEAVE_ENV: desired,
+    }
+    assert parsed["mcpServers"]["sibling"] == document["mcpServers"]["sibling"]
+
+
 def test_repair_replaces_stale_project_binding(tmp_path: Path) -> None:
     config = _write_legis_entry(
         tmp_path,

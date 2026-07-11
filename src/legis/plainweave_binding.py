@@ -338,13 +338,19 @@ def repair_project_binding(root: Path, desired: str) -> str | None:
         data = inspection.data
         entry = inspection.entry
         env = inspection.env
-        if data is None or entry is None or env is None:
+        snapshot = inspection.snapshot
+        if data is None or entry is None or env is None or snapshot is None:
             return "project Legis MCP binding could not be repaired"
 
         updated_env = dict(env)
         updated_env[PLAINWEAVE_ENV] = desired
         entry["env"] = updated_env
-        content = (json.dumps(data, indent=2) + "\n").encode("utf-8")
+        original = snapshot.decode("utf-8")
+        newline = _newline_for(original)
+        rendered = json.dumps(data, indent=2).replace("\n", newline)
+        if original.endswith(("\r\n", "\n", "\r")):
+            rendered += newline
+        content = rendered.encode("utf-8")
         return _anchored_replace(inspection, content)
     finally:
         _close_root_fd(inspection)
