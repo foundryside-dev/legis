@@ -131,6 +131,32 @@ def test_plainweave_checked_when_method_succeeds():
     }
 
 
+def test_plainweave_page_controls_are_forwarded_to_client():
+    calls = []
+
+    class _PagedPlainweave:
+        def preflight_facts(self, base, head, *, requirement_limit=None, requirement_offset=None):
+            calls.append((base, head, requirement_limit, requirement_offset))
+            return _PLAINWEAVE_ENVELOPE
+
+    out = read_plainweave_preflight(
+        _PagedPlainweave(), "aaa", "bbb", requirement_limit=50, requirement_offset=100
+    )
+
+    assert out["status"] == "checked"
+    assert calls == [("aaa", "bbb", 50, 100)]
+
+
+def test_plainweave_legacy_client_degrades_on_continuation_instead_of_internal_error():
+    out = read_plainweave_preflight(
+        _OkPlainweave(), "aaa", "bbb", requirement_offset=100
+    )
+
+    assert out["status"] == "unavailable"
+    assert "preflight_facts" not in out
+    assert "unexpected keyword" in out["unavailable"][0]["reason"]
+
+
 def test_plainweave_unavailable_when_client_is_none_not_a_silent_empty():
     out = read_plainweave_preflight(None, "aaa", "bbb")
     assert out["status"] == "unavailable"

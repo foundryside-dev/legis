@@ -193,6 +193,10 @@ selector flag installs only the named steps. Each step prints `[OK]` or
 | `--mcp` | register the legis MCP server in `.mcp.json` only |
 | `--agent-id` | agent id stamped in the `.mcp.json` legis entry (default: `claude-code`, or preserve an existing entry's id) |
 
+Atomic updates preserve an existing target's mode. A newly created managed text
+file uses fixed mode `0600`; Legis does not inspect or temporarily change the
+process-wide umask.
+
 **Exit codes**
 
 | code | meaning |
@@ -225,6 +229,49 @@ the read-only counterpart — it never repairs; fixes stay on this CLI.)
 | `--root` | `.` | project root to inspect |
 | `--fix` / `--repair` | off | apply safe repairs, then re-check |
 | `--format` | `text` | `text` (human) or `json` (machine-readable) |
+
+**Plainweave checks and outcomes**
+
+| Check or outcome | Meaning |
+|---|---|
+| `install.mcp_json` | Owns missing or stale project Legis registration repair. In a `--fix` run it may create or rebuild `command`, `args`, `type`, and safe `env` before Plainweave binding runs. |
+| `install.plainweave_project_binding` | Verifies active-project runtime discovery and absence of the retired legacy `PLAINWEAVE_MCP_CMD` key. Removal semantically changes only that key, but reserializes the whole `.mcp.json` document with two-space indentation; it preserves unrelated JSON values, the detected newline sequence, final-newline presence, and file mode rather than arbitrary whitespace. |
+| `install.plainweave_codex_binding` | Independently inspects only an existing global Codex Legis entry for the retired key and fixed `cwd`. No registration is healthy and not applicable; the check never creates one. |
+| `[auto-fixable]` | A safe retired key is present, or a project registration is safely missing or stale. |
+| `[fixed]` | That check repaired and post-verified its own scope. If registration and legacy cleanup both changed, inspect `[fixed]` on both `install.mcp_json` and `install.plainweave_project_binding`. |
+| `[operator]` | A fixed global `cwd`; malformed, unsupported, or mixed-transport global config; or unsafe/secret-bearing project config remains unchanged. A safe global legacy cleanup plus fixed `cwd` can report `[fixed] [operator]`. |
+| healthy, non-applicable | The project is uninitialized or not configured for Plainweave; or no global Codex Legis entry exists for the global check. |
+
+Run `legis doctor` to inspect, `legis doctor --fix` to apply safe repairs, and
+`legis doctor --format json` for automation. The project and global binding
+checks are independent. Success means no check has `status: "error"`; do not
+depend on an exact check count.
+
+Legis MCP runtime autodiscovery runs once at startup from the active project
+cwd. It accepts either a valid root-pinned local Plainweave MCP entry by itself,
+or `.plainweave/plainweave.db` plus a trusted non-project-local
+`plainweave-mcp` on `PATH`; no new manifest is created.
+For an initialized project, a present malformed `.mcp.json` or invalid local
+Plainweave entry fails closed and disables the trusted `PATH` fallback. The
+database-plus-`PATH` fallback is considered only when local config presents no
+Plainweave configuration issue.
+Global Codex Legis config is tool-only and carries no Plainweave root, retired
+legacy `PLAINWEAVE_MCP_CMD`, or fixed `cwd`.
+
+Project repair refuses unsafe or secret-bearing `.mcp.json` environment tables
+and leaves the file unchanged. Global remove-only repair accepts string-valued
+environment entries and preserves every unrelated entry, including
+secret-shaped names. It refuses malformed, unsupported, or mixed-transport
+global shapes.
+
+For migration, run `legis doctor`, run `legis doctor --fix`, manually remove a
+fixed global `cwd` if doctor reports it, reconnect or restart MCP clients, then
+rerun `legis doctor`. `doctor_get` is report-only. Doctor does not initialize
+Plainweave, create a global registration, remove fixed `cwd`, restart clients,
+or repair malformed/unsafe project config or malformed/unsupported global
+shapes. See the
+[Plainweave configuration procedure](configuration.md#plainweave-mcp-runtime-autodiscovery-and-legacy-migration)
+for prerequisites, remediation, and safety boundaries.
 
 **Exit codes**
 

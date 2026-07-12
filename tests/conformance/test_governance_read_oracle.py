@@ -29,14 +29,13 @@ Layered freshness defence:
   * Kind-coverage guard (``test_both_clearance_kinds_are_pinned``): golden must
     carry both posture values.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 from functools import lru_cache
 from pathlib import Path
-
-import pytest
 
 from legis.clock import FixedClock
 from legis.enforcement.engine import EnforcementEngine
@@ -55,9 +54,7 @@ _KEY = b"weft-seam-conformance-key"
 _POLICY = "protected.attestation"
 _SEI = "loomweave:eid:0000000000000000000000000000aaaa"
 
-GOLDEN_PATH = (
-    Path(__file__).parent / "fixtures" / "legis-governance-read.golden.json"
-)
+GOLDEN_PATH = Path(__file__).parent / "fixtures" / "legis-governance-read.golden.json"
 
 # git blob sha1 of the committed golden. Layer-1 fail-closed pin (UNMARKED).
 GOLDEN_BLOB_SHA = "898fd1a8c159cd717b0b976a5488b5c0c65a86a6"
@@ -143,6 +140,7 @@ def _wired_runtime(store) -> McpRuntime:
 
 # --- Layer-1: byte-pin (UNMARKED, default suite) ---
 
+
 def test_governance_read_golden_byte_pin():
     data = GOLDEN_PATH.read_bytes()
     assert _git_blob_sha1(data) == GOLDEN_BLOB_SHA, (
@@ -153,6 +151,7 @@ def test_governance_read_golden_byte_pin():
 
 
 # --- Producer recheck: real wire reproduces golden ---
+
 
 def test_mcp_wire_reproduces_golden(tmp_path):
     """Drive the REAL call_tool wire. A rename of any clearance_record field
@@ -166,6 +165,7 @@ def test_mcp_wire_reproduces_golden(tmp_path):
 
 # --- Kind-coverage guard ---
 
+
 def test_both_clearance_kinds_are_pinned():
     """The golden MUST carry both clearance postures (operator_signoff +
     protected_override). A one-kind golden leaves the other projection branch
@@ -176,11 +176,16 @@ def test_both_clearance_kinds_are_pinned():
 
 # --- Content-hash cross-check with the attestation golden ---
 
+
 def test_content_hashes_match_attestation_golden():
     """The governance_read golden's content_hash values must match the attestation
     golden's content_hash values (same signed records, different projection).
     If either golden is refreshed independently, this cross-check catches drift."""
-    att_golden_path = Path(__file__).parent / "fixtures" / "legis-warpline-attestation-get.golden.json"
+    att_golden_path = (
+        Path(__file__).parent
+        / "fixtures"
+        / "legis-warpline-attestation-get.golden.json"
+    )
     att_golden = json.loads(att_golden_path.read_text(encoding="utf-8"))
     att_hashes = {a["content_hash"] for a in att_golden["attestations"]}
 
@@ -195,6 +200,7 @@ def test_content_hashes_match_attestation_golden():
 
 # --- Rename-stability ---
 
+
 def test_governance_read_golden_is_keyed_on_sei():
     golden = _load_golden()
     assert golden["status"] == "checked"
@@ -203,6 +209,7 @@ def test_governance_read_golden_is_keyed_on_sei():
 
 
 # --- Unavailable discriminant ---
+
 
 def test_unavailable_discriminant_is_distinct_from_empty_checked(tmp_path):
     """Unwired gateway yields 'unavailable', not 'checked'/[] — the consumer

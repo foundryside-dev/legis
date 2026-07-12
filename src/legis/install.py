@@ -14,19 +14,28 @@ This mirrors filigree's mechanism (``filigree/src/filigree/install.py`` and
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import importlib.metadata
 import importlib.resources
 import json
 import logging
+import math
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
 import tempfile
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - exercised on non-POSIX hosts
+    fcntl = None  # type: ignore[assignment]
 
 # ``OperatorKeyCustodyError`` now lives in the posture leaf (``posture/errors``)
 # so the posture package can raise/catch it without importing this 1500-LOC
@@ -96,6 +105,7 @@ def _first_own_open_fence_pos(content: str) -> int:
             inside_foreign = ns
     return -1
 
+
 SKILL_NAME = "legis-workflow"
 """Name of the legis skill pack directory."""
 
@@ -164,6 +174,28 @@ def reject_symlink(path: Path) -> None:
     if path.is_symlink():
         msg = f"Refusing to write through symlinked installer target: {path}"
         raise UnsafeInstallPathError(msg)
+
+
+def _open_directory_path_nofollow(path: Path) -> int:
+    """Open an absolute directory path without following any component links."""
+    if not path.is_absolute():
+        raise ValueError("directory path is not absolute")
+    directory_flag = getattr(os, "O_DIRECTORY", None)
+    nofollow_flag = getattr(os, "O_NOFOLLOW", None)
+    if directory_flag is None or nofollow_flag is None:
+        raise OSError("platform does not support no-follow directory access")
+    flags = os.O_RDONLY | directory_flag | nofollow_flag
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    current_fd = os.open(path.anchor, flags)
+    try:
+        for part in path.parts[1:]:
+            next_fd = os.open(part, flags, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = next_fd
+    except BaseException:
+        os.close(current_fd)
+        raise
+    return current_fd
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +315,7 @@ def _own_open_marker_tokens(content: str) -> list[str | None]:
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
-    """Write *content* to *path* atomically (temp + rename), preserving mode."""
+    """Atomically write text, preserving existing mode or using safe ``0600``."""
     # Refuse-to-empty guard (filigree-04bad2a2bf parity). Every caller of this
     # writer (instruction injection, .gitignore management, settings.json) always
     # has non-empty content; an empty or whitespace-only payload can only be
@@ -300,19 +332,100 @@ def _atomic_write_text(path: Path, content: str) -> None:
         existing_mode = None
 
     fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".tmp", prefix=path.name)
+    directory_fd: int | None = None
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
-        if existing_mode is not None:
-            os.chmod(tmp, existing_mode)
-        else:
-            umask = os.umask(0)
-            os.umask(umask)
-            os.chmod(tmp, 0o666 & ~umask)
+            f.flush()
+            if existing_mode is not None:
+                os.fchmod(f.fileno(), existing_mode)
+            else:
+                os.fchmod(f.fileno(), 0o600)
+            os.fsync(f.fileno())
+        directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+        directory_flags |= getattr(os, "O_CLOEXEC", 0)
+        directory_fd = os.open(path.parent, directory_flags)
         os.replace(tmp, path)
+        os.fsync(directory_fd)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
+
+
+class _ConfigWriterLockError(OSError):
+    """A stable configuration sidecar could not be safely locked."""
+
+
+def _config_writer_lock_support_error() -> str | None:
+    if fcntl is None or not hasattr(fcntl, "flock"):
+        return "platform does not support advisory configuration writer locks"
+    if getattr(os, "O_NOFOLLOW", None) is None or not hasattr(os, "fchmod"):
+        return "platform does not support safe configuration lock files"
+    if getattr(os, "O_NONBLOCK", None) is None:
+        return "platform does not support safe project MCP configuration reads"
+    return None
+
+
+@contextlib.contextmanager
+def _config_writer_lock(path: Path, *, dir_fd: int | None = None):
+    """Serialize cooperating Legis writers through a stable sidecar lock."""
+    support_error = _config_writer_lock_support_error()
+    if support_error is not None:
+        raise _ConfigWriterLockError(support_error)
+
+    lock_name = f"{path.name}.legis.lock"
+    lock_path = path.with_name(lock_name)
+    open_target: str | Path = lock_name if dir_fd is not None else lock_path
+    flags = os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
+    flags |= getattr(os, "O_CLOEXEC", 0)
+    try:
+        if dir_fd is None:
+            fd = os.open(open_target, flags, 0o600)
+        else:
+            fd = os.open(open_target, flags, 0o600, dir_fd=dir_fd)
+    except (OSError, NotImplementedError, TypeError, ValueError) as exc:
+        raise _ConfigWriterLockError(str(exc)) from exc
+    try:
+        try:
+
+            def validate_lock_stat(lock_stat: os.stat_result) -> None:
+                if not stat.S_ISREG(lock_stat.st_mode):
+                    raise OSError(
+                        f"configuration lock is not a regular file: {lock_path}"
+                    )
+                if lock_stat.st_nlink != 1:
+                    raise OSError(
+                        f"configuration lock has unsafe link count: {lock_path}"
+                    )
+                if hasattr(os, "geteuid") and lock_stat.st_uid != os.geteuid():
+                    raise OSError(f"configuration lock has unsafe owner: {lock_path}")
+
+            validate_lock_stat(os.fstat(fd))
+            assert fcntl is not None
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            validate_lock_stat(os.fstat(fd))
+            os.fchmod(fd, 0o600)
+            lock_stat = os.fstat(fd)
+            validate_lock_stat(lock_stat)
+            if dir_fd is None:
+                path_stat = lock_path.lstat()
+            else:
+                path_stat = os.stat(lock_name, dir_fd=dir_fd, follow_symlinks=False)
+            if (path_stat.st_dev, path_stat.st_ino) != (
+                lock_stat.st_dev,
+                lock_stat.st_ino,
+            ):
+                raise OSError(
+                    f"configuration lock changed while opening it: {lock_path}"
+                )
+        except (OSError, NotImplementedError, TypeError, ValueError) as exc:
+            raise _ConfigWriterLockError(str(exc)) from exc
+        yield
+    finally:
+        os.close(fd)
 
 
 def inject_instructions(file_path: Path) -> tuple[bool, str]:
@@ -441,7 +554,9 @@ def _install_skill_to(project_root: Path, target_subpath: Path) -> tuple[bool, s
     except UnsafeInstallPathError as exc:
         return False, str(exc)
 
-    staging = Path(tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.installing."))
+    staging = Path(
+        tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.installing.")
+    )
     staging.rmdir()
     staging_consumed = False
     swap_done = False
@@ -449,7 +564,9 @@ def _install_skill_to(project_root: Path, target_subpath: Path) -> tuple[bool, s
     try:
         shutil.copytree(skill_source, staging)
         if target_dir.exists():
-            backup_holder = Path(tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.old."))
+            backup_holder = Path(
+                tempfile.mkdtemp(dir=target_dir.parent, prefix=f"{SKILL_NAME}.old.")
+            )
             backup_holder.rmdir()
             try:
                 os.rename(target_dir, backup_holder)
@@ -478,7 +595,10 @@ def _install_skill_to(project_root: Path, target_subpath: Path) -> tuple[bool, s
                         # Could not restore — leave the backup in place (it may
                         # be the only surviving copy) rather than delete it.
                         pass
-                return False, f"Failed to install skill pack to {target_dir}: swap failed"
+                return (
+                    False,
+                    f"Failed to install skill pack to {target_dir}: swap failed",
+                )
     finally:
         if not staging_consumed and staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
@@ -612,23 +732,36 @@ def _hook_cmd_matches(
         hook_bin = hook_tokens[0]
         if hook_bin == bare_bin:
             return True
-        if _path_head_is_project_local(hook_bin, project_root) and not allow_project_local:
+        if (
+            _path_head_is_project_local(hook_bin, project_root)
+            and not allow_project_local
+        ):
             return False
         if (
-            "/" in hook_bin or "\\" in hook_bin
-        ) and not Path(hook_bin).is_absolute() and not allow_project_local:
+            ("/" in hook_bin or "\\" in hook_bin)
+            and not Path(hook_bin).is_absolute()
+            and not allow_project_local
+        ):
             return False
         hook_base = hook_bin.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         return hook_base.lower() in {bare_bin.lower(), f"{bare_bin.lower()}.exe"}
 
     module_prefixes = (["-m", bare_bin], ["-P", "-m", bare_bin])
     for prefix in module_prefixes:
-        if len(hook_tokens) == n + len(prefix) and hook_tokens[1 : 1 + len(prefix)] == prefix:
-            if _path_head_is_project_local(hook_tokens[0], project_root) and not allow_project_local:
+        if (
+            len(hook_tokens) == n + len(prefix)
+            and hook_tokens[1 : 1 + len(prefix)] == prefix
+        ):
+            if (
+                _path_head_is_project_local(hook_tokens[0], project_root)
+                and not allow_project_local
+            ):
                 return False
             if (
-                "/" in hook_tokens[0] or "\\" in hook_tokens[0]
-            ) and not Path(hook_tokens[0]).is_absolute() and not allow_project_local:
+                ("/" in hook_tokens[0] or "\\" in hook_tokens[0])
+                and not Path(hook_tokens[0]).is_absolute()
+                and not allow_project_local
+            ):
                 return False
             return hook_tokens[1 + len(prefix) :] == bare_tokens[1:]
 
@@ -796,7 +929,10 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
     if not needs_add:
         _atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
         if upgraded:
-            return True, f"Upgraded hook command in .claude/settings.json to use {prefix}"
+            return (
+                True,
+                f"Upgraded hook command in .claude/settings.json to use {prefix}",
+            )
         return True, "Hook already registered in .claude/settings.json"
 
     # A valid top-level object whose "hooks"/"SessionStart" is the wrong type
@@ -804,9 +940,15 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
     # resets below would silently drop that user data — preserve a recoverable
     # copy first.
     existing_hooks = settings.get("hooks")
-    existing_ss = existing_hooks.get("SessionStart") if isinstance(existing_hooks, dict) else None
-    nested_corrupt = (existing_hooks is not None and not isinstance(existing_hooks, dict)) or (
-        isinstance(existing_hooks, dict) and "SessionStart" in existing_hooks and not isinstance(existing_ss, list)
+    existing_ss = (
+        existing_hooks.get("SessionStart") if isinstance(existing_hooks, dict) else None
+    )
+    nested_corrupt = (
+        existing_hooks is not None and not isinstance(existing_hooks, dict)
+    ) or (
+        isinstance(existing_hooks, dict)
+        and "SessionStart" in existing_hooks
+        and not isinstance(existing_ss, list)
     )
     if nested_corrupt and settings_path.exists():
         backup = settings_path.with_suffix(".json.bak")
@@ -834,7 +976,11 @@ def install_claude_code_hooks(project_root: Path) -> tuple[bool, str]:
     # block to find — append a dedicated matcher-less block that fires on every
     # SessionStart source regardless of how neighbouring blocks are scoped.
     session_start.append(
-        {"hooks": [{"type": "command", "command": session_context_cmd, "timeout": 5000}]}
+        {
+            "hooks": [
+                {"type": "command", "command": session_context_cmd, "timeout": 5000}
+            ]
+        }
     )
 
     _atomic_write_text(settings_path, json.dumps(settings, indent=2) + "\n")
@@ -865,12 +1011,16 @@ _LEGIS_IGNORE_RULES = (
     ".weft/legis/",
     "/.weft/legis/operator_session.json",
     "/.weft/legis/operator.age",
+    "/.mcp.json.legis.lock",
+    "/.mcp.json*.tmp",
 )
 _LEGIS_IGNORE_BLOCK = (
     "\n# Legis — machine-written runtime state (regenerated/local; never commit)\n"
     ".weft/legis/\n"
     "/.weft/legis/operator_session.json\n"
     "/.weft/legis/operator.age\n"
+    "/.mcp.json.legis.lock\n"
+    "/.mcp.json*.tmp\n"
 )
 
 
@@ -886,27 +1036,138 @@ def gitignore_rules_present(project_root: Path) -> bool:
         content = gitignore.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return False
-    present = {ln.strip() for ln in content.splitlines() if ln.strip() and not ln.lstrip().startswith("#")}
+    present = {
+        ln.strip()
+        for ln in content.splitlines()
+        if ln.strip() and not ln.lstrip().startswith("#")
+    }
     return all(rule in present for rule in _LEGIS_IGNORE_RULES)
 
 
-def mcp_entry_is_current(project_root: Path) -> bool:
-    """True iff .mcp.json has a usable legis stdio server entry: a dict whose
-    args invoke `mcp` and whose command resolves to an existing executable.
-    Deliberately NOT byte-equality with the canonical entry — a valid but
-    differently-resolved legis binary (uv-tool vs venv path) must not read as
-    drift. Only a missing entry, malformed args, or a dead command path is stale.
-    """
+_MAX_MCP_JSON_DEPTH = 100
+_MAX_PROJECT_MCP_JSON_BYTES = 1024 * 1024
+
+
+class _McpJsonNotRegularError(OSError):
+    """A project MCP configuration descriptor is not a regular file."""
+
+
+class _McpJsonReadSupportError(OSError):
+    """The platform lacks a primitive required for safe project MCP reads."""
+
+
+def _mcp_json_read_flags() -> int:
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    if nofollow is None or nonblock is None:
+        raise _McpJsonReadSupportError(
+            "platform does not support safe project MCP configuration reads"
+        )
+    return os.O_RDONLY | nofollow | nonblock | getattr(os, "O_CLOEXEC", 0)
+
+
+def _read_project_mcp_json_fd(fd: int) -> tuple[bytes, os.stat_result]:
+    target_stat = os.fstat(fd)
+    if not stat.S_ISREG(target_stat.st_mode):
+        raise _McpJsonNotRegularError("project .mcp.json is not a regular file")
+    remaining = _MAX_PROJECT_MCP_JSON_BYTES + 1
+    chunks: list[bytes] = []
+    while remaining:
+        chunk = os.read(fd, min(64 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    content = b"".join(chunks)
+    if len(content) > _MAX_PROJECT_MCP_JSON_BYTES:
+        raise ValueError("project .mcp.json exceeds the 1 MiB size limit")
+    return content, target_stat
+
+
+def _read_mcp_json_path(path: Path) -> tuple[bytes, os.stat_result] | None:
+    """Read one project MCP snapshot without blocking on special files."""
     try:
-        path = project_path(project_root, ".mcp.json")
-    except UnsafeInstallPathError:
-        return False
-    if not path.is_file():
-        return False
+        fd = os.open(path, _mcp_json_read_flags())
+    except FileNotFoundError:
+        return None
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return False
+        return _read_project_mcp_json_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def _json_nesting_is_bounded(
+    content: str,
+    *,
+    max_depth: int = _MAX_MCP_JSON_DEPTH,
+) -> bool:
+    """Check structural depth without being confused by braces inside strings."""
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in content:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > max_depth:
+                return False
+        elif character in "]}":
+            depth -= 1
+    return True
+
+
+def _strict_json_loads(content: str) -> Any:
+    """Parse operator JSON with bounded depth and no lossy extensions."""
+
+    if not _json_nesting_is_bounded(content):
+        raise ValueError("JSON document exceeds the nesting limit")
+
+    def object_from_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    def reject_constant(_value: str) -> Any:
+        raise ValueError("non-standard JSON numeric constant")
+
+    def finite_float(value: str) -> float:
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError("non-finite JSON number")
+        if Decimal(str(parsed)) != Decimal(value):
+            raise ValueError("JSON number cannot be represented without loss")
+        return parsed
+
+    try:
+        return json.loads(
+            content,
+            object_pairs_hook=object_from_pairs,
+            parse_constant=reject_constant,
+            parse_float=finite_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("JSON document exceeds the parser nesting limit") from exc
+
+
+def _parsed_mcp_entry_is_current(
+    project_root: Path,
+    data: Any,
+    *,
+    check_env: bool,
+) -> bool:
+    """Validate one parsed project MCP snapshot without reopening its path."""
     if not isinstance(data, dict):
         return False
     servers = data.get("mcpServers")
@@ -917,10 +1178,37 @@ def mcp_entry_is_current(project_root: Path) -> bool:
         return False
     if not _mcp_args_are_current(entry.get("args")):
         return False
-    if not _mcp_command_resolves_safely(entry.get("command"), project_root, entry.get("args")):
+    if not _mcp_command_resolves_safely(
+        entry.get("command"), project_root, entry.get("args")
+    ):
         return False
+    if not check_env:
+        return True
     env = _safe_mcp_env(entry.get("env"))
     return env is not None and env == entry.get("env", {})
+
+
+def mcp_entry_is_current(project_root: Path) -> bool:
+    """True iff .mcp.json has a usable, env-safe legis stdio server entry.
+
+    Deliberately NOT byte-equality with the canonical entry — a valid but
+    differently-resolved legis binary (uv-tool vs venv path) must not read as
+    drift. Only a missing entry, malformed args, dead command path, or unsafe
+    environment is stale. Environment validation cannot be disabled through
+    this public predicate.
+    """
+    try:
+        path = project_path(project_root, ".mcp.json")
+    except UnsafeInstallPathError:
+        return False
+    try:
+        snapshot = _read_mcp_json_path(path)
+        if snapshot is None:
+            return False
+        data = _strict_json_loads(snapshot[0].decode("utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
+        return False
+    return _parsed_mcp_entry_is_current(project_root, data, check_env=True)
 
 
 def ensure_gitignore(project_root: Path) -> tuple[bool, str]:
@@ -935,14 +1223,18 @@ def ensure_gitignore(project_root: Path) -> tuple[bool, str]:
             return True, "legis config already in .gitignore"
         content = gitignore.read_text(encoding="utf-8")
         present = {
-            line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")
+            line.strip()
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
         }
         missing = [rule for rule in _LEGIS_IGNORE_RULES if rule not in present]
         if not content.endswith("\n"):
             content += "\n"
         # Append only the rules that are actually absent — writing the whole
         # block when one rule is already present would duplicate the other.
-        content += "\n# Legis — local working dir / config (regenerated/local; never commit)\n"
+        content += (
+            "\n# Legis — local working dir / config (regenerated/local; never commit)\n"
+        )
         content += "".join(f"{rule}\n" for rule in missing)
         _atomic_write_text(gitignore, content)
         return True, f"Added {', '.join(missing)} to .gitignore"
@@ -1004,7 +1296,9 @@ operator_session.json
 """
 
 
-def _ensure_nested_gitignore(target_dir: Path, body: str, label: str) -> tuple[bool, str]:
+def _ensure_nested_gitignore(
+    target_dir: Path, body: str, label: str
+) -> tuple[bool, str]:
     """Idempotently ship a nested ``.gitignore`` (*body*) into *target_dir*.
 
     A file already carrying :data:`LEGIS_DIR_GITIGNORE_MARKER` is left untouched;
@@ -1042,7 +1336,9 @@ def ensure_legis_dir_gitignore(project_root: Path) -> tuple[bool, str]:
         legis_dir = ensure_project_dir(project_root, ".weft", "legis")
     except UnsafeInstallPathError as exc:
         return False, str(exc)
-    return _ensure_nested_gitignore(legis_dir, WEFT_LEGIS_GITIGNORE, ".weft/legis/.gitignore")
+    return _ensure_nested_gitignore(
+        legis_dir, WEFT_LEGIS_GITIGNORE, ".weft/legis/.gitignore"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1051,33 +1347,37 @@ def ensure_legis_dir_gitignore(project_root: Path) -> tuple[bool, str]:
 
 _DEFAULT_AGENT_ID = "claude-code"
 
-_UNSAFE_MCP_ENV_KEYS = frozenset({
-    "LEGIS_UNSAFE_DEV_AUTH",
-    "LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING",
-    "LEGIS_ALLOW_INSECURE_REMOTE_HTTP",
-    "LEGIS_ALLOW_UNSCOPED_API_TOKENS",
-    "LEGIS_ALLOW_MISSING_GOVERNANCE_DB",
-    "LEGIS_WARDLINE_ALLOW_DIRTY",
-})
+_UNSAFE_MCP_ENV_KEYS = frozenset(
+    {
+        "LEGIS_UNSAFE_DEV_AUTH",
+        "LEGIS_UNSAFE_WARDLINE_REQUEST_ROUTING",
+        "LEGIS_ALLOW_INSECURE_REMOTE_HTTP",
+        "LEGIS_ALLOW_UNSCOPED_API_TOKENS",
+        "LEGIS_ALLOW_MISSING_GOVERNANCE_DB",
+        "LEGIS_WARDLINE_ALLOW_DIRTY",
+    }
+)
 
-_SECRET_MCP_ENV_KEYS = frozenset({
-    "LEGIS_API_SECRET",
-    "LEGIS_API_TOKEN_ACTORS",
-    "LEGIS_HMAC_KEY",
-    "LEGIS_WARDLINE_ARTIFACT_KEY",
-    "LEGIS_LOOMWEAVE_HMAC_KEY",
-    # Retired by G11 (legis->Filigree transport-HMAC dropped) and now inert, but
-    # still secret-shaped: keep scrubbing it so a stale operator-set value is
-    # never copied verbatim into .mcp.json as "safe operator-owned env".
-    "LEGIS_FILIGREE_HMAC_KEY",
-    "OPENROUTER_API_KEY",
-    # The operator-authority key (posture-ratchet, Phase 6). It is minted at
-    # install and handed to a custody backend; it must NEVER be copied into
-    # .mcp.json where the agent process can read it back as plaintext. The
-    # ``LEGIS_OPERATOR_KEY_*`` family (e.g. the age passphrase var) is scrubbed
-    # by prefix in ``_safe_mcp_env``.
-    "LEGIS_OPERATOR_KEY",
-})
+_SECRET_MCP_ENV_KEYS = frozenset(
+    {
+        "LEGIS_API_SECRET",
+        "LEGIS_API_TOKEN_ACTORS",
+        "LEGIS_HMAC_KEY",
+        "LEGIS_WARDLINE_ARTIFACT_KEY",
+        "LEGIS_LOOMWEAVE_HMAC_KEY",
+        # Retired by G11 (legis->Filigree transport-HMAC dropped) and now inert, but
+        # still secret-shaped: keep scrubbing it so a stale operator-set value is
+        # never copied verbatim into .mcp.json as "safe operator-owned env".
+        "LEGIS_FILIGREE_HMAC_KEY",
+        "OPENROUTER_API_KEY",
+        # The operator-authority key (posture-ratchet, Phase 6). It is minted at
+        # install and handed to a custody backend; it must NEVER be copied into
+        # .mcp.json where the agent process can read it back as plaintext. The
+        # ``LEGIS_OPERATOR_KEY_*`` family (e.g. the age passphrase var) is scrubbed
+        # by prefix in ``_safe_mcp_env``.
+        "LEGIS_OPERATOR_KEY",
+    }
+)
 
 # Operator-key family scrubbed by PREFIX in ``_safe_mcp_env`` — any
 # ``LEGIS_OPERATOR_KEY*`` var (the key itself and its passphrase/unlock kin) is
@@ -1136,15 +1436,38 @@ def _is_python_executable(command: str, resolved: str) -> bool:
 
 def _mcp_command_resolves_safely(
     command: Any,
-    project_root: Path,
+    project_root: Path | None,
     args: Any | None = None,
+    *,
+    path_env: str | None = None,
 ) -> bool:
     if not isinstance(command, str) or not command:
         return False
+    if (
+        project_root is None
+        and ("/" in command or "\\" in command)
+        and not Path(command).is_absolute()
+    ):
+        return False
+    if project_root is None and "/" not in command and "\\" not in command:
+        # Global registrations must resolve identically regardless of the
+        # caller's inherited cwd. Empty and relative PATH entries are
+        # cwd-sensitive even when shutil.which currently falls through to a
+        # later absolute entry.
+        effective_path = (
+            path_env if path_env is not None else os.environ.get("PATH", "")
+        )
+        if any(
+            not entry or not Path(entry).is_absolute()
+            for entry in effective_path.split(os.pathsep)
+        ):
+            return False
     if _path_head_is_project_local(command, project_root):
         return False
-    resolved = shutil.which(command)
+    resolved = shutil.which(command, path=path_env)
     if resolved is not None:
+        if project_root is None and not Path(resolved).is_absolute():
+            return False
         if _path_head_is_project_local(resolved, project_root):
             return False
         resolved_path = resolved
@@ -1182,6 +1505,63 @@ def _safe_mcp_env(env: Any) -> dict[str, str] | None:
     return safe
 
 
+def _mcp_json_doctor_parsed_blocker(parsed: Any) -> str | None:
+    if not isinstance(parsed, dict):
+        return "project .mcp.json top level is not an object; fix it by hand"
+    if "mcpServers" not in parsed:
+        return None
+    servers = parsed["mcpServers"]
+    if not isinstance(servers, dict):
+        return "project .mcp.json mcpServers is not an object; fix it by hand"
+    if "legis" not in servers:
+        return None
+    entry = servers["legis"]
+    if not isinstance(entry, dict):
+        return "project Legis MCP registration is not an object; fix it by hand"
+    raw_env = entry.get("env", {})
+    safe_env = _safe_mcp_env(raw_env)
+    if safe_env is None or not isinstance(raw_env, dict):
+        return "project Legis MCP environment is malformed; fix it by hand"
+    if safe_env != raw_env:
+        return "project Legis MCP environment contains unsafe or secret entries; fix it by hand"
+    return None
+
+
+def mcp_json_doctor_repair_blocker(project_root: Path) -> str | None:
+    """Return why doctor must not rewrite an existing operator-owned MCP file.
+
+    This is intentionally stricter than :func:`register_mcp_json`: an explicit
+    install may scrub rejected environment entries, while doctor ``--fix`` must
+    preserve malformed, unsafe, or secret-bearing operator configuration for
+    hand resolution. Messages describe only the shape/category and never values.
+    """
+    try:
+        path = project_path(project_root, ".mcp.json")
+    except (OSError, UnsafeInstallPathError) as exc:
+        return f"project .mcp.json path is unsafe or unreadable: {exc}"
+    try:
+        snapshot = _read_mcp_json_path(path)
+    except _McpJsonReadSupportError as exc:
+        return str(exc)
+    except _McpJsonNotRegularError:
+        return "project .mcp.json is not a regular file; refusing automatic repair"
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            return "project .mcp.json is a symlink; refusing automatic repair"
+        return "project .mcp.json is unreadable; refusing automatic repair"
+    except ValueError:
+        return "project .mcp.json is unreadable; fix it by hand"
+    if snapshot is None:
+        return None
+    try:
+        parsed: Any = _strict_json_loads(snapshot[0].decode("utf-8"))
+    except (json.JSONDecodeError, ValueError):
+        return "project .mcp.json is malformed JSON; fix it by hand"
+    except (OSError, UnicodeDecodeError):
+        return "project .mcp.json is unreadable; fix it by hand"
+    return _mcp_json_doctor_parsed_blocker(parsed)
+
+
 def _legis_mcp_entry(
     agent_id: str = _DEFAULT_AGENT_ID, *, project_root: Path | None = None
 ) -> dict[str, Any]:
@@ -1203,8 +1583,165 @@ def _legis_mcp_entry(
     }
 
 
+def _directory_fd_still_names_path(
+    directory_fd: int,
+    path: Path,
+    identity: tuple[int, int],
+) -> bool:
+    """Return whether *path* still names the directory held by *directory_fd*."""
+    try:
+        current_fd = _open_directory_path_nofollow(path)
+        try:
+            current_stat = os.fstat(current_fd)
+        finally:
+            os.close(current_fd)
+        held_stat = os.fstat(directory_fd)
+    except (OSError, NotImplementedError, TypeError, ValueError):
+        return False
+    return (held_stat.st_dev, held_stat.st_ino) == identity and (
+        current_stat.st_dev,
+        current_stat.st_ino,
+    ) == identity
+
+
+def _read_anchored_mcp_json(
+    directory_fd: int,
+) -> tuple[bytes, os.stat_result] | None:
+    try:
+        fd = os.open(
+            ".mcp.json",
+            _mcp_json_read_flags(),
+            dir_fd=directory_fd,
+        )
+    except FileNotFoundError:
+        return None
+    try:
+        return _read_project_mcp_json_fd(fd)
+    finally:
+        os.close(fd)
+
+
+def _atomic_write_anchored_mcp_json(
+    directory_fd: int,
+    content: str,
+    *,
+    mode: int | None,
+) -> None:
+    """Replace .mcp.json relative to a held project directory descriptor."""
+    if not content.strip():
+        raise ValueError("refusing to write empty content to project .mcp.json")
+    temp_name: str | None = None
+    temp_fd: int | None = None
+    try:
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        for _attempt in range(10):
+            candidate = f".mcp.json.{secrets.token_hex(8)}.tmp"
+            try:
+                temp_fd = os.open(candidate, flags, 0o600, dir_fd=directory_fd)
+            except FileExistsError:
+                continue
+            temp_name = candidate
+            break
+        if temp_fd is None or temp_name is None:
+            raise OSError("could not allocate a temporary project .mcp.json file")
+        payload = memoryview(content.encode("utf-8"))
+        while payload:
+            written = os.write(temp_fd, payload)
+            if written <= 0:
+                raise OSError("short write while preparing project .mcp.json")
+            payload = payload[written:]
+        os.fchmod(temp_fd, mode if mode is not None else 0o600)
+        os.fsync(temp_fd)
+        os.close(temp_fd)
+        temp_fd = None
+        os.replace(
+            temp_name,
+            ".mcp.json",
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+        temp_name = None
+        os.fsync(directory_fd)
+    finally:
+        if temp_fd is not None:
+            os.close(temp_fd)
+        if temp_name is not None:
+            try:
+                os.unlink(temp_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+
+
 def register_mcp_json(
-    project_root: Path, agent_id: str | None = None
+    project_root: Path,
+    agent_id: str | None = None,
+    *,
+    doctor_safe: bool = False,
+) -> tuple[bool, str]:
+    """Register Legis while serializing all cooperating .mcp.json writers."""
+    if doctor_safe:
+        root_fd: int | None = None
+        try:
+            resolved_root = project_root.resolve(strict=True)
+            root_fd = _open_directory_path_nofollow(resolved_root)
+            root_stat = os.fstat(root_fd)
+        except (
+            OSError,
+            RuntimeError,
+            NotImplementedError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            if root_fd is not None:
+                with contextlib.suppress(OSError):
+                    os.close(root_fd)
+            return False, f"could not open project directory safely: {exc}"
+        assert root_fd is not None
+        root_identity = (root_stat.st_dev, root_stat.st_ino)
+        path = resolved_root / ".mcp.json"
+        try:
+            with _config_writer_lock(path, dir_fd=root_fd):
+                if not _directory_fd_still_names_path(
+                    root_fd,
+                    resolved_root,
+                    root_identity,
+                ):
+                    return False, "project directory changed during automatic repair"
+                return _register_mcp_json_unlocked(
+                    resolved_root,
+                    agent_id,
+                    doctor_safe=True,
+                    root_fd=root_fd,
+                    root_identity=root_identity,
+                )
+        except _ConfigWriterLockError as exc:
+            return False, f"could not lock project .mcp.json for update: {exc}"
+        finally:
+            os.close(root_fd)
+
+    try:
+        path = project_path(project_root, ".mcp.json")
+    except (OSError, UnsafeInstallPathError) as exc:
+        return False, str(exc)
+    try:
+        with _config_writer_lock(path):
+            return _register_mcp_json_unlocked(
+                project_root,
+                agent_id,
+                doctor_safe=doctor_safe,
+            )
+    except _ConfigWriterLockError as exc:
+        return False, f"could not lock project .mcp.json for update: {exc}"
+
+
+def _register_mcp_json_unlocked(
+    project_root: Path,
+    agent_id: str | None = None,
+    *,
+    doctor_safe: bool = False,
+    root_fd: int | None = None,
+    root_identity: tuple[int, int] | None = None,
 ) -> tuple[bool, str]:
     """Register (or refresh) the legis server in <root>/.mcp.json.
 
@@ -1221,20 +1758,101 @@ def register_mcp_json(
     even then the operator-owned ``env`` dict is carried over, never wiped
     (legis-788a85fac1).
     """
+    if doctor_safe and (root_fd is None or root_identity is None):
+        return False, "project .mcp.json automatic repair snapshot is incomplete"
     try:
-        path = project_path(project_root, ".mcp.json")
+        path = (
+            project_path(project_root, ".mcp.json")
+            if root_fd is None
+            else project_root / ".mcp.json"
+        )
     except UnsafeInstallPathError as exc:
         return False, str(exc)
 
     data: dict[str, Any] = {}
-    if path.exists():
+    snapshot: bytes | None = None
+    snapshot_identity: tuple[int, int] | None = None
+    try:
+        config_snapshot = (
+            _read_anchored_mcp_json(root_fd)
+            if root_fd is not None
+            else _read_mcp_json_path(path)
+        )
+    except (OSError, ValueError):
+        return False, ".mcp.json present but unreadable; fix or remove it by hand"
+    if config_snapshot is not None:
         try:
-            parsed = json.loads(path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            snapshot, path_stat = config_snapshot
+            snapshot_identity = (path_stat.st_dev, path_stat.st_ino)
+            parsed = _strict_json_loads(snapshot.decode("utf-8"))
+        except (json.JSONDecodeError, OSError, ValueError):
             return False, ".mcp.json present but unreadable; fix or remove it by hand"
         if not isinstance(parsed, dict):
-            return False, ".mcp.json present but not a JSON object; fix or remove it by hand"
+            return (
+                False,
+                ".mcp.json present but not a JSON object; fix or remove it by hand",
+            )
         data = parsed
+        if doctor_safe:
+            blocker = _mcp_json_doctor_parsed_blocker(parsed)
+            if blocker is not None:
+                return False, blocker
+
+    def write_current_snapshot(message: str) -> tuple[bool, str]:
+        if doctor_safe:
+            assert root_fd is not None
+            assert root_identity is not None
+            anchored_root_fd = root_fd
+            anchored_root_identity = root_identity
+            try:
+                current_snapshot = _read_anchored_mcp_json(anchored_root_fd)
+            except (OSError, ValueError):
+                return (
+                    False,
+                    "project .mcp.json changed during automatic repair; rerun doctor",
+                )
+            if current_snapshot is None:
+                if snapshot is not None:
+                    return (
+                        False,
+                        "project .mcp.json changed during automatic repair; rerun doctor",
+                    )
+                current_stat = None
+                current_bytes = None
+            else:
+                current_bytes, current_stat = current_snapshot
+                current_identity = (current_stat.st_dev, current_stat.st_ino)
+                if (
+                    snapshot is None
+                    or snapshot_identity != current_identity
+                    or not stat.S_ISREG(current_stat.st_mode)
+                    or current_bytes != snapshot
+                ):
+                    return (
+                        False,
+                        "project .mcp.json changed during automatic repair; rerun doctor",
+                    )
+            if not _directory_fd_still_names_path(
+                anchored_root_fd,
+                project_root,
+                anchored_root_identity,
+            ):
+                return False, "project directory changed during automatic repair"
+            try:
+                _atomic_write_anchored_mcp_json(
+                    anchored_root_fd,
+                    json.dumps(data, indent=2, sort_keys=True) + "\n",
+                    mode=(
+                        stat.S_IMODE(current_stat.st_mode)
+                        if current_stat is not None
+                        else None
+                    ),
+                )
+            except (OSError, NotImplementedError, TypeError, ValueError) as exc:
+                return False, f"could not update project .mcp.json safely: {exc}"
+        else:
+            _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
+        return True, message
 
     servers = data.get("mcpServers")
     if not isinstance(servers, dict):
@@ -1281,8 +1899,9 @@ def register_mcp_json(
         else:
             args += ["--agent-id", keep_agent]
         existing["args"] = args
-        _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-        return True, f"Updated legis agent-id to {keep_agent} in .mcp.json"
+        return write_current_snapshot(
+            f"Updated legis agent-id to {keep_agent} in .mcp.json"
+        )
 
     desired = _legis_mcp_entry(keep_agent, project_root=project_root)
     if isinstance(existing, dict):
@@ -1292,8 +1911,7 @@ def register_mcp_json(
     if existing == desired:
         return True, "legis already registered in .mcp.json"
     servers["legis"] = desired
-    _atomic_write_text(path, json.dumps(data, indent=2, sort_keys=True) + "\n")
-    return True, "Registered legis server in .mcp.json"
+    return write_current_snapshot("Registered legis server in .mcp.json")
 
 
 # ---------------------------------------------------------------------------

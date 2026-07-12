@@ -12,17 +12,20 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import sqlite3
 import tomllib
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit, urlunsplit
 
 from sqlalchemy.engine import make_url
 
 from legis import config
 from legis import install as _install
+from legis import plainweave_binding as _plainweave_binding
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +99,9 @@ def render_text(checks: list[DoctorCheck]) -> str:
     for c in rendered:
         if c.fixed:
             tag = "[fixed]"
+            if c.status == "error" and not c.repairable:
+                tag += " [operator]"
+                has_operator = True
         elif c.repairable:
             tag = "[auto-fixable]"
             has_auto_fixable = True
@@ -123,18 +129,222 @@ def check_mcp_json(root: Path, *, repair: bool) -> DoctorCheck:
     binary (uv-tool vs venv path) must not read as drift.
     """
     cid = "install.mcp_json"
+    blocker = _install.mcp_json_doctor_repair_blocker(root)
+    if blocker is not None:
+        return DoctorCheck(cid, "error", message=blocker, repairable=False)
     if _install.mcp_entry_is_current(root):
         return DoctorCheck(cid, "ok", repairable=True)
+    support_error = _install._config_writer_lock_support_error()
+    if support_error is not None:
+        return DoctorCheck(cid, "error", message=support_error, repairable=False)
     if repair:
         from legis.install import register_mcp_json
 
-        ok, msg = register_mcp_json(root)
+        ok, msg = register_mcp_json(root, doctor_safe=True)
         if ok and _install.mcp_entry_is_current(root):
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
-        return DoctorCheck(cid, "error", message=msg, repairable=True)
+        post_blocker = _install.mcp_json_doctor_repair_blocker(root)
+        return DoctorCheck(
+            cid,
+            "error",
+            message=post_blocker or msg,
+            repairable=post_blocker is None,
+        )
     return DoctorCheck(
-        cid, "error", message="legis server missing or stale (run: legis install --mcp)", repairable=True
+        cid,
+        "error",
+        message="legis server missing or stale (run: legis install --mcp)",
+        repairable=True,
     )
+
+
+def _plainweave_not_applicable_message(*, installed: bool) -> str:
+    if installed:
+        return "Plainweave is installed but this project is not initialized; launch binding not applicable"
+    return (
+        "Plainweave is not configured for this project; launch binding not applicable"
+    )
+
+
+def _plainweave_discovery_error(
+    cid: str, discovery: _plainweave_binding.PlainweaveDiscovery
+) -> DoctorCheck | None:
+    if not discovery.applicable:
+        return DoctorCheck(
+            cid,
+            "ok",
+            message=_plainweave_not_applicable_message(installed=discovery.installed),
+            repairable=False,
+        )
+    if discovery.command is None:
+        return DoctorCheck(
+            cid,
+            "error",
+            message=discovery.error or "Plainweave project has no usable command",
+            repairable=False,
+        )
+    return None
+
+
+def _project_registration_is_repairable(
+    state: _plainweave_binding.BindingState,
+) -> bool:
+    return (
+        not state.registered
+        and state.error is not None
+        and (
+            "project Legis MCP registration is missing" in state.error
+            or (
+                "project .mcp.json is missing" in state.error
+                and "No such file or directory" in state.error
+            )
+        )
+    )
+
+
+def check_plainweave_project_binding(root: Path, *, repair: bool) -> DoctorCheck:
+    """Check that the project Legis MCP entry uses runtime autodiscovery."""
+    cid = "install.plainweave_project_binding"
+    discovery = _plainweave_binding.discover_plainweave(root)
+    discovery_check = _plainweave_discovery_error(cid, discovery)
+    if discovery_check is not None:
+        return discovery_check
+
+    blocker = _install.mcp_json_doctor_repair_blocker(root)
+    if blocker is not None:
+        return DoctorCheck(cid, "error", message=blocker, repairable=False)
+
+    state = _plainweave_binding.inspect_project_binding(root, None)
+    if state.current:
+        return DoctorCheck(cid, "ok", repairable=True)
+    if state.error is not None:
+        registration_repairable = _project_registration_is_repairable(state)
+        message = state.error
+        if registration_repairable:
+            message += "; project registration is owned by install.mcp_json"
+        return DoctorCheck(
+            cid, "error", message=message, repairable=registration_repairable
+        )
+    if not state.registered:
+        return DoctorCheck(
+            cid,
+            "error",
+            message="project Legis MCP registration is missing or stale; owned by install.mcp_json",
+            repairable=True,
+        )
+    if not repair:
+        return DoctorCheck(
+            cid,
+            "error",
+            message=(
+                "project Legis registration carries legacy PLAINWEAVE_MCP_CMD; "
+                "runtime autodiscovery requires project-agnostic registration"
+            ),
+            repairable=True,
+        )
+
+    error = _plainweave_binding.repair_project_binding(root, None)
+    post_discovery = _plainweave_binding.discover_plainweave(root)
+    post_discovery_check = _plainweave_discovery_error(cid, post_discovery)
+    post_discovery_valid = (
+        post_discovery.applicable
+        and post_discovery.command is not None
+        and post_discovery.error is None
+    )
+    post = _plainweave_binding.inspect_project_binding(root, None)
+    if error is None and post_discovery_valid and post.current:
+        return DoctorCheck(
+            cid,
+            "ok",
+            fixed=True,
+            message=(
+                "legacy project Plainweave binding removed; reconnect or restart "
+                "the MCP client"
+            ),
+            repairable=True,
+        )
+    return DoctorCheck(
+        cid,
+        "error",
+        message=error
+        or post_discovery.error
+        or (post_discovery_check.message if post_discovery_check is not None else None)
+        or post.error
+        or "legacy project Plainweave binding remains after repair",
+        repairable=post_discovery_valid,
+    )
+
+
+def check_plainweave_codex_binding(root: Path, *, repair: bool) -> DoctorCheck:
+    """Check that an existing global Codex Legis entry is project-agnostic."""
+    cid = "install.plainweave_codex_binding"
+    state = _plainweave_binding.inspect_codex_binding(root=None, desired=None)
+    if state.error is not None:
+        return DoctorCheck(cid, "error", message=state.error, repairable=False)
+    if not state.registered:
+        return DoctorCheck(
+            cid,
+            "ok",
+            message="global Codex Legis MCP registration is not configured; launch binding not applicable",
+            repairable=False,
+        )
+    if not state.current and not repair:
+        return DoctorCheck(
+            cid,
+            "error",
+            message=(
+                "global Codex Legis registration carries legacy "
+                "PLAINWEAVE_MCP_CMD; runtime autodiscovery requires a "
+                "project-agnostic registration"
+            ),
+            repairable=True,
+        )
+    if not state.current:
+        error = _plainweave_binding.repair_codex_binding(root=None, desired=None)
+        post = _plainweave_binding.inspect_codex_binding(root=None, desired=None)
+        if error is None and post.current and post.project_bound:
+            return DoctorCheck(
+                cid,
+                "error",
+                fixed=True,
+                message=(
+                    "legacy global Plainweave binding removed; the global Codex "
+                    "Legis registration still has a fixed cwd. Remove fixed cwd "
+                    "so runtime autodiscovery inherits the active project, then "
+                    "reconnect or restart Codex"
+                ),
+                repairable=False,
+            )
+        if error is None and post.current:
+            return DoctorCheck(
+                cid,
+                "ok",
+                fixed=True,
+                message=(
+                    "legacy global Plainweave binding removed; reconnect or "
+                    "restart Codex"
+                ),
+                repairable=True,
+            )
+        return DoctorCheck(
+            cid,
+            "error",
+            message=error
+            or post.error
+            or "legacy global Plainweave binding remains after repair",
+            repairable=True,
+        )
+    if state.project_bound:
+        return DoctorCheck(
+            cid,
+            "error",
+            message=(
+                "global Codex Legis registration has a fixed cwd; remove fixed cwd "
+                "so runtime autodiscovery inherits the active project"
+            ),
+            repairable=False,
+        )
+    return DoctorCheck(cid, "ok", repairable=True)
 
 
 # ---------------------------------------------------------------------------
@@ -201,8 +411,15 @@ def check_instruction_block(root: Path, filename: str, *, repair: bool) -> Docto
         if ok and _block_fresh(root, filename):
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         return DoctorCheck(cid, "error", message=msg, repairable=True)
-    missing = "missing" if not (root / filename).exists() else "block missing or drifted"
-    return DoctorCheck(cid, "error", message=f"{filename} {missing} (run: legis install)", repairable=True)
+    missing = (
+        "missing" if not (root / filename).exists() else "block missing or drifted"
+    )
+    return DoctorCheck(
+        cid,
+        "error",
+        message=f"{filename} {missing} (run: legis install)",
+        repairable=True,
+    )
 
 
 def _skill_fresh(root: Path, base: str) -> bool:
@@ -211,13 +428,17 @@ def _skill_fresh(root: Path, base: str) -> bool:
     target = root / base / "skills" / _install.SKILL_NAME
     if not source.is_dir() or not target.is_dir():
         return False
-    return _install._skill_tree_fingerprint(target) == _install._skill_tree_fingerprint(source)
+    return _install._skill_tree_fingerprint(target) == _install._skill_tree_fingerprint(
+        source
+    )
 
 
 def check_skill_pack(root: Path, base: str, *, repair: bool) -> DoctorCheck:
     """Check that the legis skill pack under <root>/<base>/skills/ is present and fresh."""
     cid = "install.claude_skill" if base == ".claude" else "install.agents_skill"
-    installer = _install.install_skills if base == ".claude" else _install.install_codex_skills
+    installer = (
+        _install.install_skills if base == ".claude" else _install.install_codex_skills
+    )
     if _skill_fresh(root, base):
         return DoctorCheck(cid, "ok", repairable=True)
     if repair:
@@ -260,7 +481,10 @@ def check_hook(root: Path, *, repair: bool) -> DoctorCheck:
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         return DoctorCheck(cid, "error", message=msg, repairable=True)
     return DoctorCheck(
-        cid, "error", message="SessionStart hook not registered (run: legis install)", repairable=True
+        cid,
+        "error",
+        message="SessionStart hook not registered (run: legis install)",
+        repairable=True,
     )
 
 
@@ -275,7 +499,10 @@ def check_gitignore(root: Path, *, repair: bool) -> DoctorCheck:
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         return DoctorCheck(cid, "error", message=msg, repairable=True)
     return DoctorCheck(
-        cid, "error", message=".weft/legis/ not in .gitignore (run: legis install)", repairable=True
+        cid,
+        "error",
+        message=".weft/legis/ not in .gitignore (run: legis install)",
+        repairable=True,
     )
 
 
@@ -283,7 +510,11 @@ def _nested_gitignore_shipped(legis_dir: Path) -> bool:
     """True iff ``.weft/legis/.gitignore`` carries the legis-managed marker."""
     nested = legis_dir / ".gitignore"
     try:
-        return nested.is_file() and _install.LEGIS_DIR_GITIGNORE_MARKER in nested.read_text(encoding="utf-8")
+        return (
+            nested.is_file()
+            and _install.LEGIS_DIR_GITIGNORE_MARKER
+            in nested.read_text(encoding="utf-8")
+        )
     except (OSError, UnicodeDecodeError):
         return False
 
@@ -312,7 +543,10 @@ def check_dir_gitignore(root: Path, *, repair: bool) -> DoctorCheck:
         # Created lazily; nothing to protect yet (mirrors check_store_dir).
         return DoctorCheck(cid, "ok", repairable=True)
     return DoctorCheck(
-        cid, "error", message=".weft/legis/.gitignore missing (run: legis install)", repairable=True
+        cid,
+        "error",
+        message=".weft/legis/.gitignore missing (run: legis install)",
+        repairable=True,
     )
 
 
@@ -372,20 +606,32 @@ def check_store_dir(root: Path, *, repair: bool = False) -> DoctorCheck:
     store_dir = _store_dir_for(root)
     if store_dir.exists():
         if not os.access(store_dir, os.W_OK):
-            return DoctorCheck(cid, "error", message=f"{store_dir} not writable", repairable=True)
+            return DoctorCheck(
+                cid, "error", message=f"{store_dir} not writable", repairable=True
+            )
         return DoctorCheck(cid, "ok", repairable=True)
     if repair:
         try:
             store_dir.mkdir(parents=True, exist_ok=True)
             return DoctorCheck(cid, "ok", fixed=True, repairable=True)
         except OSError as exc:
-            return DoctorCheck(cid, "error", message=f"cannot create {store_dir}: {exc}", repairable=True)
+            return DoctorCheck(
+                cid,
+                "error",
+                message=f"cannot create {store_dir}: {exc}",
+                repairable=True,
+            )
     anchor = _nearest_existing(store_dir)
     if not os.access(anchor, os.W_OK):
         return DoctorCheck(
-            cid, "error", message=f"{store_dir} not creatable ({anchor} not writable)", repairable=True
+            cid,
+            "error",
+            message=f"{store_dir} not creatable ({anchor} not writable)",
+            repairable=True,
         )
-    return DoctorCheck(cid, "ok", message="absent (created on first store open)", repairable=True)
+    return DoctorCheck(
+        cid, "ok", message="absent (created on first store open)", repairable=True
+    )
 
 
 def check_db_overrides(root: Path) -> DoctorCheck:  # noqa: ARG001
@@ -412,7 +658,8 @@ def check_legacy_stray_db(root: Path) -> DoctorCheck:
         return DoctorCheck(
             cid,
             "warn",
-            message="legacy DB at repo root (move to .weft/legis/): " + ", ".join(stray),
+            message="legacy DB at repo root (move to .weft/legis/): "
+            + ", ".join(stray),
         )
     return DoctorCheck(cid, "ok")
 
@@ -447,7 +694,9 @@ def _sqlite_audit_schema_error(db: Path) -> str | None:
         ).fetchone()
         if row is None:
             return "audit_log table missing (store may be truncated or erased)"
-        columns = {row[1] for row in con.execute("PRAGMA table_info(audit_log)").fetchall()}
+        columns = {
+            row[1] for row in con.execute("PRAGMA table_info(audit_log)").fetchall()
+        }
     except sqlite3.Error as exc:
         return f"cannot inspect audit_log schema: {exc}"
     finally:
@@ -477,13 +726,17 @@ def check_audit_chain(cid: str, url: str) -> DoctorCheck:
     from legis.store.audit_store import AuditStore
 
     try:
-        intact = AuditStore(url, initialize=False, apply_pragmas=False).verify_integrity()
+        intact = AuditStore(
+            url, initialize=False, apply_pragmas=False
+        ).verify_integrity()
     except Exception as exc:  # noqa: BLE001 — surface any verify failure, never raise from doctor
         return DoctorCheck(cid, "error", message=f"integrity check failed: {exc}")
     if intact:
         return DoctorCheck(cid, "ok")
     return DoctorCheck(
-        cid, "error", message="hash chain verification FAILED (report-only; cannot repair)"
+        cid,
+        "error",
+        message="hash chain verification FAILED (report-only; cannot repair)",
     )
 
 
@@ -520,7 +773,9 @@ def check_policy_cells(root: Path) -> DoctorCheck:
     if default_path.exists():
         return DoctorCheck(cid, "ok", message=f"{default_path}")
     if os.environ.get("LEGIS_DEV_DEFAULT_CELLS") == "1":
-        return DoctorCheck(cid, "ok", message="chill dev default (LEGIS_DEV_DEFAULT_CELLS=1)")
+        return DoctorCheck(
+            cid, "ok", message="chill dev default (LEGIS_DEV_DEFAULT_CELLS=1)"
+        )
     return DoctorCheck(
         cid,
         "warn",
@@ -571,7 +826,9 @@ def check_posture_chain(root: Path) -> DoctorCheck:
     url = _posture_url(root)
     db = _posture_db_path(url)
     if db is not None and (not db.exists() or db.stat().st_size == 0):
-        return DoctorCheck(cid, "ok", message="no ledger yet (floor fail-closed structured)")
+        return DoctorCheck(
+            cid, "ok", message="no ledger yet (floor fail-closed structured)"
+        )
     return check_audit_chain(cid, url)
 
 
@@ -688,6 +945,7 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
     verification result are the only signals)."""
     cid = "store.posture_key_reset"
     if key_provider is None:
+
         def key_provider(fingerprint: str) -> str | None:
             return _operator_key_provider(fingerprint, root=root)
 
@@ -717,7 +975,9 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
             acknowledged = True
             break
     if acknowledged:
-        return DoctorCheck(cid, "ok", message="key epoch reset acknowledged by a signed transition")
+        return DoctorCheck(
+            cid, "ok", message="key epoch reset acknowledged by a signed transition"
+        )
     agent = reset.payload.get("agent_id") or "unknown"
     when = reset.payload.get("recorded_at") or "unknown"
     floor = reset.payload.get("floor") or "structured"
@@ -733,7 +993,9 @@ def check_posture_key_reset(root: Path, *, key_provider: Any = None) -> DoctorCh
     )
 
 
-def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> DoctorCheck:
+def check_operator_key_accessible(
+    root: Path, *, key_provider: Any = None
+) -> DoctorCheck:
     """Report-only operator-key reachability (Task 10.3).
 
     Reads the current epoch ``key_fingerprint`` (latest GENESIS/KEY_RESET) and
@@ -744,6 +1006,7 @@ def check_operator_key_accessible(root: Path, *, key_provider: Any = None) -> Do
     key. Missing/empty ledger → ``ok`` (nothing to reach yet)."""
     cid = "runtime.operator_key"
     if key_provider is None:
+
         def key_provider(fingerprint: str) -> str | None:
             return _operator_key_provider(fingerprint, root=root)
 
@@ -882,8 +1145,137 @@ def check_sibling_url(cid: str, env: str) -> DoctorCheck:
 # these silently NON-emits under a multi-project daemon (N1). A path is project-
 # scoped iff it is mounted under /api/p/<key>/ OR carries a ?project= query.
 _FEDERATION_WRITE_PATHS = frozenset(
-    {"/api/scan-results", "/api/observations", "/api/v1/scan-results", "/api/v1/observations"}
+    {
+        "/api/scan-results",
+        "/api/observations",
+        "/api/v1/scan-results",
+        "/api/v1/observations",
+    }
 )
+
+_URL_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+_MAX_FILIGREE_QUERY_FIELDS = 100
+
+
+def _strict_percent_decode(value: str, *, component: str) -> str:
+    index = 0
+    while index < len(value):
+        if value[index] == "%":
+            if (
+                index + 2 >= len(value)
+                or value[index + 1] not in _URL_HEX_DIGITS
+                or value[index + 2] not in _URL_HEX_DIGITS
+            ):
+                raise ValueError(
+                    f"invalid percent escape in --filigree-url {component}"
+                )
+            index += 3
+            continue
+        index += 1
+    try:
+        return unquote(value, encoding="utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ValueError(f"invalid UTF-8 in --filigree-url {component}") from exc
+
+
+def _has_unsafe_url_characters(value: str, *, whitespace: bool) -> bool:
+    return any(
+        (whitespace and character.isspace())
+        or unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+        for character in value
+    )
+
+
+def _decoded_normalized_url_path(path: str) -> str:
+    """Return an unambiguous path for security-sensitive route matching."""
+    decoded = _strict_percent_decode(path, component="path")
+    if (
+        "\\" in decoded
+        or "//" in decoded
+        or _has_unsafe_url_characters(decoded, whitespace=True)
+    ):
+        raise ValueError("unsafe character in --filigree-url path")
+    return posixpath.normpath("/" + decoded.lstrip("/"))
+
+
+def _query_has_project_scope(query: str) -> bool:
+    decoded = _strict_percent_decode(query, component="query")
+    if _has_unsafe_url_characters(decoded, whitespace=False):
+        raise ValueError("unsafe character in --filigree-url query")
+    project_values = parse_qs(
+        query,
+        keep_blank_values=True,
+        encoding="utf-8",
+        errors="strict",
+        max_num_fields=_MAX_FILIGREE_QUERY_FIELDS,
+    ).get("project", [])
+    if not project_values:
+        return False
+    effective_value = project_values[-1]
+    return bool(
+        effective_value.strip()
+        and not _has_unsafe_url_characters(effective_value, whitespace=False)
+    )
+
+
+def _validate_url_fragment(fragment: str) -> None:
+    decoded = _strict_percent_decode(fragment, component="fragment")
+    if _has_unsafe_url_characters(decoded, whitespace=False):
+        raise ValueError("unsafe character in --filigree-url fragment")
+
+
+def _validate_url_authority(authority: str) -> None:
+    decoded = _strict_percent_decode(authority, component="authority")
+    if (
+        _has_unsafe_url_characters(decoded, whitespace=True)
+        or "\\" in decoded
+        or any(delimiter in decoded for delimiter in "/?#@")
+    ):
+        raise ValueError("unsafe character in --filigree-url authority")
+
+
+def _validated_filigree_url(value: str) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or value.startswith("-")
+        or any(character.isspace() for character in value)
+        or any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs"} for character in value
+        )
+    ):
+        raise ValueError("project .mcp.json has an invalid --filigree-url value")
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError as exc:
+        raise ValueError(
+            "project .mcp.json has an invalid --filigree-url value"
+        ) from exc
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        raise ValueError("project .mcp.json --filigree-url must be an HTTP(S) URL")
+    _validate_url_authority(parsed.netloc)
+    _decoded_normalized_url_path(parsed.path)
+    _query_has_project_scope(parsed.query)
+    _validate_url_fragment(parsed.fragment)
+    return value
+
+
+def _filigree_url_for_diagnostics(value: str) -> str:
+    """Keep destination origin/path while removing credential-bearing parts."""
+    parsed = urlsplit(value)
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    if parsed.port is not None:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
 def _filigree_binding_urls(root: Path) -> list[str]:
@@ -893,31 +1285,53 @@ def _filigree_binding_urls(root: Path) -> list[str]:
     that actually emits scan-results — deliberately, because that is the binding
     subject to filigree's N1 fail-closed server-mode write."""
     path = root / ".mcp.json"
-    if not path.exists():
+    snapshot = _install._read_mcp_json_path(path)
+    if snapshot is None:
         return []
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+    data = _install._strict_json_loads(snapshot[0].decode("utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("project .mcp.json top level is not an object")
+    if "mcpServers" not in data:
         return []
-    servers = data.get("mcpServers")
+    servers = data["mcpServers"]
     if not isinstance(servers, dict):
-        return []
+        raise ValueError("project .mcp.json mcpServers is not an object")
     urls: list[str] = []
     for entry in servers.values():
-        args = entry.get("args") if isinstance(entry, dict) else None
-        if not isinstance(args, list):
+        if not isinstance(entry, dict):
+            raise ValueError("project .mcp.json server entry is not an object")
+        if "args" not in entry:
             continue
-        for i, arg in enumerate(args):
-            if arg == "--filigree-url" and i + 1 < len(args) and isinstance(args[i + 1], str):
-                urls.append(args[i + 1])
+        args = entry["args"]
+        if not isinstance(args, list) or not all(
+            isinstance(argument, str) for argument in args
+        ):
+            raise ValueError("project .mcp.json server args is not a string list")
+        index = 0
+        while index < len(args):
+            argument = args[index]
+            if argument == "--":
+                break
+            if argument == "--filigree-url":
+                if index + 1 >= len(args):
+                    raise ValueError("project .mcp.json has a dangling --filigree-url")
+                value = _validated_filigree_url(args[index + 1])
+                urls.append(value)
+                index += 2
+                continue
+            prefix = "--filigree-url="
+            if argument.startswith(prefix):
+                value = _validated_filigree_url(argument[len(prefix) :])
+                urls.append(value)
+            index += 1
     return urls
 
 
 def _is_unscoped_federation_write(url: str) -> bool:
     """True iff *url* targets a federation-write path WITHOUT a project scope."""
     parsed = urlsplit(url)
-    path = parsed.path
-    if path.startswith("/api/p/") or "project" in parse_qs(parsed.query):
+    path = _decoded_normalized_url_path(parsed.path)
+    if path.startswith("/api/p/") or _query_has_project_scope(parsed.query):
         return False  # scoped (path mount or ?project=)
     norm = path.rstrip("/")
     return path.startswith("/api/weft/") or norm in _FEDERATION_WRITE_PATHS
@@ -942,17 +1356,31 @@ def check_filigree_binding_scope(root: Path) -> DoctorCheck:
     report-only (``repairable=False``) and names the operator action rather than
     auto-fixing."""
     cid = "install.filigree_scope"
-    urls = _filigree_binding_urls(root)
+    try:
+        urls = _filigree_binding_urls(root)
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError):
+        return DoctorCheck(
+            cid,
+            "error",
+            message=(
+                "could not inspect project .mcp.json for filigree binding scope; "
+                "configuration is malformed, unreadable, or unsafe"
+            ),
+            repairable=False,
+        )
     if not urls:
-        return DoctorCheck(cid, "ok", message="no filigree scan-results binding in .mcp.json")
+        return DoctorCheck(
+            cid, "ok", message="no filigree scan-results binding in .mcp.json"
+        )
     unscoped = [u for u in urls if _is_unscoped_federation_write(u)]
     if unscoped:
+        safe_unscoped = [_filigree_url_for_diagnostics(url) for url in unscoped]
         return DoctorCheck(
             cid,
             "warn",
             message=(
                 "filigree binding not project-scoped: "
-                + ", ".join(unscoped)
+                + ", ".join(safe_unscoped)
                 + " — this --filigree-url is operator-pinned in wardline's .mcp.json entry "
                 "(legis never writes it; filigree doctor doesn't manage it). A server-mode "
                 "filigree daemon fail-closes unscoped federation writes (HTTP 400), so scans "
@@ -960,7 +1388,12 @@ def check_filigree_binding_scope(root: Path) -> DoctorCheck:
                 "/api/p/<project>/weft/scan-results (or add ?project=<project>)"
             ),
         )
-    return DoctorCheck(cid, "ok", message="project-scoped: " + ", ".join(urls))
+    return DoctorCheck(
+        cid,
+        "ok",
+        message="project-scoped: "
+        + ", ".join(_filigree_url_for_diagnostics(url) for url in urls),
+    )
 
 
 def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:
@@ -975,13 +1408,25 @@ def collect_checks(root: Path, *, repair: bool) -> list[DoctorCheck]:
     checks.append(check_gitignore(root, repair=repair))
     checks.append(check_dir_gitignore(root, repair=repair))
     checks.append(check_mcp_json(root, repair=repair))
+    checks.append(check_plainweave_project_binding(root, repair=repair))
+    checks.append(check_plainweave_codex_binding(root, repair=repair))
     checks.append(check_filigree_binding_scope(root))
     checks.append(check_weft_toml(root))
     checks.append(check_store_dir(root, repair=repair))
     checks.append(check_db_overrides(root))
     checks.append(check_legacy_stray_db(root))
-    checks.append(check_audit_chain("store.governance_chain", _store_url(root, "legis-governance.db", "LEGIS_GOVERNANCE_DB")))
-    checks.append(check_audit_chain("store.binding_chain", _store_url(root, "legis-binding.db", "LEGIS_BINDING_DB")))
+    checks.append(
+        check_audit_chain(
+            "store.governance_chain",
+            _store_url(root, "legis-governance.db", "LEGIS_GOVERNANCE_DB"),
+        )
+    )
+    checks.append(
+        check_audit_chain(
+            "store.binding_chain",
+            _store_url(root, "legis-binding.db", "LEGIS_BINDING_DB"),
+        )
+    )
     checks.append(check_posture_chain(root))
     checks.append(check_posture_ledger(root))
     checks.append(check_posture_key_reset(root))

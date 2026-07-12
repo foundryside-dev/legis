@@ -147,6 +147,151 @@ stay fail-closed.
 |---|---|
 | `LOOMWEAVE_API_URL` | Loomweave identity API — SEI resolution and lineage. Without it, legis degrades honestly (identity status `unavailable`) rather than guessing. |
 | `FILIGREE_API_URL` | Filigree issue-tracker API — closure-gate and issue context. |
+| `PLAINWEAVE_MCP_CMD` | Retired 1.5.0 legacy migration key. Do not set it as active configuration; `legis doctor --fix` removes it from safe Legis environment tables. |
+
+### Plainweave MCP runtime autodiscovery and legacy migration
+
+Legis MCP uses runtime autodiscovery once at startup from the active project
+cwd. It calls the hardened local Plainweave discovery boundary with the
+existing project signals; it does not create or read a new binding manifest.
+It accepts either a valid root-pinned local Plainweave MCP entry by itself, or
+`.plainweave/plainweave.db` plus a trusted non-project-local `plainweave-mcp` on
+`PATH`.
+
+The local entry must resolve to an executable and contain exactly one `--root`
+that resolves to the active project root. It establishes applicability and
+supplies the executable without requiring the database signal. The `PATH`
+executable is only a fallback when the direct database file establishes an
+initialized project and local config has no Plainweave configuration issue; it
+does not initialize or wire a project by itself. For an initialized project, a
+present malformed `.mcp.json` or invalid local Plainweave entry fails closed and
+disables the trusted `PATH` fallback. The database-plus-`PATH` fallback is
+considered only when local config presents no Plainweave configuration issue.
+
+This integration has a POSIX-only safety boundary. Runtime discovery, binding
+inspection/removal, and the shared configuration-writer lock require
+directory-relative file descriptors, `O_DIRECTORY`, `O_NOFOLLOW`, `fchmod`,
+anchored replacement, and advisory `flock`. On hosts without those primitives,
+doctor reports a non-repairable platform error and leaves configuration
+unchanged; `legis install --mcp` cannot safely update `.mcp.json`. Windows is
+not currently supported.
+
+An initialized project with no local Plainweave entry and no local configuration
+issue needs the trusted fallback on `PATH`. Check it before running doctor:
+
+```bash
+command -v plainweave-mcp
+# Expected: an absolute path, such as /home/alice/.local/bin/plainweave-mcp
+```
+
+A valid local project entry can supply its own executable instead. If doctor
+reports that no trusted Plainweave executable is available, repair the
+Plainweave installation or local entry using that product's operator procedure,
+then rerun `command -v plainweave-mcp` when using the fallback path and rerun
+`legis doctor`. Do not use `legis doctor --fix` to initialize Plainweave; doctor
+only diagnoses runtime discovery and removes retired Legis keys.
+
+Global Codex Legis configuration must remain tool-only and project-agnostic. It
+must not carry a Plainweave command or root, and it must not pin a fixed `cwd`.
+The legacy `PLAINWEAVE_MCP_CMD` key is retired runtime configuration retained
+only as a migration name that doctor can find and remove.
+
+Plainweave discovery treats `.mcp.json` as untrusted input. It reads at most
+1 MiB and accepts no more than 100 nested JSON objects/arrays. Invalid input is
+never used. For an initialized project it blocks fallback discovery, and doctor
+reports a generic configuration error without echoing hostile values.
+
+Legis install and doctor readers apply the same 1 MiB accepted-size limit to
+the project `.mcp.json` before currentness, repair-blocker, or cross-server
+binding checks. They may read one additional sentinel byte to detect overflow;
+special files and oversized input are rejected with the target `.mcp.json`
+unchanged. Ordinary install may create the persistent `.mcp.json.legis.lock`
+sidecar described below before it refuses the target.
+
+| Check ID | Target | Scope |
+|---|---|---|
+| `install.plainweave_project_binding` | Active project discovery plus `.mcp.json` → `mcpServers.legis.env` | Verifies runtime discovery and absence of the retired legacy `PLAINWEAVE_MCP_CMD` key. If the Legis registration is missing or stale, `install.mcp_json` owns its repair. |
+| `install.plainweave_codex_binding` | Existing `$CODEX_HOME/config.toml` (or `~/.codex/config.toml`) Legis entry | Independently verifies that an existing global registration has no retired legacy key and no fixed `cwd`. No registration is healthy and not applicable; doctor never creates one. |
+
+Binding inspection and its final pre-write snapshot recheck accept at most
+1 MiB from either `.mcp.json` or the existing Codex `config.toml`. To distinguish
+an exact-limit file from an oversized one, Legis reads at most one additional
+sentinel byte. An oversized file is reported as operator-owned invalid input and
+is left unchanged; doctor does not truncate or partially parse it.
+
+The checks are independent. A project binding can need repair while the global
+Codex binding is current, absent, or operator-owned, and vice versa.
+
+Run the health check before changing configuration:
+
+```bash
+legis doctor
+```
+
+Doctor prints `[auto-fixable]` for a safely removable retired key. A missing or
+stale project Legis registration is also `[auto-fixable]`, but
+`install.mcp_json` owns that repair. Apply and post-verify safe repairs with:
+
+```bash
+legis doctor --fix
+```
+
+Within that run, `install.mcp_json` runs before the Plainweave binding checks. It
+may create or rebuild a missing or stale project Legis registration, including
+its `command`, `args`, `type`, and safe `env`, before the project binding check
+runs. The project binding-specific repair semantically changes only the retired
+legacy `PLAINWEAVE_MCP_CMD` key, but it reserializes the whole
+`.mcp.json` document with two-space indentation. Unrelated JSON values, the
+detected newline sequence, final-newline presence, and file mode are preserved;
+arbitrary indentation and other whitespace formatting are normalized. The
+global Codex TOML removal is text-surgical and preserves its surrounding
+comments and formatting. Project repair refuses unsafe or secret-bearing
+`.mcp.json` environment tables and leaves the file unchanged. Global
+remove-only repair accepts string-valued environment entries and preserves
+every unrelated entry, including secret-shaped names. It refuses malformed,
+unsupported, or mixed-transport shapes and leaves them `[operator]`.
+
+Legis serializes its own `.mcp.json` writers through the persistent
+`/.mcp.json.legis.lock` sidecar (created with mode `0600` and ignored by the
+managed project `.gitignore`). The same lock covers ordinary MCP registration
+and the Plainweave binding replacement, so a waiting Legis writer rechecks the
+validated file snapshot after the preceding writer completes. Before reporting
+a replacement successful, Legis synchronizes the staged file, performs the
+atomic rename, and synchronizes the containing directory entry. A synchronization
+failure is reported rather than treated as durable success. The lock is advisory:
+editors and other processes that do not participate in it can still write during
+the final atomic-replace syscall window. Stop those writers while running an
+automatic repair when that distinction matters.
+
+An existing global Codex repair uses the same protocol with a persistent
+`config.toml.legis.lock` beside `$CODEX_HOME/config.toml`.
+
+Each successful removal prints its own `[fixed]` line. When project registration
+and legacy cleanup both needed repair, inspect `[fixed]` on both
+`install.mcp_json` and `install.plainweave_project_binding`; also inspect
+`install.plainweave_codex_binding` for an existing global registration. A fixed
+global `cwd` is always operator-owned: doctor reports it but never removes it.
+If a global entry contains both the retired key and fixed `cwd`, `--fix` removes
+the safe legacy key but leaves the check in a partial `[fixed] [operator]` state.
+
+Use this migration sequence:
+
+1. Run `legis doctor` and read both Plainweave check lines.
+2. Run `legis doctor --fix` to remove safe retired keys.
+3. If doctor reports a fixed global `cwd`, remove that field manually from the
+   global Codex Legis registration.
+4. Reconnect or restart the affected MCP clients so each new Legis process
+   inherits its active project cwd.
+5. Rerun `legis doctor` and confirm both checks are healthy.
+
+Legis MCP then performs runtime autodiscovery once during startup. Doctor does
+not restart clients, initialize Plainweave, remove fixed `cwd`, or repair
+malformed/unsafe project configuration or malformed/unsupported global shapes.
+
+For machine-readable inspection, run `legis doctor --format json`. The MCP
+`doctor_get` tool returns the same report shape, but it is report-only and never
+fixes configuration. See the [`doctor` CLI reference](cli-reference.md#doctor)
+for the command workflow and success criteria.
 
 ### API server authentication (`legis serve` only)
 

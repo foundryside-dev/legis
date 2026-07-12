@@ -1,0 +1,27 @@
+# PDR-0009 — Ship legis 1.4.0: consolidate the federation-read + honesty-hardening + layering-decouple work into one release (owner-authorized PyPI publish)
+
+Date: 2026-06-29   Status: accepted (owner authorized the outward-facing publish LIVE in-session)   Author: claude (opus, product-owner)
+Supersedes: —   Related: [[0005-accept-governance-honesty-bet-partial]]; [[0006-warpline-preflight-conform-to-extant-mcp-envelope]]; [[0007-governance-read-v1-per-sei-federation-seam]]; [[0008-consume-plainweave-preflight-advisory-sibling]]; [[0010-1.4.0-dependency-security-scope]]; PR #24; tag `v1.4.0`; tracker legis-0186c23a2c (closed), legis-9a47068338
+
+## Context
+The prior checkpoint (PDR-0007/0008) left **one escalation**: local `main` had accumulated the unshipped 1.3.0 line + the warpline-preflight rebuild + `governance_read.v1` + the Plainweave consumer — all unpushed and owner-gated — and the owner had to decide **SCOPE** (fold into 1.3.0 or cut a 1.4.0) and **MECHANISM** (push / PR / who cuts the release). In parallel, the **last** open north-star governance-honesty finding (legis-0186c23a2c — `policy_boundary_check` accepts scan roots outside the source boundary) sat fixed-but-unmerged on `fix/policy-boundary-containment`, and a P1 architecture handover flagged four layering inversions (H-1…H-4: `store↔enforcement`, `posture→install`, `api→mcp`, a suspected `policy→service`) as low-effort/high-leverage tech-debt.
+
+## Options considered
+1. **Fold everything into 1.3.0 and publish 1.3.0.** Rejected — 1.3.0 was never tagged/published; the accumulated scope (a *published federation contract* + a *security fix* + an *architecture refactor*) is a minor version's worth of change, and labelling it 1.3.0 understates it and muddies the changelog.
+2. **Ship the federation reads only; defer the policy-boundary fix + the layering refactor.** Rejected — the policy-boundary fix is the LAST north-star finding (shipping it *wins the post-gold honesty bet*), and the refactor was owner-directed and already gate-clean; splitting adds release ceremony for no benefit and leaves the north-star at 1.
+3. **Cut a consolidated 1.4.0** = local `main` (governance_read.v1 + Plainweave consumer + warpline rewire + posture/protected hardenings) **+** the H-1…H-4 layering decouple **+** the policy-boundary containment security fix **+** a starlette security bump; adversarial-review the PR, merge, and — on explicit owner authority — publish. **CHOSEN.**
+
+## The call
+**Option 3.** Owner directed the release live across the session: cut `release/1.4.0`, bump `1.3.0 → 1.4.0`, consolidate ALL unmerged work, open **PR #24**, run a **6-area adversarial release review** (governance-honesty/fail-closed sweep, governance_read surface, warpline rewire, the refactor, the policy-boundary fix, release mechanics), fix the one material finding it surfaced (an H-4 self-description honesty defect — a `policy/__init__` docstring that went false once `boundary_scan`'s deferred `service.errors` import merged; corrected in 659e11f), merge as a merge-commit (3055d2c), and — on the owner's explicit authority (**"tag a new release on my authority"**) — publish **GitHub Release v1.4.0**, which fired `release.yml` → **PyPI**. **legis 1.4.0 is live on PyPI.** This **closes legis-0186c23a2c → north-star 0** and **publishes `governance_read.v1`** (the v1 contract is now publicly frozen).
+
+## Rationale
+One consolidated minor is the *honest* version bump for the accumulated scope. Shipping the policy-boundary fix **wins the governance-honesty bet (PDR-0005) ahead of its 2026-07-15 target**. The layering decouple is behavior-preserving — the signing primitive moved byte-identically to a dependency-free `crypto/` leaf, the byte-pinned cross-tool conformance vectors and `canonical.py` are untouched, and the HMAC contract is intact — verified by an adversarial workflow (GO) plus the full gate battery, so it de-risks future evolution without touching governance behavior. Crucially, the outward-facing steps (PyPI publish, GitHub release) are on the authority-escalation list; here they were satisfied by **explicit live owner sign-off**, not autonomous action, so the boundary held.
+
+## Reversal trigger
+- If a **governance-honesty false-green** is found in any 1.4.0 surface (the `governance_read` projection, `policy_boundary_check` containment, posture/protected fail-closed) → reopen the honesty bet + hotfix; the north-star returns to > 0 and the metric fires.
+- If **starlette 1.3.x** breaks the HTTP surface in the field → pin/revert (guardrail: CI-green + advisory-boundary byte-identity must hold). (Detail in [[0010-1.4.0-dependency-security-scope]].)
+- If warpline's live integration needs a **`governance_read` v1 change** → `governance_read.v2` (ADD), never a v1 edit — v1 is now publicly frozen (per PDR-0007's trigger).
+- The publish itself is **irreversible** (PyPI 1.4.0 can be yanked, never un-published) — corrections ship as **1.4.1+**, never a re-release.
+
+## Status note
+PR #24 merged (merge-commit `3055d2c`); tag `v1.4.0` at `3055d2c`; `release.yml` green (build gates → live-Loomweave **skip-not-fail** no-op → PyPI publish via OIDC, no Sigstore hiccup); **legis 1.4.0 live on PyPI**; both starlette dependabot alerts **cleared** on the default branch. Superseded PRs #21/#22 auto-closed as merged; dependabot #11 closed. The global `legis` uv tool was replaced with the official 1.4.0 wheel (was an editable-from-source install) and the uv cache pruned of all 11 older legis versions.

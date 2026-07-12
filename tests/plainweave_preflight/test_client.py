@@ -61,6 +61,101 @@ def test_preflight_calls_tool_with_commit_range_and_passes_envelope_through():
     )
 
 
+def test_preflight_forwards_bounded_requirement_page_controls():
+    e = _env(facts=[])
+    e["data"]["scope"]["requirement_ids"] = ["req-100"]
+    e["data"]["scope"]["requirement_page"] = {
+        "limit": 50, "offset": 100, "returned": 1, "total": 101,
+        "has_more": False, "next_offset": None,
+    }
+    inv = _recorder([e])
+    out = PlainweaveMcpClient(invoke=inv, repo="/tmp/r").preflight_facts(
+        "aaa", "bbb", requirement_limit=50, requirement_offset=100
+    )
+    assert out == e
+    assert inv.calls[0] == (
+        "plainweave_preflight_facts_get",
+        {
+            "scope_kind": "commit_range", "base": "aaa", "head": "bbb",
+            "requirement_limit": 50, "requirement_offset": 100,
+        },
+    )
+
+
+def test_preflight_continuation_can_represent_101_requirements_without_aggregation():
+    requirement_ids = [f"req-{index:03d}" for index in range(101)]
+    responses = []
+    for offset, page in ((0, requirement_ids[:100]), (100, requirement_ids[100:])):
+        envelope = _env(facts=[])
+        envelope["data"]["scope"]["requirement_ids"] = page
+        envelope["data"]["scope"]["requirement_page"] = {
+            "limit": 100, "offset": offset, "returned": len(page), "total": 101,
+            "has_more": offset == 0, "next_offset": 100 if offset == 0 else None,
+        }
+        responses.append(envelope)
+    inv = _recorder(responses)
+    client = PlainweaveMcpClient(invoke=inv, repo="/tmp/r")
+
+    first = client.preflight_facts("aaa", "bbb")
+    next_offset = first["data"]["scope"]["requirement_page"]["next_offset"]
+    second = client.preflight_facts("aaa", "bbb", requirement_offset=next_offset)
+
+    represented = first["data"]["scope"]["requirement_ids"] + second["data"]["scope"]["requirement_ids"]
+    assert represented == requirement_ids
+    assert len(inv.calls) == 2
+    assert inv.calls[1][1]["requirement_offset"] == 100
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        {"limit": 100, "offset": 0, "returned": 100, "total": 101, "has_more": True, "next_offset": None},
+        {"limit": 100, "offset": 0, "returned": 99, "total": 101, "has_more": True, "next_offset": 100},
+        {"limit": 100, "offset": 100, "returned": 1, "total": 101, "has_more": True, "next_offset": 200},
+    ],
+)
+def test_malformed_requirement_page_fails_closed(page):
+    envelope = _env(facts=[])
+    envelope["data"]["scope"]["requirement_ids"] = [f"req-{index}" for index in range(page["returned"])]
+    envelope["data"]["scope"]["requirement_page"] = page
+
+    with pytest.raises(PlainweaveError, match="requirement_page"):
+        PlainweaveMcpClient(invoke=_recorder([envelope]), repo="/tmp/r").preflight_facts("a", "b")
+
+
+def test_continuation_requires_requirement_page_metadata():
+    with pytest.raises(PlainweaveError, match="requirement_page"):
+        PlainweaveMcpClient(invoke=_recorder([_env(facts=[])]), repo="/tmp/r").preflight_facts(
+            "a", "b", requirement_offset=100
+        )
+
+
+def test_continuation_rejects_a_page_for_a_different_offset():
+    envelope = _env(facts=[])
+    envelope["data"]["scope"]["requirement_ids"] = [f"req-{index}" for index in range(100)]
+    envelope["data"]["scope"]["requirement_page"] = {
+        "limit": 100, "offset": 0, "returned": 100, "total": 101,
+        "has_more": True, "next_offset": 100,
+    }
+
+    with pytest.raises(PlainweaveError, match="does not match the request"):
+        PlainweaveMcpClient(invoke=_recorder([envelope]), repo="/tmp/r").preflight_facts(
+            "a", "b", requirement_offset=100
+        )
+
+
+def test_default_request_rejects_a_page_that_ignores_effective_defaults():
+    envelope = _env(facts=[])
+    envelope["data"]["scope"]["requirement_ids"] = ["req-10"]
+    envelope["data"]["scope"]["requirement_page"] = {
+        "limit": 100, "offset": 10, "returned": 1, "total": 11,
+        "has_more": False, "next_offset": None,
+    }
+
+    with pytest.raises(PlainweaveError, match="does not match the request"):
+        PlainweaveMcpClient(invoke=_recorder([envelope]), repo="/tmp/r").preflight_facts("a", "b")
+
+
 @pytest.mark.parametrize("bad", [["not", "dict"], "str", 7, None])
 def test_non_dict_envelope_is_plainweave_error(bad):
     with pytest.raises(PlainweaveError):

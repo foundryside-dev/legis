@@ -9,6 +9,51 @@ versions per [PEP 440](https://peps.python.org/pep-0440/) /
 
 _Post-1.0.0 work lands here; legis versions independently from the Weft 1.0 launch on._
 
+## [1.5.0] — 2026-07-12
+
+### Added
+
+- **Plainweave runtime autodiscovery restores multi-project convergence and
+  removes binding oscillation (legis-3622e80f2e).** Legis MCP now discovers
+  Plainweave once at startup from the active project cwd. It accepts either a
+  valid root-pinned local Plainweave MCP entry by itself, or
+  `.plainweave/plainweave.db` plus a trusted non-project-local
+  `plainweave-mcp` on `PATH`. For an initialized project, a present malformed
+  `.mcp.json` or invalid local Plainweave entry fails closed and disables the
+  trusted `PATH` fallback. The database-plus-`PATH` fallback is considered only
+  when local config presents no Plainweave configuration issue. The global Codex
+  Legis registration stays tool-only and never carries a Plainweave root.
+  This converges across projects instead of rewriting one global project target
+  back and forth. `PLAINWEAVE_MCP_CMD` is now a retired 1.5.0 legacy migration
+  key. `install.plainweave_project_binding` verifies active-project discovery
+  and the legacy key's absence while `install.mcp_json` retains
+  project-registration ownership. `install.plainweave_codex_binding`
+  independently inspects only an
+  existing global registration; absence is healthy and it never creates one.
+  `legis doctor --fix` semantically changes only the retired key, post-verifies,
+  and requests an MCP reconnect or restart. Project `.mcp.json` removal
+  reserializes the whole document with two-space indentation while preserving
+  unrelated JSON values, the detected newline sequence, final-newline presence,
+  and file mode rather than arbitrary whitespace; global Codex TOML removal is
+  text-surgical. Project repair refuses unsafe or secret-bearing `.mcp.json`
+  environment tables and leaves the file unchanged. Global remove-only repair
+  accepts string-valued environment entries and preserves every unrelated
+  entry, including secret-shaped names; it refuses malformed, unsupported, or
+  mixed-transport shapes. Fixed global `cwd` remains operator-owned and
+  unchanged, including the partial `[fixed] [operator]` outcome when legacy
+  cleanup succeeds but the fixed `cwd` remains.
+
+### Changed
+
+- **Platform support narrowed to POSIX.** The package now declares
+  `Operating System :: POSIX` instead of `OS Independent`. Configuration
+  inspection and repair rely on directory-relative, no-follow file operations
+  and advisory `flock` locking, which protect against path swaps and
+  cooperating-writer races on POSIX hosts (including supported Linux and macOS).
+  Windows is not currently supported; on a host lacking these primitives,
+  Plainweave discovery and binding checks fail closed and automatic MCP
+  configuration repair is unavailable.
+
 ## [1.4.0] — 2026-06-29
 
 Two internal hardenings on top of 1.3.0: a `policy_boundary_check` scan-root
@@ -127,8 +172,9 @@ advisory-preflight **consumer**.
   mirroring the Warpline advisory-preflight read exactly: injectable
   `PlainweaveMcpClient` + `StdioMcpInvoke`, every fault fails closed →
   `unavailable`, GV-LG-3 validated against Plainweave's real `authority_boundary`
-  shape, configured via `PLAINWEAVE_MCP_CMD` (default unconfigured →
-  `unavailable`). Enrich-only; governance verdicts stay byte-identical with or
+  shape, originally configured via the now-retired legacy
+  `PLAINWEAVE_MCP_CMD` key (default unconfigured → `unavailable`). Enrich-only;
+  governance verdicts stay byte-identical with or
   without Plainweave. The conformance oracle drives a constructed golden (live
   end-to-end capture is a flagged follow-up).
 
@@ -846,7 +892,10 @@ WP-M1 service-layer extraction, consolidated behind a stable version.
   `HTTPException`, so both HTTP and the forthcoming MCP adapter drive one code
   path. Behavior-preserving; FastAPI handlers are now thin adapters.
 
-[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/foundryside-dev/legis/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/foundryside-dev/legis/compare/v1.4.0...v1.5.0
+[1.4.0]: https://github.com/foundryside-dev/legis/compare/v1.2.0...v1.4.0
+[1.2.0]: https://github.com/foundryside-dev/legis/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/foundryside-dev/legis/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/foundryside-dev/legis/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/foundryside-dev/legis/compare/v1.0.0rc4...v1.0.0

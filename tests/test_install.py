@@ -9,6 +9,8 @@ import shutil
 import stat
 import subprocess
 import sys
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -130,7 +132,9 @@ def test_inject_appends_to_existing_file_without_marker(tmp_path):
     assert content.index("Existing guidance.") < content.index(INSTRUCTIONS_MARKER)
 
 
-def test_inject_replaces_existing_block_preserving_surrounding_text(tmp_path, monkeypatch):
+def test_inject_replaces_existing_block_preserving_surrounding_text(
+    tmp_path, monkeypatch
+):
     target = tmp_path / "CLAUDE.md"
     target.write_text("TOP\n\n")
     inject_instructions(target)
@@ -161,7 +165,9 @@ def test_inject_idempotent_when_content_unchanged(tmp_path):
 def test_inject_repairs_block_with_missing_end_marker(tmp_path):
     target = tmp_path / "CLAUDE.md"
     # Open marker but no close marker, plus trailing junk.
-    target.write_text(f"HEAD\n{INSTRUCTIONS_MARKER}:vX:dead -->\norphan body no close\n")
+    target.write_text(
+        f"HEAD\n{INSTRUCTIONS_MARKER}:vX:dead -->\norphan body no close\n"
+    )
     ok, msg = inject_instructions(target)
     assert ok
     content = target.read_text()
@@ -198,8 +204,7 @@ def test_inject_malformed_block_preserves_coresident_foreign_block(tmp_path):
     target.write_text(
         "HEAD\n"
         f"{INSTRUCTIONS_MARKER}:vX:dead -->\n"
-        "legis body, block NOT closed\n"
-        + _WARDLINE_BLOCK
+        "legis body, block NOT closed\n" + _WARDLINE_BLOCK
     )
     ok, _ = inject_instructions(target)
     assert ok
@@ -304,9 +309,7 @@ def test_inject_reinject_preserves_foreign_block_placed_before_legis(tmp_path):
     """
     target = tmp_path / "CLAUDE.md"
     target.write_text(
-        "HEAD\n"
-        + _WARDLINE_BLOCK
-        + f"{INSTRUCTIONS_MARKER}:vX:dead -->\n"
+        "HEAD\n" + _WARDLINE_BLOCK + f"{INSTRUCTIONS_MARKER}:vX:dead -->\n"
         "stale legis body\n"
         "<!-- /legis:instructions -->\n"
     )
@@ -331,8 +334,7 @@ def test_inject_bounded_recovery_is_idempotent(tmp_path):
     target.write_text(
         "HEAD\n"
         f"{INSTRUCTIONS_MARKER}:vX:dead -->\n"
-        "legis body no close\n"
-        + _WARDLINE_BLOCK
+        "legis body no close\n" + _WARDLINE_BLOCK
     )
     inject_instructions(target)
     first = target.read_text()
@@ -375,7 +377,9 @@ def test_inject_crlf_file_preserves_foreign_block(tmp_path):
     assert content.count(INSTRUCTIONS_MARKER) == 1
 
 
-def test_inject_two_clean_legis_blocks_canonicalises_first_keeps_second(tmp_path, caplog):
+def test_inject_two_clean_legis_blocks_canonicalises_first_keeps_second(
+    tmp_path, caplog
+):
     """Two well-formed legis blocks: the first is canonicalised, the second is kept.
 
     Bounding at the first own close (not EOF) is deliberate — it preserves any
@@ -416,6 +420,85 @@ def test_atomic_write_preserves_existing_mode(tmp_path):
     inject_instructions(target)
     mode = stat.S_IMODE(target.stat().st_mode)
     assert mode == 0o640
+
+
+def test_atomic_write_uses_safe_mode_without_touching_process_umask(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "CLAUDE.md"
+
+    def reject_process_umask(_mode: int) -> int:
+        raise AssertionError("process-wide umask must not be changed")
+
+    monkeypatch.setattr(install.os, "umask", reject_process_umask)
+
+    install._atomic_write_text(target, "new content\n")
+
+    assert target.read_text(encoding="utf-8") == "new content\n"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_atomic_write_is_file_and_directory_durable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "CLAUDE.md"
+    events: list[str] = []
+    real_fsync = install.os.fsync
+    real_replace = install.os.replace
+
+    def observed_fsync(fd: int) -> None:
+        mode = install.os.fstat(fd).st_mode
+        events.append("fsync-directory" if stat.S_ISDIR(mode) else "fsync-file")
+        real_fsync(fd)
+
+    def observed_replace(*args, **kwargs) -> None:
+        events.append("replace")
+        real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(install.os, "fsync", observed_fsync)
+    monkeypatch.setattr(install.os, "replace", observed_replace)
+
+    install._atomic_write_text(target, "durable content\n")
+
+    assert events == ["fsync-file", "replace", "fsync-directory"]
+    assert target.read_text(encoding="utf-8") == "durable content\n"
+
+
+def test_anchored_mcp_write_is_file_and_directory_durable(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    events: list[str] = []
+    real_fsync = install.os.fsync
+    real_replace = install.os.replace
+
+    def observed_fsync(fd: int) -> None:
+        mode = install.os.fstat(fd).st_mode
+        events.append("fsync-directory" if stat.S_ISDIR(mode) else "fsync-file")
+        real_fsync(fd)
+
+    def observed_replace(*args, **kwargs) -> None:
+        events.append("replace")
+        real_replace(*args, **kwargs)
+
+    monkeypatch.setattr(install.os, "fsync", observed_fsync)
+    monkeypatch.setattr(install.os, "replace", observed_replace)
+    directory_fd = install._open_directory_path_nofollow(tmp_path.resolve())
+    try:
+        install._atomic_write_anchored_mcp_json(
+            directory_fd,
+            '{"mcpServers": {}}\n',
+            mode=None,
+        )
+    finally:
+        install.os.close(directory_fd)
+
+    assert events == ["fsync-file", "replace", "fsync-directory"]
+    assert (tmp_path / ".mcp.json").read_text(encoding="utf-8") == (
+        '{"mcpServers": {}}\n'
+    )
 
 
 def test_reject_symlink_raises_on_symlink(tmp_path):
@@ -510,11 +593,23 @@ def test_install_hooks_upgrades_bare_command(tmp_path, monkeypatch):
     claude.mkdir()
     (claude / "settings.json").write_text(
         json.dumps(
-            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "legis session-context"}]}]}}
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": "legis session-context"}
+                            ]
+                        }
+                    ]
+                }
+            }
         )
     )
     # Force a resolved binary path so the bare command must be upgraded.
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, msg = install_claude_code_hooks(tmp_path)
     assert ok
     settings = json.loads((claude / "settings.json").read_text())
@@ -546,7 +641,12 @@ def test_install_hooks_does_not_reuse_scoped_block(tmp_path):
             {
                 "hooks": {
                     "SessionStart": [
-                        {"matcher": "resume", "hooks": [{"type": "command", "command": "legis session-context"}]}
+                        {
+                            "matcher": "resume",
+                            "hooks": [
+                                {"type": "command", "command": "legis session-context"}
+                            ],
+                        }
                     ]
                 }
             }
@@ -556,9 +656,13 @@ def test_install_hooks_does_not_reuse_scoped_block(tmp_path):
     settings = json.loads((claude / "settings.json").read_text())
     # A new unscoped block must be added — the scoped one does not cover cold start.
     blocks = settings["hooks"]["SessionStart"]
-    unscoped = [b for b in blocks if "matcher" not in b or b.get("matcher") in (None, "*")]
+    unscoped = [
+        b for b in blocks if "matcher" not in b or b.get("matcher") in (None, "*")
+    ]
     assert unscoped
-    assert any(h["command"].endswith("session-context") for b in unscoped for h in b["hooks"])
+    assert any(
+        h["command"].endswith("session-context") for b in unscoped for h in b["hooks"]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -591,7 +695,11 @@ def test_hook_cmd_matches(command, expected):
 def test_register_mcp_json_creates_file_with_legis_entry(tmp_path, monkeypatch):
     from legis.install import register_mcp_json
 
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/usr/bin/python3", "-P", "-m", "legis"])
+    monkeypatch.setattr(
+        install,
+        "_find_legis_command",
+        lambda *_a, **_k: ["/usr/bin/python3", "-P", "-m", "legis"],
+    )
     ok, msg = register_mcp_json(tmp_path)
     assert ok, msg
     data = json.loads((tmp_path / ".mcp.json").read_text())
@@ -600,6 +708,302 @@ def test_register_mcp_json_creates_file_with_legis_entry(tmp_path, monkeypatch):
     assert entry["command"] == "/usr/bin/python3"
     assert entry["args"] == ["-P", "-m", "legis", "mcp", "--agent-id", "claude-code"]
     assert "--agent-id" in entry["args"]
+    lock = tmp_path / ".mcp.json.legis.lock"
+    assert lock.is_file()
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+
+
+def test_register_mcp_json_uses_shared_writer_lock(tmp_path, monkeypatch) -> None:
+    assert hasattr(install, "_config_writer_lock")
+    locked_paths: list[Path] = []
+
+    @contextmanager
+    def observed_lock(path: Path):
+        locked_paths.append(path)
+        yield
+
+    monkeypatch.setattr(install, "_config_writer_lock", observed_lock)
+
+    ok, _ = install.register_mcp_json(tmp_path)
+
+    assert ok
+    assert locked_paths == [tmp_path / ".mcp.json"]
+
+
+@pytest.mark.parametrize(
+    "operation",
+    ["install", "doctor-register", "doctor-binding-scan"],
+)
+def test_mcp_json_fifo_is_rejected_without_blocking(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    os.mkfifo(tmp_path / ".mcp.json")
+    script = """
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+operation = sys.argv[2]
+if operation == "install":
+    from legis.install import register_mcp_json
+    result = register_mcp_json(root)
+elif operation == "doctor-register":
+    from legis.install import register_mcp_json
+    result = register_mcp_json(root, doctor_safe=True)
+else:
+    from legis.doctor import check_filigree_binding_scope
+    check = check_filigree_binding_scope(root)
+    result = (check.status, check.repairable, check.message)
+print(repr(result))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(tmp_path), operation],
+        capture_output=True,
+        text=True,
+        timeout=2,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    if operation == "doctor-binding-scan":
+        assert completed.stdout.startswith("('error', False,")
+    else:
+        assert completed.stdout.startswith("(False,")
+    assert stat.S_ISFIFO((tmp_path / ".mcp.json").stat().st_mode)
+
+
+@pytest.mark.parametrize("extra_byte", [False, True], ids=["exact-limit", "over-limit"])
+def test_project_mcp_reader_size_limit(
+    tmp_path: Path,
+    extra_byte: bool,
+) -> None:
+    config = tmp_path / ".mcp.json"
+    payload = b"{}" + b" " * (install._MAX_PROJECT_MCP_JSON_BYTES - 2 + int(extra_byte))
+    config.write_bytes(payload)
+
+    if extra_byte:
+        with pytest.raises(ValueError, match="1 MiB"):
+            install._read_mcp_json_path(config)
+    else:
+        snapshot = install._read_mcp_json_path(config)
+        assert snapshot is not None and snapshot[0] == payload
+
+
+def test_doctor_safe_register_rejects_project_root_swap(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    config = project / ".mcp.json"
+    config.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    original = config.read_bytes()
+    moved = tmp_path / "moved-project"
+    external = tmp_path / "external"
+    external.mkdir()
+    real_lock = install._config_writer_lock
+    swapped = False
+
+    @contextmanager
+    def swap_before_lock(path: Path, *, dir_fd: int | None = None):
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            project.rename(moved)
+            project.symlink_to(external, target_is_directory=True)
+        with real_lock(path, dir_fd=dir_fd):
+            yield
+
+    monkeypatch.setattr(install, "_config_writer_lock", swap_before_lock)
+
+    ok, message = install.register_mcp_json(project, doctor_safe=True)
+
+    assert ok is False
+    assert "changed" in message.lower()
+    assert not (external / ".mcp.json").exists()
+    assert (moved / ".mcp.json").read_bytes() == original
+
+
+def test_doctor_safe_register_rechecks_project_root_immediately_before_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    moved = tmp_path / "moved-project"
+    external = tmp_path / "external"
+    external.mkdir()
+    real_read = install._read_anchored_mcp_json
+    reads = 0
+
+    def swap_after_final_snapshot_read(directory_fd: int):
+        nonlocal reads
+        snapshot = real_read(directory_fd)
+        reads += 1
+        if reads == 2:
+            project.rename(moved)
+            project.symlink_to(external, target_is_directory=True)
+        return snapshot
+
+    monkeypatch.setattr(
+        install,
+        "_read_anchored_mcp_json",
+        swap_after_final_snapshot_read,
+    )
+
+    ok, message = install.register_mcp_json(project, doctor_safe=True)
+
+    assert reads == 2
+    assert ok is False
+    assert "changed" in message.lower()
+    assert not (external / ".mcp.json").exists()
+    assert not (moved / ".mcp.json").exists()
+
+
+def test_doctor_safe_register_contains_oversized_final_recheck(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = tmp_path / ".mcp.json"
+    config.write_text('{"mcpServers": {}}\n', encoding="utf-8")
+    real_read = install._read_anchored_mcp_json
+    oversized = b"{}" + b" " * (install._MAX_PROJECT_MCP_JSON_BYTES - 1)
+    reads = 0
+
+    def replace_before_second_read(directory_fd: int):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            config.write_bytes(oversized)
+        return real_read(directory_fd)
+
+    monkeypatch.setattr(
+        install,
+        "_read_anchored_mcp_json",
+        replace_before_second_read,
+    )
+
+    ok, message = install.register_mcp_json(tmp_path, doctor_safe=True)
+
+    assert reads == 2
+    assert ok is False
+    assert "changed" in message.lower()
+    assert config.read_bytes() == oversized
+
+
+def test_missing_nonblock_reports_mcp_reader_capability(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(install.os, "O_NONBLOCK", None)
+
+    error = install._config_writer_lock_support_error()
+
+    assert error is not None
+    assert "project mcp" in error.lower()
+    assert "read" in error.lower()
+
+
+def test_doctor_safe_register_closes_project_fd_when_initial_fstat_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    opened: list[int] = []
+    real_open_directory = install._open_directory_path_nofollow
+    real_fstat = install.os.fstat
+
+    def capture_open(path: Path) -> int:
+        fd = real_open_directory(path)
+        opened.append(fd)
+        return fd
+
+    def fail_initial_fstat(fd: int):
+        if opened and fd == opened[0]:
+            raise PermissionError("simulated initial inspection failure")
+        return real_fstat(fd)
+
+    monkeypatch.setattr(install, "_open_directory_path_nofollow", capture_open)
+    monkeypatch.setattr(install.os, "fstat", fail_initial_fstat)
+
+    ok, message = install.register_mcp_json(tmp_path, doctor_safe=True)
+
+    assert ok is False
+    assert "safely" in message.lower()
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        real_fstat(opened[0])
+
+
+def test_register_mcp_json_rejects_symlinked_writer_lock(tmp_path: Path) -> None:
+    external = tmp_path / "external.lock"
+    external.touch()
+    (tmp_path / ".mcp.json.legis.lock").symlink_to(external)
+
+    ok, message = install.register_mcp_json(tmp_path)
+
+    assert ok is False
+    assert "lock" in message.lower()
+    assert not (tmp_path / ".mcp.json").exists()
+
+
+def test_register_mcp_json_rejects_hardlinked_writer_lock(tmp_path: Path) -> None:
+    victim = tmp_path / "operator-owned"
+    victim.touch()
+    victim.chmod(0o644)
+    os.link(victim, tmp_path / ".mcp.json.legis.lock")
+
+    ok, message = install.register_mcp_json(tmp_path)
+
+    assert ok is False
+    assert "lock" in message.lower()
+    assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+    assert not (tmp_path / ".mcp.json").exists()
+
+
+def test_writer_lock_revalidates_path_identity_after_acquiring_flock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / ".mcp.json"
+    lock_path = tmp_path / ".mcp.json.legis.lock"
+    orphaned_lock = tmp_path / "orphaned.lock"
+    real_fchmod = install.os.fchmod
+    swapped = False
+    nested_acquired = False
+    outer_yielded = False
+
+    def swap_lock_during_fchmod(fd: int, mode: int) -> None:
+        nonlocal swapped, nested_acquired
+        real_fchmod(fd, mode)
+        if swapped:
+            return
+        swapped = True
+        lock_path.rename(orphaned_lock)
+        lock_path.touch(mode=0o600)
+        with install._config_writer_lock(target):
+            nested_acquired = True
+
+    monkeypatch.setattr(install.os, "fchmod", swap_lock_during_fchmod)
+
+    with pytest.raises(install._ConfigWriterLockError, match="changed"):
+        with install._config_writer_lock(target):
+            outer_yielded = True
+
+    assert nested_acquired is True
+    assert outer_yielded is False
+
+
+def test_register_mcp_json_returns_error_for_symlinked_target(tmp_path: Path) -> None:
+    external = tmp_path / "external.json"
+    external.write_text("{}\n", encoding="utf-8")
+    (tmp_path / ".mcp.json").symlink_to(external)
+
+    ok, message = install.register_mcp_json(tmp_path)
+
+    assert ok is False
+    assert "symlink" in message.lower()
+    assert external.read_text(encoding="utf-8") == "{}\n"
 
 
 def test_register_mcp_json_preserves_sibling_entries(tmp_path):
@@ -625,7 +1029,11 @@ def test_register_mcp_json_idempotent(tmp_path):
 
 
 def test_legis_mcp_entry_module_fallback_splits_command_and_args(monkeypatch):
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/usr/bin/python3", "-P", "-m", "legis"])
+    monkeypatch.setattr(
+        install,
+        "_find_legis_command",
+        lambda *_a, **_k: ["/usr/bin/python3", "-P", "-m", "legis"],
+    )
     entry = install._legis_mcp_entry("claude-code")
     assert entry["command"] == "/usr/bin/python3"
     assert entry["args"] == ["-P", "-m", "legis", "mcp", "--agent-id", "claude-code"]
@@ -664,6 +1072,62 @@ def test_register_mcp_json_non_dict_top_level_is_rejected_unchanged(tmp_path):
     assert mcp.read_text() == "[]"
 
 
+def test_register_mcp_json_rejects_duplicate_keys_unchanged(tmp_path: Path) -> None:
+    from legis.install import register_mcp_json
+
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text(
+        '{"mcpServers":{"sibling":{"command":"keep"}},"mcpServers":{}}',
+        encoding="utf-8",
+    )
+    before = mcp.read_bytes()
+
+    ok, message = register_mcp_json(tmp_path)
+
+    assert ok is False
+    assert "unreadable" in message.lower()
+    assert mcp.read_bytes() == before
+
+
+@pytest.mark.parametrize("doctor_safe", [False, True], ids=["install", "doctor"])
+def test_register_mcp_json_rejects_deep_nesting_unchanged(
+    tmp_path: Path,
+    doctor_safe: bool,
+) -> None:
+    mcp = tmp_path / ".mcp.json"
+    mcp.write_text("[" * 101 + "0" + "]" * 101, encoding="utf-8")
+    before = mcp.read_bytes()
+
+    ok, message = install.register_mcp_json(tmp_path, doctor_safe=doctor_safe)
+
+    assert ok is False
+    assert "unreadable" in message.lower()
+    assert install.mcp_entry_is_current(tmp_path) is False
+    assert mcp.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "number",
+    ["1e1000", "1e-1000", "-1e-1000", "1.234567890123456789"],
+)
+def test_strict_json_rejects_lossy_floating_point_numbers(number: str) -> None:
+    with pytest.raises(ValueError, match="non-finite|without loss"):
+        install._strict_json_loads(f'{{"unrelated": {number}}}')
+
+    assert install._strict_json_loads('{"finite": 1e100}') == {"finite": 1e100}
+
+
+def test_strict_json_enforces_nesting_limit() -> None:
+    at_limit = "[" * 100 + "0" + "]" * 100
+    over_limit = "[" * 101 + "0" + "]" * 101
+    brackets_inside_string = json.dumps("[" * 101)
+
+    assert install._strict_json_loads(at_limit) is not None
+    assert install._strict_json_loads(brackets_inside_string) == "[" * 101
+    with pytest.raises(ValueError, match="nesting"):
+        install._strict_json_loads(over_limit)
+
+
 # ---------------------------------------------------------------------------
 # .gitignore
 # ---------------------------------------------------------------------------
@@ -674,6 +1138,7 @@ def test_ensure_gitignore_creates_file(tmp_path):
     assert ok
     content = (tmp_path / ".gitignore").read_text()
     assert ".weft/legis/" in content
+    assert "/.mcp.json.legis.lock" in content
     assert ".weft/\n" not in content
 
 
@@ -716,7 +1181,9 @@ def test_ensure_gitignore_idempotent(tmp_path):
 
 
 def _git(repo, *args):
-    return subprocess.run(["git", *args], cwd=repo, capture_output=True, text=True, check=False)
+    return subprocess.run(
+        ["git", *args], cwd=repo, capture_output=True, text=True, check=False
+    )
 
 
 def test_ensure_legis_dir_gitignore_creates_nested_file(tmp_path):
@@ -776,7 +1243,12 @@ def test_nested_gitignore_hides_runtime_state_without_root_weft_rule(tmp_path):
     # DB + secret + staging temp are ignored by the nested file...
     assert _git(repo, "check-ignore", ".weft/legis/legis-pulls.db").returncode == 0
     assert _git(repo, "check-ignore", ".weft/legis/operator.age").returncode == 0
-    assert _git(repo, "check-ignore", ".weft/legis/operator_session.json5678.tmp").returncode == 0
+    assert (
+        _git(
+            repo, "check-ignore", ".weft/legis/operator_session.json5678.tmp"
+        ).returncode
+        == 0
+    )
     # ...but the nested .gitignore itself stays tracked (not ignored).
     assert _git(repo, "check-ignore", ".weft/legis/.gitignore").returncode == 1
 
@@ -822,13 +1294,23 @@ def test_install_skills_reports_missing_source(tmp_path, monkeypatch):
 
 
 def test_upgrade_hook_commands_tolerates_non_dict_settings():
-    assert install._upgrade_hook_commands({"hooks": []}, "legis session-context", "x") is False
+    assert (
+        install._upgrade_hook_commands({"hooks": []}, "legis session-context", "x")
+        is False
+    )
     assert install._upgrade_hook_commands({}, "legis session-context", "x") is False
 
 
 def test_has_unscoped_session_start_hook_tolerates_non_dict():
-    assert install._has_unscoped_session_start_hook({"hooks": "nope"}, "legis session-context") is False
-    assert install._has_unscoped_session_start_hook({}, "legis session-context") is False
+    assert (
+        install._has_unscoped_session_start_hook(
+            {"hooks": "nope"}, "legis session-context"
+        )
+        is False
+    )
+    assert (
+        install._has_unscoped_session_start_hook({}, "legis session-context") is False
+    )
 
 
 def test_has_unscoped_session_start_hook_rejects_repo_local_command(tmp_path):
@@ -854,10 +1336,25 @@ def test_install_hooks_rewrites_repo_local_hook_command(tmp_path, monkeypatch):
     claude.mkdir()
     (claude / "settings.json").write_text(
         json.dumps(
-            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": "./legis session-context"}]}]}}
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": "./legis session-context",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
         )
     )
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, msg = install_claude_code_hooks(tmp_path)
     assert ok, msg
     blocks = json.loads((claude / "settings.json").read_text())["hooks"]["SessionStart"]
@@ -865,7 +1362,9 @@ def test_install_hooks_rewrites_repo_local_hook_command(tmp_path, monkeypatch):
     assert commands == ["/opt/bin/legis session-context"]
 
 
-def test_install_hooks_leaves_user_scoped_block_command_untouched(tmp_path, monkeypatch):
+def test_install_hooks_leaves_user_scoped_block_command_untouched(
+    tmp_path, monkeypatch
+):
     claude = tmp_path / ".claude"
     claude.mkdir()
     (claude / "settings.json").write_text(
@@ -873,13 +1372,20 @@ def test_install_hooks_leaves_user_scoped_block_command_untouched(tmp_path, monk
             {
                 "hooks": {
                     "SessionStart": [
-                        {"matcher": "resume", "hooks": [{"type": "command", "command": "legis session-context"}]}
+                        {
+                            "matcher": "resume",
+                            "hooks": [
+                                {"type": "command", "command": "legis session-context"}
+                            ],
+                        }
                     ]
                 }
             }
         )
     )
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     install_claude_code_hooks(tmp_path)
     blocks = json.loads((claude / "settings.json").read_text())["hooks"]["SessionStart"]
 
@@ -887,14 +1393,22 @@ def test_install_hooks_leaves_user_scoped_block_command_untouched(tmp_path, monk
     # The user's portable bare command must NOT be pinned to a venv path.
     assert scoped["hooks"][0]["command"] == "legis session-context"
     # legis still adds its own unscoped block with the resolved command.
-    unscoped = [b for b in blocks if "matcher" not in b or b.get("matcher") in (None, "*")]
-    assert any(h["command"] == "/opt/bin/legis session-context" for b in unscoped for h in b["hooks"])
+    unscoped = [
+        b for b in blocks if "matcher" not in b or b.get("matcher") in (None, "*")
+    ]
+    assert any(
+        h["command"] == "/opt/bin/legis session-context"
+        for b in unscoped
+        for h in b["hooks"]
+    )
 
 
 def test_install_hooks_backs_up_nested_corrupt_structure(tmp_path):
     claude = tmp_path / ".claude"
     claude.mkdir()
-    (claude / "settings.json").write_text(json.dumps({"hooks": "important user data", "keep": 1}))
+    (claude / "settings.json").write_text(
+        json.dumps({"hooks": "important user data", "keep": 1})
+    )
     ok, msg = install_claude_code_hooks(tmp_path)
     assert ok
     bak = claude / "settings.json.bak"
@@ -907,7 +1421,9 @@ def test_install_hooks_backs_up_nested_corrupt_structure(tmp_path):
     assert ".bak" in msg
 
 
-def test_install_skills_restores_original_on_genuine_swap_failure(tmp_path, monkeypatch):
+def test_install_skills_restores_original_on_genuine_swap_failure(
+    tmp_path, monkeypatch
+):
     install_skills(tmp_path)
     skill = tmp_path / ".claude" / "skills" / SKILL_NAME / "SKILL.md"
     original = skill.read_text()
@@ -944,21 +1460,22 @@ def test_inject_append_keeps_marker_off_users_last_line(tmp_path):
 def test_ensure_gitignore_present_among_other_rules_not_duplicated(tmp_path):
     # All of legis's rules already present alongside unrelated rules → nothing to
     # add. The posture-ratchet operator-secret paths are now part of the rule set
-    # (root-anchored), so a complete .gitignore lists all three.
+    # (root-anchored), and the stable writer lock and repair temp files are
+    # local-only, so a complete .gitignore lists all of legis's rules.
     (tmp_path / ".gitignore").write_text(
         "*.db\n"
         ".weft/legis/\n"
         "/.weft/legis/operator_session.json\n"
         "/.weft/legis/operator.age\n"
+        "/.mcp.json.legis.lock\n"
+        "/.mcp.json*.tmp\n"
     )
     ok, msg = ensure_gitignore(tmp_path)
     assert ok
     assert "already" in msg  # detected as present, not re-appended
     content = (tmp_path / ".gitignore").read_text()
     # The bare subtree line appears exactly once (not re-appended).
-    subtree_lines = [
-        ln for ln in content.splitlines() if ln.strip() == ".weft/legis/"
-    ]
+    subtree_lines = [ln for ln in content.splitlines() if ln.strip() == ".weft/legis/"]
     assert len(subtree_lines) == 1
 
 
@@ -1018,7 +1535,9 @@ def test_find_legis_command_prefers_running_executable(tmp_path, monkeypatch):
     assert install._find_legis_command() == [str(running)]
 
 
-def test_find_legis_command_path_fallback_when_argv0_is_not_legis(tmp_path, monkeypatch):
+def test_find_legis_command_path_fallback_when_argv0_is_not_legis(
+    tmp_path, monkeypatch
+):
     # Not running as the legis entrypoint (e.g. pytest) → PATH lookup stands.
     import sys
 
@@ -1062,15 +1581,37 @@ def test_find_legis_command_scans_past_project_local_path_hit(tmp_path, monkeypa
     assert install._find_legis_command(project_root) == [str(stable)]
 
 
+def test_global_mcp_command_rejects_relative_path_resolution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    relative_bin = Path("relative-bin")
+    executable = _touch_exe(tmp_path / relative_bin / "legis")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("PATH", str(relative_bin))
+    args = ["mcp", "--agent-id", "operator"]
+
+    assert install._mcp_command_resolves_safely("legis", None, args) is False
+
+    monkeypatch.setenv("PATH", str(executable.parent.resolve()))
+    assert install._mcp_command_resolves_safely("legis", None, args) is True
+
+
 def test_register_mcp_json_preserves_customized_env(tmp_path, monkeypatch):
     from legis.install import register_mcp_json
 
     exe = _touch_exe(tmp_path / "tools" / "legis")
-    _write_legis_mcp_entry(tmp_path, exe, env={"LEGIS_WARDLINE_CELL": "surface_override"})
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    _write_legis_mcp_entry(
+        tmp_path, exe, env={"LEGIS_WARDLINE_CELL": "surface_override"}
+    )
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, _ = register_mcp_json(tmp_path)
     assert ok
-    assert _read_legis_mcp_entry(tmp_path)["env"] == {"LEGIS_WARDLINE_CELL": "surface_override"}
+    assert _read_legis_mcp_entry(tmp_path)["env"] == {
+        "LEGIS_WARDLINE_CELL": "surface_override"
+    }
 
 
 def test_register_mcp_json_keeps_usable_command(tmp_path, monkeypatch):
@@ -1080,7 +1621,9 @@ def test_register_mcp_json_keeps_usable_command(tmp_path, monkeypatch):
 
     exe = _touch_exe(tmp_path.parent / f"{tmp_path.name}-external" / "legis")
     _write_legis_mcp_entry(tmp_path, exe)
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/elsewhere/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/elsewhere/legis"]
+    )
     ok, msg = register_mcp_json(tmp_path)
     assert ok
     assert "already" in msg
@@ -1092,7 +1635,9 @@ def test_register_mcp_json_rewrites_non_legis_executable(tmp_path, monkeypatch):
 
     fake = _touch_exe(tmp_path.parent / f"{tmp_path.name}-external" / "fake-runner")
     safe_legis = "/opt/bin/legis"
-    _write_legis_mcp_entry(tmp_path, fake, env={"LEGIS_WARDLINE_CELL": "surface_override"})
+    _write_legis_mcp_entry(
+        tmp_path, fake, env={"LEGIS_WARDLINE_CELL": "surface_override"}
+    )
     monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: [safe_legis])
 
     ok, msg = register_mcp_json(tmp_path)
@@ -1163,8 +1708,12 @@ def test_register_mcp_json_refreshes_dead_command_but_keeps_env(tmp_path, monkey
     from legis.install import register_mcp_json
 
     dead = tmp_path / "gone-venv" / "legis"  # never created
-    _write_legis_mcp_entry(tmp_path, dead, env={"LEGIS_WARDLINE_CELL": "surface_override"})
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    _write_legis_mcp_entry(
+        tmp_path, dead, env={"LEGIS_WARDLINE_CELL": "surface_override"}
+    )
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, _ = register_mcp_json(tmp_path)
     assert ok
     entry = _read_legis_mcp_entry(tmp_path)
@@ -1189,7 +1738,9 @@ def test_register_mcp_json_drops_unsafe_or_secret_env(tmp_path, monkeypatch):
             "OPENROUTER_API_KEY": "secret",
         },
     )
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, _ = register_mcp_json(tmp_path)
     assert ok
     entry = _read_legis_mcp_entry(tmp_path)
@@ -1198,12 +1749,16 @@ def test_register_mcp_json_drops_unsafe_or_secret_env(tmp_path, monkeypatch):
     assert "LEGIS_FILIGREE_HMAC_KEY" not in entry["env"]
 
 
-def test_register_mcp_json_explicit_agent_id_updates_usable_entry_in_place(tmp_path, monkeypatch):
+def test_register_mcp_json_explicit_agent_id_updates_usable_entry_in_place(
+    tmp_path, monkeypatch
+):
     from legis.install import register_mcp_json
 
     exe = _touch_exe(tmp_path.parent / f"{tmp_path.name}-external" / "legis")
     _write_legis_mcp_entry(tmp_path, exe, env={"K": "V"}, agent_id="claude-code")
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/elsewhere/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/elsewhere/legis"]
+    )
     ok, _ = register_mcp_json(tmp_path, "new-bot")
     assert ok
     entry = _read_legis_mcp_entry(tmp_path)
@@ -1213,15 +1768,27 @@ def test_register_mcp_json_explicit_agent_id_updates_usable_entry_in_place(tmp_p
     assert entry["env"] == {"K": "V"}
 
 
-def test_install_hooks_does_not_rewrite_working_absolute_command_outside_project(tmp_path, monkeypatch):
+def test_install_hooks_does_not_rewrite_working_absolute_command_outside_project(
+    tmp_path, monkeypatch
+):
     exe = _touch_exe(tmp_path.parent / f"{tmp_path.name}-external" / "legis")
     working = f"{exe} session-context"
     claude = tmp_path / ".claude"
     claude.mkdir()
     (claude / "settings.json").write_text(
-        json.dumps({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": working}]}]}})
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {"hooks": [{"type": "command", "command": working}]}
+                    ]
+                }
+            }
+        )
     )
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, msg = install_claude_code_hooks(tmp_path)
     assert ok
     cmds = _session_commands(json.loads((claude / "settings.json").read_text()))
@@ -1234,9 +1801,23 @@ def test_install_hooks_upgrades_project_local_absolute_command(tmp_path, monkeyp
     claude = tmp_path / ".claude"
     claude.mkdir()
     (claude / "settings.json").write_text(
-        json.dumps({"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": f"{exe} session-context"}]}]}})
+        json.dumps(
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {"type": "command", "command": f"{exe} session-context"}
+                            ]
+                        }
+                    ]
+                }
+            }
+        )
     )
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, _ = install_claude_code_hooks(tmp_path)
     assert ok
     cmds = _session_commands(json.loads((claude / "settings.json").read_text()))
@@ -1249,10 +1830,25 @@ def test_install_hooks_upgrades_dead_absolute_command(tmp_path, monkeypatch):
     claude.mkdir()
     (claude / "settings.json").write_text(
         json.dumps(
-            {"hooks": {"SessionStart": [{"hooks": [{"type": "command", "command": f"{dead} session-context"}]}]}}
+            {
+                "hooks": {
+                    "SessionStart": [
+                        {
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": f"{dead} session-context",
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }
         )
     )
-    monkeypatch.setattr(install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"])
+    monkeypatch.setattr(
+        install, "_find_legis_command", lambda *_a, **_k: ["/opt/bin/legis"]
+    )
     ok, _ = install_claude_code_hooks(tmp_path)
     assert ok
     cmds = _session_commands(json.loads((claude / "settings.json").read_text()))

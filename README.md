@@ -6,19 +6,69 @@ Legis is the fourth Weft product: the git/CI and governance side of the suite's 
 
 ## Status
 
-Legis is at **`1.1.1`** — the gold release line with post-launch posture, install, and release-gate hardening. The standalone git/CI surfaces, the graded 2x2 enforcement engine, the agent-programmable policy grammar, SEI-keyed attestations, and the Wardline/Filigree suite combinations are built and tested. The git-rename provider to Loomweave is contract-locked, operative pending Loomweave's committed-range driving.
+Legis is at **`1.5.0`** — the current gold release with post-launch posture,
+install, release-gate, policy-boundary, dependency, and package-layering
+hardening. The standalone git/CI surfaces, the graded 2x2 enforcement engine,
+the agent-programmable policy grammar, SEI-keyed attestations, and the
+Wardline/Filigree suite combinations are built and tested. The git-rename
+provider to Loomweave is contract-locked, operative pending Loomweave's
+committed-range driving.
 
 The transport-agnostic service layer (WP-M1) and the agent-facing MCP surface on top of it have landed (`legis mcp`). The MCP surface now declares output schemas across its tools, exposes read-side governance/diagnostic tools (`doctor_get`, `override_list`, `policy_boundary_check`, lineage-honesty reads, `check_report`, `signoff_bind_issue`), and keeps the API/MCP/CLI paths routed through the same service layer instead of duplicating governance decisions.
 
 Legis stands itself up with `legis install`: instruction block, `legis-workflow` skill pack, SessionStart hook, `.mcp.json` registration, and the Legis-only `.weft/legis/` ignore rule. `legis doctor [--fix]` provides an operator health view and safe repair for the install + config layer, tagging each problem `[auto-fixable]` or `[operator]` so it is clear what `--fix` will and will not touch. Doctor names enablement paths when governance is unwired (policy cells, Wardline routing), but it reports rather than auto-enabling policy surfaces or touching signing keys.
 
-Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.1.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication is gated on live Loomweave conformance. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
+Legis MCP runtime autodiscovery resolves Plainweave once at startup from the
+active project working directory. It accepts either a valid root-pinned local
+Plainweave MCP entry by itself, or `.plainweave/plainweave.db` plus a trusted
+non-project-local `plainweave-mcp` on `PATH`. It creates no new manifest.
+For an initialized project, a present malformed `.mcp.json` or invalid local
+Plainweave entry fails closed and disables the trusted `PATH` fallback. The
+database-plus-`PATH` fallback is considered only when local config presents no
+Plainweave configuration issue.
+Global Codex Legis configuration stays tool-only and
+project-agnostic: it carries no Plainweave root, fixed `cwd`, or
+`PLAINWEAVE_MCP_CMD`, which is a retired 1.5.0 legacy migration key rather than
+active configuration.
 
-### Last week in practical terms
+`legis doctor` verifies active-project discovery and checks both the project
+Legis registration and any existing global Codex Legis registration for the
+retired key. `legis doctor --fix` semantically changes only the retired
+`PLAINWEAVE_MCP_CMD` key in a safe project Legis environment table, but it
+reserializes the whole `.mcp.json` document with two-space indentation. It
+preserves unrelated JSON values, the detected newline sequence, final-newline
+presence, and file mode; it does not preserve arbitrary whitespace formatting.
+Project repair refuses unsafe or secret-bearing `.mcp.json` environment tables
+and leaves the file unchanged. Global remove-only repair accepts string-valued
+environment entries and preserves every unrelated entry, including
+secret-shaped names; it refuses malformed, unsupported, or mixed-transport
+shapes. `install.mcp_json` continues to own project registration; the global
+check inspects only an existing registration and never creates one. Doctor
+leaves a fixed global `cwd` operator-owned. A combined cleanup can report
+`[fixed] [operator]`: remove the reported fixed `cwd` manually, reconnect or
+restart the MCP client, and rerun doctor. See the
+[Plainweave runtime-autodiscovery configuration guide](docs/guide/configuration.md#plainweave-mcp-runtime-autodiscovery-and-legacy-migration)
+and the [`legis doctor` CLI reference](docs/guide/cli-reference.md#doctor).
 
-The last week moved Legis from "feature-complete release candidate" to "operationally hardened gold":
+### Platform support
 
-- **Release and conformance.** PyPI publishing is gated on live Loomweave SEI conformance with required `LOOMWEAVE_URL`, `LOOMWEAVE_LIVE_ORACLE_LOCATOR`, and `LEGIS_LOOMWEAVE_HMAC_KEY`; optional CI-only skips no longer decide release integrity.
+Legis currently supports POSIX hosts with directory-relative, no-follow file
+operations and advisory `flock` locking (including supported Linux and macOS
+hosts). These primitives protect configuration inspection and repair against
+path swaps and cooperating-writer races. Windows is not currently supported;
+the package metadata therefore declares POSIX rather than OS-independent
+compatibility. On a host without the required primitives, Plainweave discovery
+and binding checks fail closed and automatic MCP configuration repair is
+unavailable.
+
+Gold was earned, not declared: 1.0.0 was first cut on 2026-06-09, then re-opened when a P0 governance-honesty false-green (G1 — an absent Wardline `findings` key routing zero defects under a green status) was caught *after* the cut. The 1.5.x line keeps that surface hardened: posture floors fail closed, operator sessions are signed, rekey recovery preserves the standing floor, and release publication runs live Loomweave conformance when live oracle configuration is provisioned. Missing configuration skips conformance without blocking publish; a provisioned oracle failure blocks the release. See the combination matrix below for per-pairing status and `CHANGELOG.md` for the full release notes.
+
+### Recent hardening in practical terms
+
+Recent releases moved Legis from "feature-complete release candidate" to
+"operationally hardened gold":
+
+- **Release and conformance.** PyPI publishing keeps a conditional live Loomweave SEI gate. When `LOOMWEAVE_URL`, `LOOMWEAVE_LIVE_ORACLE_LOCATOR`, and `LEGIS_LOOMWEAVE_HMAC_KEY` are all provisioned, the live oracle runs and any failure blocks publication. If any one is absent, the release job records a notice and passes without running the oracle, preserving the owner-approved skip-not-fail policy.
 - **Doctor and install hardening.** Doctor validates `.mcp.json` as an executable Legis stdio server, rejects repo-local SessionStart hooks, handles missing roots without crashing, and keeps audit-chain checks report-only instead of initializing truncated stores. Instruction refresh compares the whole owned block to the packaged block, not just the marker token.
 - **Governance honesty.** Wardline dirty unsigned artifacts no longer return transport success when nothing was governed; malformed or missing scan fields fail as malformed input rather than routing zero findings under green. Policy-boundary evidence fingerprints now include semantic decorators such as `pytest.mark.skip`, `parametrize`, and wrapper decorators.
 - **Configuration custody.** Repo `weft.toml` can no longer redirect Legis governance stores; explicit `LEGIS_*_DB` environment variables are the relocation mechanism. The root `.gitignore` ignores only `.weft/legis/`, not the whole shared `.weft/` namespace.

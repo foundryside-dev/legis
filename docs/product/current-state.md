@@ -1,26 +1,27 @@
-# Current State — Legis        Checkpoint: 2026-06-28 · committed (PDR-0007, PDR-0008)
+# Current State — Legis        Checkpoint: 2026-07-01 · committed (PDR-0009, PDR-0010); DECIDE recorded (PDR-0011)
 
 ## The bet right now
-**Keep the governance-honesty surface true post-gold** (north-star: open governance-honesty defects → **0** by 2026-07-15; currently **1**). The last confirmed P2 finding is **legis-0186c23a2c** (policy_boundary_check accepts roots outside the source root) — unplanned; closing it takes the north-star to 0. This session shipped two **federation seams** (seam-quality, NOT north-star items) and deployed the governance_read surface locally.
+**Federation offline contract hardening** (PDR-0011) — close the silent-divergence risk on the federation seams legis can prove **without a live daemon** (Path B holds). Two legis-unilateral, in-CI workstreams:
+- **G16** (legis-c4cbf78fdb) — the rename feed's contract tests assert against `_parse_like_loomweave`, a **legis-authored Python mock** of Loomweave's Rust `parse_legis_rename_json` (one-way; the mock IS the oracle). This is live on the **shipped `/git/renames`** seam Loomweave consumes today. Replace it with a **committed two-way shared-vector file** + author that file as the Loomweave-facing artifact.
+- **G8** (legis-b7ce9fdc40) — guard `resolve_batch`/`resolve_sei` at the backfill/helper layer; degrade to unresolved/unavailable with evidence (not a crash); add `BrokenResolveClient` coverage.
+
+**Success criterion (falsifiable):** no legis-authored parser mock remains in the rename contract test (both directions assert against the committed vector file, published for Loomweave) **and** a `BrokenResolveClient` test proves the backfill path degrades not crashes. Guardrail: shipped rename-feed output shape stays byte-stable. Metric: new guardrail in `metrics.md` (rename-parser conformance vector-pinned, not self-referential — currently **BREACHED**, this bet closes it).
 
 ## In flight / not yet started
-- **legis-0186c23a2c** (unbounded policy-boundary root) — the **last** north-star P2 finding; confirmed, unplanned. Closing it → north-star **0**. **Next session's primary candidate.**
-- **G1 integration tail** (legis-9a47068338) — legis-side DONE; **warpline must wire `LegisGovernanceClient` + restart its MCP connection** to flip its legis member `disabled`→`clean`. Awaiting warpline's live confirmation (not legis-blocked).
-
-## Recently shipped this session (LOCAL main; NOT pushed)
-- **`governance_read.v1`** (PDR-0007, legis-9a47068338) — per-SEI governance read legis publishes for warpline; cleared-only; CLI+MCP+HTTP + frozen discriminated-union contract; verified (1335 passed, **mutation-proven** false-green-free) + deployed to the global `legis` tool (1.3.0). Integration pending warpline.
-- **Plainweave preflight consumer** (PDR-0008, parallel session `27f12da`) — legis reads Plainweave's `preflight_facts.v1` advisory/enrich-only; 1377 passed at HEAD.
-- Follow-ups filed: **legis-a0e286f5aa** (MCP outputSchema looser than the frozen contract — Minor).
+- **This bet is decided but not started** — no code written yet. Next session builds it (G16 first — designing faithful vectors is the subtle part — then G8).
+- **Deferred by design (NOT this bet):** G12 real-Filigree live-fire (legis-356fe094dd) + the Loomweave live oracle → opt-in runbooks (fork b); G2 move-aware backfill (legis-bc9e5f3e60) → blocked on Loomweave exposing a historical-locator surface; reopening Path B → strategy-level (fork c). See roadmap Next.
+- **governance_read.v1 → warpline integration** (legis-9a47068338) — legis-side done + published in 1.4.0; warpline's live handshake pending (sibling-side, not legis-blocked).
 
 ## Open questions / blocked-on-owner  (escalations)
-- **⚠ Release (push + publish) — owner-gated; the one escalation this session.** Local `main` (HEAD `27f12da`) is now far ahead of origin: the 1.3.0 line + 3 prior fixes + warpline-preflight + **G1 governance_read.v1** + **Plainweave consumer**. Direct push is **ruleset-blocked** (PR required). Decide: **(a) SCOPE** — what ships next (fold G1 + Plainweave into 1.3.0, or cut a 1.4.0)? **(b) MECHANISM** — shall I push a branch + open the PR, and who cuts the GitHub Release / PyPI publish? **Nothing is pushed; `governance_read.v1` stays a LOCAL freeze until this lands** (keeps the v1 contract revisable if warpline needs a change before publish).
-- **warpline handshake — live confirmation pending** (the G1 integration half; sibling-side).
-- **Plainweave live e2e capture** — the parallel session's golden is CONSTRUCTED, not live-captured (hub MCP misroutes Plainweave); a flagged follow-up.
+- **⚠ Loomweave vector handoff — owner-gated (the one escalation on the Now bet).** Legis authoring + pinning its half of the rename vectors is in-grant and lands value alone; **Loomweave co-committing and running the SAME vectors against its real `parse_legis_rename_json`** is what fully closes the drift loop, and it touches a sibling maintainer → your call to route.
+- **governance_read.v1 is publicly frozen** (inform) — a warpline-driven shape change is `governance_read.v2` (ADD), never a v1 edit.
+- **esbuild LOW advisory deferred** (legis-70658a5bbc, PDR-0010) — dependabot alert stays open on the default branch until a site-only change.
+- **warpline handshake** — sibling-side, awaiting warpline's live confirmation.
 
-## What this checkpoint did
-- Recorded **PDR-0007** (build `governance_read.v1` — cleared-only per-SEI federation read, owner-directed) and **PDR-0008** (record the parallel session's Plainweave advisory consumer under [[0003-federation-read-doctrine]]/[[0006-warpline-preflight-conform-to-extant-mcp-envelope]] doctrine).
-- Refreshed `metrics.md` (north-star unchanged at 1; advisory boundary re-proven ×2; the new federation surface **mutation-proven** false-green-free; CI green, 1377 passed @ HEAD) and `roadmap.md` (two seams → recently-shipped).
-- Reconciled the tracker: filed **legis-9a47068338** (G1 feature) + **legis-a0e286f5aa** (outputSchema follow-up).
+## What this session did
+- **1.4.0 SHIPPED** (PDR-0009/0010): consolidated release live on PyPI; north-star **1 → 0** (post-gold honesty bet WON); the H-1…H-4 layering decouple + policy-boundary fix + starlette bump landed. Checkpoint committed (2d1d9a8).
+- **DECIDE the successor bet** (PDR-0011): audited the federation seams (found them contract-shaped but never live-proven, with a silent-drift risk on the shipped rename seam), and — owner-directed — selected **federation offline contract hardening** (fork a of 3). Promoted to Now; added the rename-conformance guardrail; scoped G16+G8 in, G2/G12/live-fire out.
+- Tracker: closed legis-0186c23a2c (1.4.0); filed legis-a7c9ad6404, legis-70658a5bbc; refined G16 (legis-c4cbf78fdb) scope.
 
 ## Next session starts here
-**Plan legis-0186c23a2c** (the last north-star finding) via the `/axiom-planning` → review → execute path — closing it takes the north-star to **0**. OR, if the owner is ready: the **release decision** (scope + PR mechanism) for the now-substantial unpushed local `main`. The warpline + Plainweave integration tails are sibling-side, not legis-blocked.
+**Build the Now bet** — start with **G16** (design the two-way shared rename-vector file that faithfully captures Loomweave's parser edge cases from legis's side, replace the `_parse_like_loomweave` mock, assert both directions), then **G8** (backfill resolve guards + `BrokenResolveClient` coverage). Plan-first via `/axiom-planning` is warranted for G16 (the vector-authoring is the subtle, drift-risk-laden part). The Loomweave co-commit handoff is a flagged owner escalation, not a blocker to legis's half.

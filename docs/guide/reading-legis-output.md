@@ -177,6 +177,79 @@ Each problem line is tagged so you know who fixes it:
 doctor reports the governance surface; it never auto-enables a cell or touches a
 signing key.
 
+`install.filigree_scope` inspects every valid `--filigree-url VALUE` or
+`--filigree-url=VALUE` in project MCP server arguments. Values must be
+whitespace-free HTTP(S) URLs with a host; URL userinfo is rejected. Doctor uses
+the full validated URL for scope classification. Route matching strictly
+percent-decodes UTF-8 and normalizes path dot-segments, so encoded route bytes,
+slashes, or traversal cannot disguise an unscoped write. Doctor rejects invalid
+escapes, ambiguous empty path segments, raw or encoded control/format characters,
+empty or whitespace-only project identities, and queries over 100 fields. It
+displays the normalized scheme/host/port plus the original encoded path. URL
+userinfo is rejected, and query values and fragments are omitted from diagnostics;
+opaque path data is retained for route diagnosis and is therefore not a secret
+field. A missing file or valid configuration with no such option is healthy
+checked-empty; malformed, unreadable, special-file, or invalid-URL input is an
+`[operator]` error rather than an earned absence.
+
+For Plainweave runtime autodiscovery, read the two check IDs separately:
+
+| Check ID | What it means |
+|---|---|
+| `install.plainweave_project_binding` | The active project must be runtime-discoverable and its Legis MCP entry must omit the retired legacy `PLAINWEAVE_MCP_CMD` key. Project registration repair itself remains `install.mcp_json` work. |
+| `install.plainweave_codex_binding` | An existing global Codex Legis MCP entry must be project-agnostic: no retired legacy key and no fixed `cwd`. No global registration is healthy and not applicable; doctor never creates one. |
+
+The project check uses the active project cwd. Runtime discovery accepts either
+a valid root-pinned local Plainweave MCP entry by itself, or
+`.plainweave/plainweave.db` plus a trusted non-project-local `plainweave-mcp` on
+`PATH`. It creates no new manifest. Doctor reports the project check healthy and
+not applicable when neither path applies. A global executable alone does not
+initialize or wire the project.
+
+For an initialized project, a present malformed `.mcp.json` or invalid local
+Plainweave entry fails closed and disables the trusted `PATH` fallback. The
+database-plus-`PATH` fallback is considered only when local config presents no
+Plainweave configuration issue. Treat the resulting project-check error as an
+operator action, not as permission to use the fallback.
+
+For an applicable project, `[auto-fixable]` can mean either the retired legacy
+`PLAINWEAVE_MCP_CMD` key is present or the project Legis registration is safely
+missing or stale. `install.mcp_json` owns registration repair and runs before
+the Plainweave checks; it may create or rebuild the project's `command`, `args`,
+`type`, and safe `env`. The project cleanup semantically changes only the
+retired key, but it reserializes the whole `.mcp.json` document with two-space
+indentation. It preserves unrelated JSON values, the detected newline sequence,
+final-newline presence, and file mode rather than arbitrary whitespace
+formatting. Global Codex TOML removal remains text-surgical.
+
+Project repair refuses unsafe or secret-bearing `.mcp.json` environment tables
+and leaves the file unchanged. Global remove-only repair accepts string-valued
+environment entries and preserves every unrelated entry, including
+secret-shaped names. It refuses malformed, unsupported, or mixed-transport
+global shapes.
+
+`[fixed]` means that check repaired and post-verified its own scope. When the
+same run repairs project registration and then removes the legacy key, inspect
+`[fixed]` on both `install.mcp_json` and
+`install.plainweave_project_binding`. Inspect the independent
+`install.plainweave_codex_binding` line as well for an existing global Codex
+entry. The global check is independent of project applicability and never
+creates a registration.
+
+`[operator]` means doctor left operator-owned configuration unchanged. This
+includes a fixed global `cwd`; malformed, unsupported, or mixed-transport
+global config; and unsafe or secret-bearing project config. Doctor never
+removes fixed `cwd`. When a safe retired-key cleanup succeeds but fixed `cwd`
+remains, the same line can show
+`[fixed] [operator]`: the partial fix is real, but runtime autodiscovery still
+cannot inherit the active project cwd.
+
+To migrate, run `legis doctor`, run `legis doctor --fix`, manually remove a
+reported fixed global `cwd`, reconnect or restart the affected MCP clients, and
+rerun `legis doctor`. Each new Legis MCP process performs runtime autodiscovery
+once at startup. The `doctor_get` MCP tool is report-only and never produces
+repairs.
+
 ## MCP tool errors (one to never ignore)
 
 The agent surface returns typed `error_code`s with `recoverable` and `next_action`
