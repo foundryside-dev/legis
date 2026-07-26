@@ -28,7 +28,7 @@ import shlex
 import shutil
 import stat
 import tempfile
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 from pathlib import Path
 from typing import Any, Callable
 
@@ -1146,7 +1146,11 @@ def _strict_json_loads(content: str) -> Any:
         parsed = float(value)
         if not math.isfinite(parsed):
             raise ValueError("non-finite JSON number")
-        if Decimal(str(parsed)) != Decimal(value):
+        try:
+            exactly_represented = Decimal(str(parsed)) == Decimal(value)
+        except DecimalException as exc:
+            raise ValueError("invalid JSON number") from exc
+        if not exactly_represented:
             raise ValueError("JSON number cannot be represented without loss")
         return parsed
 
